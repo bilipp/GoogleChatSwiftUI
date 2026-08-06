@@ -5,9 +5,15 @@ import Foundation
 nonisolated struct CreateMessageBody: Encodable, Sendable {
     var text: String
     var thread: ThreadRef?
+    /// Uploaded files, referenced by the token `media.upload` returned.
+    var attachment: [AttachmentRef]?
 
     nonisolated struct ThreadRef: Encodable, Sendable {
         var name: String
+    }
+
+    nonisolated struct AttachmentRef: Encodable, Sendable {
+        var attachmentDataRef: ChatAttachment.DataRef
     }
 }
 
@@ -34,6 +40,7 @@ nonisolated extension ChatClient {
         in space: String,
         text: String,
         threadName: String? = nil,
+        attachments: [ChatAttachment.DataRef] = [],
         clientMessageID: String = ChatClient.newClientMessageID()
     ) async throws -> ChatMessage {
         var query = [URLQueryItem(name: "messageId", value: clientMessageID)]
@@ -48,7 +55,10 @@ nonisolated extension ChatClient {
 
         let body = CreateMessageBody(
             text: text,
-            thread: threadName.map { CreateMessageBody.ThreadRef(name: $0) }
+            thread: threadName.map { CreateMessageBody.ThreadRef(name: $0) },
+            attachment: attachments.isEmpty
+                ? nil
+                : attachments.map { CreateMessageBody.AttachmentRef(attachmentDataRef: $0) }
         )
 
         do {
@@ -138,6 +148,10 @@ nonisolated extension ChatClient {
     // MARK: - Media
 
     /// Downloads an attachment's bytes.
+    ///
+    /// Always via `media.download` with the data ref, never via `downloadUri` or
+    /// `thumbnailUri`. Those two are documented as links for a *human* in a browser;
+    /// apps are explicitly told not to fetch them, and they are not plain public URLs.
     /// - Parameter resourceName: from `attachmentDataRef.resourceName`.
     func downloadAttachment(resourceName: String) async throws -> Data {
         var components = URLComponents(
@@ -148,6 +162,74 @@ nonisolated extension ChatClient {
         var request = URLRequest(url: components.url!)
         request.httpMethod = "GET"
         return try await transport.data(for: request)
+    }
+
+    /// Uploads a file and returns the reference needed to attach it to a message.
+    ///
+    /// Upload is a two-step dance: bytes go to the `/upload/` host first, and the
+    /// token that comes back is then attached to a normal message create. A message
+    /// cannot carry raw bytes directly.
+    func uploadAttachment(
+        to space: String,
+        filename: String,
+        mimeType: String,
+        data: Data
+    ) async throws -> ChatAttachment.DataRef {
+        var components = URLComponents(
+            string: "https://chat.googleapis.com/upload/v1/\(space)/attachments:upload"
+        )!
+        components.queryItems = [URLQueryItem(name: "uploadType", value: "multipart")]
+
+        // Hand-built multipart: the metadata part must be JSON and the media part raw
+        // bytes, in that order, which URLSession offers no builder for.
+        let boundary = "chatswiftui-\(UUID().uuidString)"
+        var body = Data()
+
+        let metadata = try JSONEncoder().encode(UploadMetadata(filename: filename))
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Type: application/json; charset=UTF-8\r\n\r\n")
+        body.append(metadata)
+        body.append("\r\n")
+
+        body.append("--\(boundary)\r\n")
+        body.append("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n")
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue(
+            "multipart/related; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        request.httpBody = body
+
+        let response = try await transport.decode(request, as: UploadAttachmentResponse.self)
+        guard let ref = response.attachmentDataRef else {
+            throw ChatAPIError(
+                status: 200,
+                googleStatus: "MALFORMED_RESPONSE",
+                message: "Upload succeeded but returned no attachment reference."
+            )
+        }
+        return ref
+    }
+}
+
+private nonisolated struct UploadMetadata: Encodable, Sendable {
+    let filename: String
+}
+
+nonisolated struct UploadAttachmentResponse: Decodable, Sendable {
+    let attachmentDataRef: ChatAttachment.DataRef?
+}
+
+/// `nonisolated` for the usual reason under `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`:
+/// an unannotated extension is inferred main-actor, and this is called from the
+/// nonisolated upload path.
+private nonisolated extension Data {
+    mutating func append(_ string: String) {
+        append(Data(string.utf8))
     }
 }
 

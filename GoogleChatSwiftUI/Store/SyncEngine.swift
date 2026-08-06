@@ -169,6 +169,7 @@ nonisolated struct SyncEngine: Sendable {
         text: String,
         to spaceName: String,
         threadName: String? = nil,
+        attachments: [PendingAttachment] = [],
         senderName: String?,
         senderDisplayName: String?
     ) async throws {
@@ -184,10 +185,25 @@ nonisolated struct SyncEngine: Sendable {
         )
 
         do {
+            // Uploaded before the message is created, because a create request can
+            // only reference files that already exist server-side.
+            var refs: [ChatAttachment.DataRef] = []
+            for attachment in attachments {
+                refs.append(
+                    try await client.uploadAttachment(
+                        to: spaceName,
+                        filename: attachment.filename,
+                        mimeType: attachment.mimeType,
+                        data: attachment.data
+                    )
+                )
+            }
+
             let created = try await client.createMessage(
                 in: spaceName,
                 text: text,
                 threadName: threadName,
+                attachments: refs,
                 clientMessageID: clientID
             )
             try await store.confirmPendingMessage(

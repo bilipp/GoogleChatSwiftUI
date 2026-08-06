@@ -70,8 +70,8 @@ struct MessageListView: View {
                 MessageComposer(
                     placeholder: "Message \(spaceTitle)",
                     isSending: session.isSending(spaceName)
-                ) { text in
-                    Task { await session.send(text, to: spaceName) }
+                ) { text, attachments in
+                    Task { await session.send(text, to: spaceName, attachments: attachments) }
                 }
             }
         }

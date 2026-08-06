@@ -252,7 +252,12 @@ final class ChatSessionModel {
         selectedThreadName = threadName
     }
 
-    func send(_ text: String, to spaceName: String, threadName: String? = nil) async {
+    func send(
+        _ text: String,
+        to spaceName: String,
+        threadName: String? = nil,
+        attachments: [PendingAttachment] = []
+    ) async {
         messageError = nil
         sendingSpaceNames.insert(spaceName)
         defer { sendingSpaceNames.remove(spaceName) }
@@ -262,6 +267,7 @@ final class ChatSessionModel {
                 text: text,
                 to: spaceName,
                 threadName: threadName,
+                attachments: attachments,
                 senderName: profile?.chatUserName,
                 senderDisplayName: profile?.displayName
             )

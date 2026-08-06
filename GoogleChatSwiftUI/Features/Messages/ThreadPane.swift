@@ -41,8 +41,15 @@ struct ThreadPane: View {
             MessageComposer(
                 placeholder: "Reply in thread",
                 isSending: session.isSending(spaceName)
-            ) { text in
-                Task { await session.send(text, to: spaceName, threadName: threadName) }
+            ) { text, attachments in
+                Task {
+                    await session.send(
+                        text,
+                        to: spaceName,
+                        threadName: threadName,
+                        attachments: attachments
+                    )
+                }
             }
         }
         .frame(minWidth: 380)

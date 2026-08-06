@@ -1,11 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Attachment chips under a message: image thumbnails inline, everything else as a
-/// file row with a download action.
+/// Attachment chips under a message: image previews inline, other files as a row
+/// with a save action.
 struct AttachmentList: View {
-    @Environment(ChatSessionModel.self) private var session
-
     let attachments: [CachedAttachment]
     let isOwn: Bool
 
@@ -22,22 +20,15 @@ private struct AttachmentChip: View {
     @Environment(ChatSessionModel.self) private var session
 
     let attachment: CachedAttachment
+    @State private var preview: NSImage?
+    @State private var previewFailed = false
     @State private var isDownloading = false
     @State private var errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if attachment.isImage, let thumbnail = thumbnailURL {
-                AsyncImage(url: thumbnail) { image in
-                    image.resizable().scaledToFit()
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(.quaternary)
-                        .frame(height: 120)
-                        .overlay { ProgressView().controlSize(.small) }
-                }
-                .frame(maxWidth: 320, maxHeight: 240)
-                .clipShape(.rect(cornerRadius: 8))
+            if attachment.isImage {
+                imagePreview
             }
 
             fileRow
@@ -49,12 +40,58 @@ private struct AttachmentChip: View {
                     .textSelection(.enabled)
             }
         }
+        .task(id: attachment.name) { await loadPreview() }
     }
 
-    /// Thumbnails are served from a Google CDN URL that needs no auth header, unlike
-    /// the media endpoint used for the full download.
-    private var thumbnailURL: URL? {
-        attachment.thumbnailURI.flatMap(URL.init(string:))
+    @ViewBuilder
+    private var imagePreview: some View {
+        if let preview {
+            Image(nsImage: preview)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 320, maxHeight: 240)
+                .clipShape(.rect(cornerRadius: 8))
+                .accessibilityLabel(attachment.displayName)
+        } else if previewFailed {
+            // No permanent spinner: a preview that will never arrive should say so.
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary)
+                .frame(width: 180, height: 90)
+                .overlay {
+                    Label("Preview unavailable", systemImage: "photo.badge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+        } else {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary)
+                .frame(width: 180, height: 90)
+                .overlay { ProgressView().controlSize(.small) }
+        }
+    }
+
+    /// Fetches image bytes through the authenticated media endpoint.
+    ///
+    /// `thumbnailUri` is not usable here. Google documents it as a link for a *human*
+    /// in a browser and explicitly tells apps not to fetch it — handing it to
+    /// `AsyncImage`, which sends no `Authorization` header, is why image attachments
+    /// previously sat on a spinner forever.
+    private func loadPreview() async {
+        guard attachment.isImage, preview == nil, !previewFailed else { return }
+        guard let resource = attachment.dataResourceName else {
+            previewFailed = true
+            return
+        }
+        do {
+            let data = try await session.downloadAttachment(resourceName: resource)
+            if let image = NSImage(data: data) {
+                preview = image
+            } else {
+                previewFailed = true
+            }
+        } catch {
+            previewFailed = true
+        }
     }
 
     private var fileRow: some View {
@@ -69,17 +106,15 @@ private struct AttachmentChip: View {
             if isDownloading {
                 ProgressView().controlSize(.small)
             } else if attachment.isDownloadable {
-                Button {
-                    save()
-                } label: {
+                Button(action: save) {
                     Image(systemName: "arrow.down.circle")
                 }
                 .buttonStyle(.plain)
                 .help("Save to…")
                 .accessibilityLabel("Download \(attachment.displayName)")
             } else if let uri = attachment.downloadURI, let url = URL(string: uri) {
-                // Drive-hosted attachments have no media resource to fetch; the only
-                // way to open them is in the browser.
+                // Drive-hosted attachments have no media resource to fetch; opening
+                // the link in a browser is the only route.
                 Link(destination: url) {
                     Image(systemName: "arrow.up.forward.square")
                 }

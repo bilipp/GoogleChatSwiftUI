@@ -78,9 +78,13 @@ nonisolated struct ChatThread: Decodable, Sendable, Hashable {
 }
 
 nonisolated struct ChatAttachment: Decodable, Sendable, Hashable {
-    /// Pointer used by `media.download`; distinct from the user-facing `downloadUri`.
-    nonisolated struct DataRef: Decodable, Sendable, Hashable {
-        let resourceName: String?
+    /// Pointer used by `media.download`, and the token returned by `media.upload`.
+    /// Codable in both directions because an upload's ref is sent straight back in
+    /// the message create request.
+    nonisolated struct DataRef: Codable, Sendable, Hashable {
+        var resourceName: String?
+        /// Returned by `media.upload`; the only field a create request needs.
+        var attachmentUploadToken: String?
     }
 
     let name: String?
