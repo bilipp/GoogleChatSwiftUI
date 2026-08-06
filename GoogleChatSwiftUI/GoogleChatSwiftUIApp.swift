@@ -39,7 +39,10 @@ struct GoogleChatSwiftUIApp: App {
                 .environment(auth)
                 .task { await auth.restore() }
         }
-        .defaultSize(width: 1100, height: 720)
+        // Wide enough for sidebar + transcript + thread inspector simultaneously;
+        // at 1100 the transcript was squeezed to a few words per line once a thread
+        // was open.
+        .defaultSize(width: 1360, height: 820)
         .modelContainer(container)
     }
 }

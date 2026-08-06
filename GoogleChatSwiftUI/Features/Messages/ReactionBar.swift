@@ -3,12 +3,9 @@ import SwiftUI
 /// Emoji reaction chips under a message, plus an add-reaction button.
 struct ReactionBar: View {
     let reactions: [CachedReaction]
-    let isOwn: Bool
+    /// The user's most-used emoji, seeded with defaults until they have history.
+    let suggestions: [String]
     let onToggle: (String) -> Void
-
-    /// The set Chat itself offers in its quick picker. A full emoji picker is
-    /// available through the system palette; these cover the common cases in one tap.
-    private static let quickPicks = ["👍", "❤️", "😂", "🎉", "👀", "🙏", "✅", "😢"]
 
     @State private var isPickerPresented = false
 
@@ -82,20 +79,30 @@ struct ReactionBar: View {
     }
 
     private var picker: some View {
-        HStack(spacing: 2) {
-            ForEach(Self.quickPicks, id: \.self) { emoji in
-                Button {
-                    isPickerPresented = false
-                    onToggle(emoji)
-                } label: {
-                    Text(emoji)
-                        .font(.title3)
-                        .padding(5)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 2) {
+                ForEach(suggestions, id: \.self) { emoji in
+                    Button {
+                        isPickerPresented = false
+                        onToggle(emoji)
+                    } label: {
+                        Text(emoji)
+                            .font(.title3)
+                            .padding(5)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("React with \(emoji)")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("React with \(emoji)")
+            }
+            .padding(.horizontal, 6)
+            .padding(.top, 6)
+
+            Divider()
+
+            EmojiPicker { emoji in
+                isPickerPresented = false
+                onToggle(emoji)
             }
         }
-        .padding(6)
     }
 }

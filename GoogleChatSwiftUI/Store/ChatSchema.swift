@@ -34,6 +34,7 @@ final class CachedSpace {
 
     var displayName: String?
     var spaceTypeRaw: String?
+    var threadingStateRaw: String?
     var spaceDescription: String?
     var createTime: Date?
     var lastActiveTime: Date?
@@ -85,9 +86,15 @@ final class CachedSpace {
         return spaceType == .directMessage || spaceType == .groupChat
     }
 
+    /// Only fully threaded spaces hide replies from the main transcript. Chat itself
+    /// renders grouped and unthreaded spaces as one flat conversation, so mirroring
+    /// that avoids the app disagreeing with the web client about where a reply lives.
+    var isThreaded: Bool { threadingStateRaw == "THREADED_MESSAGES" }
+
     func apply(_ remote: ChatSpace) {
         displayName = remote.displayName
         spaceTypeRaw = remote.spaceType?.rawValue
+        threadingStateRaw = remote.spaceThreadingState
         spaceDescription = remote.spaceDetails?.description
         createTime = remote.createTime
         lastActiveTime = remote.lastActiveTime

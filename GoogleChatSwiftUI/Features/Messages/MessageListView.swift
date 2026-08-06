@@ -15,10 +15,12 @@ struct MessageListView: View {
 
     private let spaceName: String
     private let spaceTitle: String
+    private let isThreaded: Bool
 
-    init(spaceName: String, spaceTitle: String) {
+    init(spaceName: String, spaceTitle: String, isThreaded: Bool) {
         self.spaceName = spaceName
         self.spaceTitle = spaceTitle
+        self.isThreaded = isThreaded
         _messages = Query(
             filter: #Predicate<CachedMessage> { $0.space?.name == spaceName },
             sort: [SortDescriptor(\CachedMessage.createTime, order: .forward)]
@@ -66,7 +68,7 @@ struct MessageListView: View {
                         .background(.quaternary)
                 }
                 MessageComposer(
-                    spaceTitle: spaceTitle,
+                    placeholder: "Message \(spaceTitle)",
                     isSending: session.isSending(spaceName)
                 ) { text in
                     Task { await session.send(text, to: spaceName) }
@@ -97,7 +99,9 @@ struct MessageListView: View {
                                 isOwn: entry.isOwn,
                                 isFirstInGroup: entry.isFirstInGroup,
                                 isLastInGroup: entry.isLastInGroup,
-                                spaceName: spaceName
+                                spaceName: spaceName,
+                                threadReplyCount: threadReplyCount(for: entry.message),
+                                onOpenThread: isThreaded ? { openThread(entry.message) } : nil
                             )
                             .id(entry.message.name)
                         }
@@ -127,6 +131,17 @@ struct MessageListView: View {
         message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
     }
 
+    private func threadReplyCount(for message: CachedMessage) -> Int {
+        guard isThreaded, let thread = message.threadName else { return 0 }
+        return replyCounts[thread] ?? 0
+    }
+
+    private func openThread(_ message: CachedMessage) {
+        // Chat assigns every message a thread, so a root with no replies yet is
+        // still a valid target — replying to it starts the thread.
+        session.openThread(message.threadName)
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         guard let last = messages.last else { return }
         proxy.scrollTo(last.name, anchor: .bottom)
@@ -147,6 +162,25 @@ struct MessageListView: View {
         let entries: [Entry]
     }
 
+    /// In a fully threaded space, replies belong to the thread pane, not the main
+    /// flow — otherwise every reply appears twice and the room becomes unreadable.
+    /// Grouped and unthreaded spaces stay flat, matching Chat's own rendering.
+    private var visibleMessages: [CachedMessage] {
+        guard isThreaded else { return messages }
+        return messages.filter { !$0.isThreadReply }
+    }
+
+    /// Reply counts per thread, computed once rather than per row.
+    private var replyCounts: [String: Int] {
+        guard isThreaded else { return [:] }
+        var counts: [String: Int] = [:]
+        for message in messages where message.isThreadReply {
+            guard let thread = message.threadName else { continue }
+            counts[thread, default: 0] += 1
+        }
+        return counts
+    }
+
     /// Messages bucketed by day, then annotated with sender-run position.
     ///
     /// Written imperatively: the equivalent chained `Dictionary(grouping:)` and
@@ -156,7 +190,7 @@ struct MessageListView: View {
         let calendar = Calendar.current
         var buckets: [Date: [CachedMessage]] = [:]
 
-        for message in messages {
+        for message in visibleMessages {
             let timestamp = message.createTime ?? Date.distantPast
             buckets[calendar.startOfDay(for: timestamp), default: []].append(message)
         }

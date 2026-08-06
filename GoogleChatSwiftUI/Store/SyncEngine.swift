@@ -238,11 +238,13 @@ nonisolated struct SyncEngine: Sendable {
     /// and offers no field that would. So a toggle first lists the message's
     /// reactions to find your own — one extra call, paid only on interaction rather
     /// than on every message load.
+    /// - Returns: whether the reaction was added (as opposed to removed).
+    @discardableResult
     func toggleReaction(
         emoji: String,
         on messageName: String,
         selfChatName: String?
-    ) async throws {
+    ) async throws -> Bool {
         let listing = try await client.listReactions(messageName: messageName)
         let reactions = listing.reactions ?? []
 
@@ -250,12 +252,15 @@ nonisolated struct SyncEngine: Sendable {
             reaction.emoji?.display == emoji && reaction.user?.name == selfChatName
         }
 
+        let didAdd: Bool
         if let mine, let name = mine.name {
             try await client.deleteReaction(name: name)
             try await store.setMyReaction(nil, emoji: emoji, on: messageName)
+            didAdd = false
         } else {
             let created = try await client.createReaction(messageName: messageName, unicode: emoji)
             try await store.setMyReaction(created.name, emoji: emoji, on: messageName)
+            didAdd = true
         }
 
         // Re-read so counts reflect everyone's reactions, not just the local nudge.
@@ -265,6 +270,7 @@ nonisolated struct SyncEngine: Sendable {
             for: messageName,
             selfChatName: selfChatName
         )
+        return didAdd
     }
 
     // MARK: - Attachments

@@ -28,9 +28,13 @@ final class ChatSessionModel {
     var filter: SpaceFilter = .recent
     var searchText: String = ""
     var selectedSpaceName: String?
+    /// Thread currently open in the inspector, e.g. `spaces/A/threads/B`.
+    var selectedThreadName: String?
 
     private(set) var sendingSpaceNames: Set<String> = []
     private(set) var realtimeStatus: RealtimeCoordinator.Status = .stopped
+    /// The user's own reaction history, driving the quick-pick row.
+    let recentEmoji = RecentEmojiStore()
 
     private let sync: SyncEngine
     private let realtime: RealtimeCoordinator
@@ -115,6 +119,7 @@ final class ChatSessionModel {
     /// Called when a space is selected. Fetches history only if nothing is cached,
     /// which is what keeps 762 spaces affordable.
     func openSpace(_ spaceName: String) async {
+        if selectedSpaceName != spaceName { selectedThreadName = nil }
         selectedSpaceName = spaceName
         messageError = nil
         guard !loadingSpaceNames.contains(spaceName) else { return }
@@ -153,7 +158,13 @@ final class ChatSessionModel {
 
     // MARK: - Writes
 
-    func send(_ text: String, to spaceName: String) async {
+    /// Opens a thread in the inspector. Selecting a different space closes it, since
+    /// a thread from another conversation would be stale context.
+    func openThread(_ threadName: String?) {
+        selectedThreadName = threadName
+    }
+
+    func send(_ text: String, to spaceName: String, threadName: String? = nil) async {
         messageError = nil
         sendingSpaceNames.insert(spaceName)
         defer { sendingSpaceNames.remove(spaceName) }
@@ -162,6 +173,7 @@ final class ChatSessionModel {
             try await sync.send(
                 text: text,
                 to: spaceName,
+                threadName: threadName,
                 senderName: profile?.chatUserName,
                 senderDisplayName: profile?.displayName
             )
@@ -218,11 +230,14 @@ final class ChatSessionModel {
     func toggleReaction(_ emoji: String, on messageName: String) async {
         messageError = nil
         do {
-            try await sync.toggleReaction(
+            let didAdd = try await sync.toggleReaction(
                 emoji: emoji,
                 on: messageName,
                 selfChatName: profile?.chatUserName
             )
+            // Recorded only on success and only on add: a failed call is not a
+            // preference, and removing a reaction is not a signal to suggest it.
+            if didAdd { recentEmoji.record(emoji) }
         } catch {
             logger.error("Reaction toggle failed: \(error.localizedDescription)")
             messageError = error.localizedDescription

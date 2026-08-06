@@ -18,17 +18,26 @@ struct MessageBubble: View {
     let isFirstInGroup: Bool
     let isLastInGroup: Bool
     let spaceName: String
+    /// Replies beneath this message's thread. Zero in unthreaded spaces.
+    var threadReplyCount: Int = 0
+    /// Non-nil only in threaded spaces, where a thread pane makes sense.
+    var onOpenThread: (() -> Void)?
+    /// Set in the thread inspector, which is far narrower than the main transcript.
+    var isCompact: Bool = false
 
     @State private var isEditing = false
-    @State private var isHovering = false
+    @State private var isEmojiPickerPresented = false
     @State private var draft = ""
 
-    private let maxBubbleWidth: CGFloat = 520
+    /// The opposite-side gutter that keeps own and other messages visibly aligned to
+    /// their sides. In a narrow pane a fixed 48pt gutter eats the text instead.
+    private var gutter: CGFloat { isCompact ? 12 : 48 }
+    private var maxBubbleWidth: CGFloat { isCompact ? 380 : 520 }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if isOwn {
-                Spacer(minLength: 48)
+                Spacer(minLength: gutter)
             } else {
                 // Reserve the avatar's width on continuation rows so bubbles in a
                 // block stay flush with each other.
@@ -53,16 +62,23 @@ struct MessageBubble: View {
                     AttachmentList(attachments: message.attachments, isOwn: isOwn)
                 }
 
-                if !message.reactions.isEmpty || isHovering {
+                // Everything below is height-stable: nothing appears on hover, because
+                // revealing controls inline reflows every message beneath the cursor.
+                // The hover-only actions live in the context menu instead.
+                if !message.reactions.isEmpty {
                     ReactionBar(
                         reactions: message.reactions,
-                        isOwn: isOwn
+                        suggestions: session.recentEmoji.suggestions
                     ) { emoji in
                         Task { await session.toggleReaction(emoji, on: message.name) }
                     }
                 }
 
-                if isLastInGroup || isHovering {
+                if threadReplyCount > 0, let onOpenThread {
+                    threadRepliesButton(onOpenThread)
+                }
+
+                if isLastInGroup {
                     metadata
                 }
 
@@ -72,11 +88,10 @@ struct MessageBubble: View {
             }
             .frame(maxWidth: maxBubbleWidth, alignment: isOwn ? .trailing : .leading)
 
-            if !isOwn { Spacer(minLength: 48) }
+            if !isOwn { Spacer(minLength: gutter) }
         }
         .frame(maxWidth: .infinity, alignment: isOwn ? .trailing : .leading)
         .padding(.vertical, isFirstInGroup ? 4 : 1)
-        .onHover { isHovering = $0 }
         .contextMenu { contextMenu }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityDescription)
@@ -113,11 +128,19 @@ struct MessageBubble: View {
             .font(.body)
             .italic(message.isDeleted)
             .foregroundStyle(foreground)
-            .textSelection(.enabled)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(background, in: shape)
+            // Without an explicit hit shape, right-clicks land on the transparent
+            // gaps between glyphs rather than the bubble.
+            .contentShape(shape)
             .opacity(message.isPending ? 0.55 : 1)
+            .popover(isPresented: $isEmojiPickerPresented, arrowEdge: .bottom) {
+                EmojiPicker { emoji in
+                    isEmojiPickerPresented = false
+                    Task { await session.toggleReaction(emoji, on: message.name) }
+                }
+            }
     }
 
     /// Square off the inner corner on the sender's side so a run of messages reads
@@ -185,6 +208,24 @@ struct MessageBubble: View {
         }
     }
 
+    /// Shown only when a thread actually exists, since a reply count is real
+    /// information rather than an affordance. Starting a new thread is a context-menu
+    /// action so it costs no vertical space.
+    private func threadRepliesButton(_ open: @escaping () -> Void) -> some View {
+        Button(action: open) {
+            HStack(spacing: 4) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.caption2)
+                Text(threadReplyCount == 1 ? "1 reply" : "\(threadReplyCount) replies")
+                    .font(.caption.weight(.medium))
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
+        .padding(.top, 1)
+        .accessibilityLabel("Open thread, \(threadReplyCount) replies")
+    }
+
     private func failureBanner(_ reason: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -209,10 +250,42 @@ struct MessageBubble: View {
 
     @ViewBuilder
     private var contextMenu: some View {
-        Button("Copy") {
+        // Continuation rows show no inline timestamp, so the menu carries the full
+        // one — otherwise the exact time of most messages would be unreachable.
+        if let created = message.createTime {
+            Text(created.formatted(date: .abbreviated, time: .standard))
+        }
+
+        if !message.isDeleted && !message.isPending {
+            Menu("Add Reaction") {
+                ForEach(session.recentEmoji.suggestions, id: \.self) { emoji in
+                    Button(emoji) {
+                        Task { await session.toggleReaction(emoji, on: message.name) }
+                    }
+                }
+                Divider()
+                // A context menu can't host the grid picker, so this opens it as a
+                // popover anchored on the bubble.
+                Button("More…") { isEmojiPickerPresented = true }
+            }
+
+            if let onOpenThread {
+                Button(
+                    threadReplyCount > 0 ? "Open Thread" : "Reply in Thread",
+                    systemImage: "arrowshape.turn.up.left"
+                ) {
+                    onOpenThread()
+                }
+            }
+        }
+
+        Divider()
+
+        Button("Copy Text") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(message.displayText, forType: .string)
         }
+
         // Chat permits editing and deleting only your own messages, so offering
         // these on someone else's would be a guaranteed 403.
         if isOwn && !message.isDeleted && !message.isPending {

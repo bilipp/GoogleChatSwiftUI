@@ -41,6 +41,9 @@ nonisolated struct ChatSpace: Decodable, Sendable, Hashable, Identifiable {
     /// Resource name, e.g. `spaces/AAAA1111`.
     let name: String
     let spaceType: SpaceType?
+    /// `THREADED_MESSAGES`, `GROUPED_MESSAGES`, or `UNTHREADED_MESSAGES`. Only the
+    /// first keeps replies out of the main flow.
+    let spaceThreadingState: String?
     let singleUserBotDm: Bool?
     let displayName: String?
     let spaceDetails: Details?

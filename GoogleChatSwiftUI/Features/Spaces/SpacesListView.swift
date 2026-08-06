@@ -19,7 +19,20 @@ struct SpacesListView: View {
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300)
         } detail: {
             if let selected = selectedSpace {
-                MessageListView(spaceName: selected.name, spaceTitle: selected.title)
+                MessageListView(
+                    spaceName: selected.name,
+                    spaceTitle: selected.title,
+                    isThreaded: selected.isThreaded
+                )
+                .inspector(isPresented: threadBinding) {
+                    if let thread = session.selectedThreadName {
+                        ThreadPane(spaceName: selected.name, threadName: thread)
+                            // The inspector's default width is sized for property
+                            // panels, not a conversation — bubbles plus an avatar
+                            // need real room or they collapse to a few words a line.
+                            .inspectorColumnWidth(min: 380, ideal: 460, max: 760)
+                    }
+                }
             } else {
                 ContentUnavailableView(
                     "No Conversation Selected",
@@ -41,6 +54,15 @@ struct SpacesListView: View {
             // space should catch up immediately rather than waiting for the next event.
             Task { await session.reconcileSelectedSpace() }
         }
+    }
+
+    /// The inspector's own dismiss control clears the selected thread, keeping the
+    /// model in step with a close the user performed via the window chrome.
+    private var threadBinding: Binding<Bool> {
+        Binding(
+            get: { session.selectedThreadName != nil },
+            set: { shown in if !shown { session.openThread(nil) } }
+        )
     }
 
     private var selectedSpace: CachedSpace? {

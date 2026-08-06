@@ -7,7 +7,7 @@ import SwiftUI
 /// `NSViewRepresentable` wrapper. Phase 7 replaces this with an `NSTextView` bridge
 /// once @-mention autocomplete and paste-to-attach are needed.
 struct MessageComposer: View {
-    let spaceTitle: String
+    let placeholder: String
     let isSending: Bool
     let onSend: (String) -> Void
 
@@ -16,14 +16,14 @@ struct MessageComposer: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message \(spaceTitle)", text: $text, axis: .vertical)
+            TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...12)
                 .focused($isFocused)
                 .padding(8)
                 .background(.quaternary, in: .rect(cornerRadius: 8))
                 .onSubmit(send)
-                .accessibilityLabel("Message \(spaceTitle)")
+                .accessibilityLabel(placeholder)
 
             Button(action: send) {
                 if isSending {
@@ -59,6 +59,6 @@ struct MessageComposer: View {
 }
 
 #Preview {
-    MessageComposer(spaceTitle: "Engineering", isSending: false, onSend: { _ in })
+    MessageComposer(placeholder: "Message Engineering", isSending: false, onSend: { _ in })
         .frame(width: 600)
 }
