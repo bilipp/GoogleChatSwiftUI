@@ -92,8 +92,9 @@ struct MessageBubble: View {
         }
         .frame(maxWidth: .infinity, alignment: isOwn ? .trailing : .leading)
         .padding(.vertical, isFirstInGroup ? 4 : 1)
-        .contextMenu { contextMenu }
-        .accessibilityElement(children: .combine)
+        // Deliberately not `.combine`: combining children replaces the selectable
+        // Text with a single synthetic element and drag-selection stops working.
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
     }
 
@@ -128,12 +129,18 @@ struct MessageBubble: View {
             .font(.body)
             .italic(message.isDeleted)
             .foregroundStyle(foreground)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            // Selectable text claims right-click for the system's own text menu, so
+            // our menu is reachable from the padding around it rather than the glyphs.
+            // The two cannot coexist on one view; selection wins here because reading
+            // and quoting part of a message matters more than menu reach.
+            .textSelection(.enabled)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
             .background(background, in: shape)
-            // Without an explicit hit shape, right-clicks land on the transparent
-            // gaps between glyphs rather than the bubble.
+            // Without an explicit hit shape the padding is not hit-testable, and
+            // right-clicks fall straight through the bubble.
             .contentShape(shape)
+            .contextMenu { contextMenu }
             .opacity(message.isPending ? 0.55 : 1)
             .popover(isPresented: $isEmojiPickerPresented, arrowEdge: .bottom) {
                 EmojiPicker { emoji in
