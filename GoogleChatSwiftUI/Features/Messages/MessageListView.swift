@@ -77,18 +77,19 @@ struct MessageListView: View {
         }
     }
 
+    /// Anchored at the bottom by the scroll view itself rather than by scrolling to
+    /// the last message after the fact.
+    ///
+    /// The previous approach jumped in four separate ways: `onAppear` fired before the
+    /// lazy stack had laid anything out so `scrollTo` was a no-op leaving the view at
+    /// the top; the animated `scrollTo` on the last message changing fired while
+    /// switching spaces; opening the thread inspector changed the width and the lazy
+    /// stack lost its position on relayout; and a spinner inside the scroll content
+    /// shifted every message down and back up as it came and went.
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if session.isLoading(spaceName) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity)
-                            .padding(8)
-                    }
-
-                    ForEach(days, id: \.day) { group in
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(days, id: \.day) { group in
                         DayDivider(day: group.day)
 
                         ForEach(group.entries, id: \.message.name) { entry in
@@ -106,14 +107,25 @@ struct MessageListView: View {
                             .id(entry.message.name)
                         }
                     }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .onAppear { scrollToBottom(proxy) }
-            .onChange(of: messages.last?.name) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy) }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        // Start at the newest message, without a scroll animation to get there.
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        // Hold that anchor through content growth and, critically, through the width
+        // change when the thread inspector opens.
+        .defaultScrollAnchor(.bottom, for: .sizeChanges)
+        // Outside the scroll content on purpose: inside, its appearance and removal
+        // displaced every message below it.
+        .overlay(alignment: .top) {
+            if session.isLoading(spaceName) {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(6)
+                    .background(.regularMaterial, in: .capsule)
+                    .padding(.top, 6)
             }
         }
     }
@@ -140,11 +152,6 @@ struct MessageListView: View {
         // Chat assigns every message a thread, so a root with no replies yet is
         // still a valid target — replying to it starts the thread.
         session.openThread(message.threadName)
-    }
-
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        guard let last = messages.last else { return }
-        proxy.scrollTo(last.name, anchor: .bottom)
     }
 
     // MARK: - Grouping

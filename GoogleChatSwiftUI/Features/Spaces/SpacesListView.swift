@@ -25,9 +25,16 @@ struct SpacesListView: View {
                     spaceTitle: selected.title,
                     isThreaded: selected.isThreaded
                 )
+                // Identity tied to the space so switching conversations builds a fresh
+                // view. Without it SwiftUI reuses the instance and carries the previous
+                // space's scroll offset into the new transcript.
+                .id(selected.name)
                 .inspector(isPresented: threadBinding) {
                     if let thread = session.selectedThreadName {
                         ThreadPane(spaceName: selected.name, threadName: thread)
+                            // Likewise per thread, so reopening a different thread does
+                            // not inherit the last one's position.
+                            .id(thread)
                             // The inspector's default width is sized for property
                             // panels, not a conversation — bubbles plus an avatar
                             // need real room or they collapse to a few words a line.

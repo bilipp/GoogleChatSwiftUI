@@ -76,41 +76,38 @@ struct ThreadPane: View {
         return replies == 1 ? "1 reply" : "\(replies) replies"
     }
 
+    /// Same bottom-anchoring as the main transcript, for the same reason: scrolling to
+    /// the last message after layout produced a visible jump on every open.
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(messages.enumerated()), id: \.element.name) { index, message in
-                        // The root gets a separator beneath it so the distinction
-                        // between "the thing being discussed" and the discussion
-                        // stays visible while scrolling.
-                        MessageBubble(
-                            message: message,
-                            sender: sender(for: message),
-                            mentionNames: mentionNames(in: message),
-                            isOwn: session.isOwnMessage(message),
-                            isFirstInGroup: true,
-                            isLastInGroup: true,
-                            spaceName: spaceName,
-                            isCompact: true
-                        )
-                        .id(message.name)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(messages.enumerated()), id: \.element.name) { index, message in
+                    // The root gets a separator beneath it so the distinction
+                    // between "the thing being discussed" and the discussion
+                    // stays visible while scrolling.
+                    MessageBubble(
+                        message: message,
+                        sender: sender(for: message),
+                        mentionNames: mentionNames(in: message),
+                        isOwn: session.isOwnMessage(message),
+                        isFirstInGroup: true,
+                        isLastInGroup: true,
+                        spaceName: spaceName,
+                        isCompact: true
+                    )
+                    .id(message.name)
 
-                        if index == 0 && messages.count > 1 {
-                            Divider().padding(.vertical, 8)
-                        }
+                    if index == 0 && messages.count > 1 {
+                        Divider().padding(.vertical, 8)
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
             }
-            .onChange(of: messages.last?.name) { _, _ in
-                guard let last = messages.last else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(last.name, anchor: .bottom)
-                }
-            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
+        .scrollBounceBehavior(.basedOnSize)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(.bottom, for: .sizeChanges)
     }
 
     private var usersByID: [String: CachedUser] {
