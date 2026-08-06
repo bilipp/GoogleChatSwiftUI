@@ -190,6 +190,8 @@ Required changes:
 
 Each phase ends at something runnable, not a half-integrated layer.
 
+Status as of 2026-08-06: phases 0–6 complete, 7 and 8 partial.
+
 | # | Phase | Outcome |
 |---|---|---|
 | 0 | **Foundations** | Swift 6 mode, entitlements, URL scheme, folder structure, template cruft removed. Builds clean. |
@@ -228,9 +230,30 @@ naive design assumes, and it forces two decisions:
   across all 762. A flat list of that length is unusable, and most entries are dormant
   DMs that have not seen a message in years.
 
-## 8. Open items
+## 8. Remaining work
 
-- Exact max subscription TTL with resource data included — docs are vague; the renewal design is deliberately TTL-agnostic
+- **`cardsV2` rendering** — bot messages currently read "Card message"
+- **Attachment upload** — download works; upload does not
+- **Message search** — Chat has no search endpoint, so this must be local over cached history
+- **Pins**
+- **Menu-bar space selection** — clicking a conversation there activates the window but does not select the space; needs cross-scene selection state
 - Multi-account support is out of scope for v1; the auth layer keeps it possible without redesign
 
-**Resolved:** Chat API app configuration is *not* required for user-auth calls — see [`SETUP.md`](SETUP.md).
+## 9. API facts established the hard way
+
+Each of these cost a wrong assumption first, and each shaped the design:
+
+| Finding | Consequence |
+|---|---|
+| Chat never populates `displayName` — not on memberships, not on `Message.sender` | All names and photos come from the People API with `directory.readonly`; Chat IDs (`users/123`) map to People IDs (`people/123`) |
+| The `Space` resource has no avatar, icon, or emoji field | Spaces get generated tiles; the custom images on chat.google.com are unreachable |
+| `emojiReactionSummaries` gives counts but never says whether *you* reacted | Toggling lists a message's reactions first to find your own resource name |
+| Read state is a timestamp, with no unread count | Counts are derived from cached history; unbackfilled spaces get a dot, not a wrong number |
+| Chat API app configuration is *not* required for user-auth calls | No console work beyond consent screen + client — see [`SETUP.md`](SETUP.md) |
+| Drive-hosted attachments carry no `attachmentDataRef` | They open in a browser; there is no media resource to download |
+| Annotation `startIndex` units are unspecified (code points vs UTF-16) | Mentions are highlighted by name match, not by offset |
+| Subscription max TTL is undocumented and varies with `includeResource` | Renewal patches `ttl: 0` ("extend to maximum") on a timer, so the value never needs knowing |
+
+## 10. Project-wide gotcha
+
+`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` makes **every** unannotated type, extension, and closure main-actor isolated. Any `Codable` DTO, protocol conformance, or callback used off the main actor needs explicit `nonisolated`. This has bitten four times in different disguises, and only sometimes produces a compile error — `async` calls cross actors silently, so the failure mode is usually decoding on the main thread rather than a diagnostic.
