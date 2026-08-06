@@ -30,16 +30,44 @@ final class ChatSessionModel {
     var selectedSpaceName: String?
 
     private(set) var sendingSpaceNames: Set<String> = []
+    private(set) var realtimeStatus: RealtimeCoordinator.Status = .stopped
 
     private let sync: SyncEngine
+    private let realtime: RealtimeCoordinator
     private let profile: GoogleUserProfile?
     private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "session")
 
     init(tokenProvider: TokenProvider, container: ModelContainer, profile: GoogleUserProfile?) {
         let client = ChatClient(tokenProvider: tokenProvider)
         let store = ChatStore(modelContainer: container)
-        sync = SyncEngine(client: client, store: store)
+        let engine = SyncEngine(client: client, store: store)
+        sync = engine
+        realtime = RealtimeCoordinator(
+            transport: client.transport,
+            sync: engine,
+            store: store
+        )
         self.profile = profile
+    }
+
+    // MARK: - Realtime
+
+    func startRealtime() async {
+        await realtime.onStatusChange { [weak self] status in
+            Task { @MainActor in self?.realtimeStatus = status }
+        }
+        await realtime.start()
+    }
+
+    func stopRealtime() async {
+        await realtime.stop()
+    }
+
+    /// Closes gaps the event stream may have dropped while the app was asleep or
+    /// offline. Events are best-effort, so this is not optional.
+    func reconcileSelectedSpace() async {
+        guard let spaceName = selectedSpaceName else { return }
+        await realtime.reconcile(spaceName: spaceName)
     }
 
     func refreshSpaces() async {

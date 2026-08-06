@@ -28,6 +28,16 @@ struct SpacesListView: View {
         }
         .task {
             if case .idle = session.spacesState { await session.refreshSpaces() }
+            await session.startRealtime()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSWorkspace.didWakeNotification
+            )
+        ) { _ in
+            // Pub/Sub retains 24h, so nothing is lost across sleep, but the open
+            // space should catch up immediately rather than waiting for the next event.
+            Task { await session.reconcileSelectedSpace() }
         }
     }
 
@@ -52,6 +62,9 @@ struct SpacesListView: View {
         }
         .searchable(text: $session.searchText, prompt: "Search all \(allSpaces.count) spaces")
         .overlay { emptyOverlay }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            RealtimeStatusBar(status: session.realtimeStatus)
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             Picker("Filter", selection: $session.filter) {
                 ForEach(SpaceFilter.allCases) { filter in
