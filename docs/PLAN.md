@@ -190,7 +190,7 @@ Required changes:
 
 Each phase ends at something runnable, not a half-integrated layer.
 
-Status as of 2026-08-06: phases 0–6 complete, 7 and 8 partial.
+Status as of 2026-08-06: phases 0–7 complete, 8 partial.
 
 | # | Phase | Outcome |
 |---|---|---|
@@ -232,7 +232,6 @@ naive design assumes, and it forces two decisions:
 
 ## 8. Remaining work
 
-- **`cardsV2` rendering** — bot messages currently read "Card message"
 - **Attachment upload** — download works; upload does not
 - **Message search** — Chat has no search endpoint, so this must be local over cached history
 - **Pins**
@@ -253,6 +252,7 @@ Each of these cost a wrong assumption first, and each shaped the design:
 | Drive-hosted attachments carry no `attachmentDataRef` | They open in a browser; there is no media resource to download |
 | Annotation `startIndex` units are unspecified (code points vs UTF-16) | Mentions are highlighted by name match, not by offset |
 | Subscription max TTL is undocumented and varies with `includeResource` | Renewal patches `ttl: 0` ("extend to maximum") on a timer, so the value never needs knowing |
+| Card `onClick.action` calls back into the app that sent the card | Interactive card content is unreachable as a user: link buttons work, action buttons and form widgets render disabled |
 
 ## 10. Project-wide gotcha
 
