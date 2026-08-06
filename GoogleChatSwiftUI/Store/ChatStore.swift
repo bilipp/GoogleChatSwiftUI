@@ -130,6 +130,91 @@ actor ChatStore {
         try modelContext.save()
     }
 
+    // MARK: - Read state
+
+    /// Spaces worth checking read state for, most recently active first.
+    ///
+    /// Bounded and activity-ordered: read state is one call per space, and checking
+    /// all 762 on every launch would cost more than the badges are worth. Dormant
+    /// spaces are almost never unread anyway.
+    func spacesNeedingReadState(limit: Int, activeSince: Date) throws -> [String] {
+        var descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { space in
+                !space.didFetchReadState && space.lastActiveTime != nil
+            },
+            sortBy: [SortDescriptor(\.lastActiveTime, order: .reverse)]
+        )
+        descriptor.fetchLimit = limit
+        return try modelContext.fetch(descriptor)
+            .filter { ($0.lastActiveTime ?? .distantPast) >= activeSince }
+            .map(\.name)
+    }
+
+    func applyReadState(_ lastReadTime: Date?, for spaceName: String) throws {
+        guard let space = try space(named: spaceName) else { return }
+        space.lastReadTime = lastReadTime
+        space.didFetchReadState = true
+        space.unreadCount = Self.countUnread(in: space, after: lastReadTime)
+        try modelContext.save()
+    }
+
+    /// Counts cached messages newer than the read mark, excluding tombstones.
+    ///
+    /// This is a floor, not a truth: a space whose history has not been backfilled
+    /// reports zero even when unread. `hasUnread` covers that case from timestamps
+    /// alone, so the badge shows a dot rather than a wrong number.
+    private static func countUnread(in space: CachedSpace, after mark: Date?) -> Int {
+        guard let mark else { return 0 }
+        return space.messages.count { message in
+            guard let created = message.createTime, !message.isDeleted else { return false }
+            return created > mark
+        }
+    }
+
+    /// Clears unread locally after the server has accepted a read update.
+    func markReadLocally(spaceName: String, at time: Date) throws {
+        guard let space = try space(named: spaceName) else { return }
+        space.lastReadTime = time
+        space.didFetchReadState = true
+        space.unreadCount = 0
+        try modelContext.save()
+    }
+
+    /// Bumps the unread counter for a message that arrived while elsewhere.
+    /// - Returns: whether the message counted as unread.
+    @discardableResult
+    func noteIncomingMessage(
+        _ message: ChatMessage,
+        in spaceName: String,
+        selfChatName: String?
+    ) throws -> Bool {
+        guard let space = try space(named: spaceName) else { return false }
+        // Your own messages are never unread, and neither is anything at or before
+        // the read mark — realtime can redeliver.
+        guard message.sender?.name != selfChatName else { return false }
+        guard let created = message.createTime else { return false }
+        if let mark = space.lastReadTime, created <= mark { return false }
+
+        space.unreadCount += 1
+        try modelContext.save()
+        return true
+    }
+
+    func unreadSpaceNames() throws -> [String] {
+        let descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { $0.unreadCount > 0 }
+        )
+        return try modelContext.fetch(descriptor).map(\.name)
+    }
+
+    /// Total unread across every space, for the menu bar.
+    func totalUnread() throws -> Int {
+        let descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { $0.unreadCount > 0 }
+        )
+        return try modelContext.fetch(descriptor).reduce(0) { $0 + $1.unreadCount }
+    }
+
     // MARK: - Messages
 
     /// Inserts a page of history and advances the space's backfill cursor.

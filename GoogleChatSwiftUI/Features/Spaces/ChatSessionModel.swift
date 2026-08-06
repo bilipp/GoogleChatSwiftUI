@@ -33,8 +33,10 @@ final class ChatSessionModel {
 
     private(set) var sendingSpaceNames: Set<String> = []
     private(set) var realtimeStatus: RealtimeCoordinator.Status = .stopped
+    private(set) var totalUnread = 0
     /// The user's own reaction history, driving the quick-pick row.
     let recentEmoji = RecentEmojiStore()
+    private let notifications = NotificationService()
 
     private let sync: SyncEngine
     private let realtime: RealtimeCoordinator
@@ -57,10 +59,56 @@ final class ChatSessionModel {
     // MARK: - Realtime
 
     func startRealtime() async {
+        await realtime.setSelfChatName(profile?.chatUserName)
         await realtime.onStatusChange { [weak self] status in
             Task { @MainActor in self?.realtimeStatus = status }
         }
+        await realtime.onIncomingMessage { [weak self] incoming in
+            Task { @MainActor in await self?.handleIncoming(incoming) }
+        }
+        await notifications.requestAuthorization()
         await realtime.start()
+        await refreshUnread()
+    }
+
+    /// Notifies and re-badges for a message that arrived from the event stream.
+    private func handleIncoming(_ incoming: RealtimeCoordinator.IncomingMessage) async {
+        await notifications.notify(
+            spaceTitle: incoming.spaceName,
+            senderName: nil,
+            body: incoming.body,
+            spaceName: incoming.spaceName,
+            // Suppressed for the conversation already on screen — an alert for
+            // something the user is looking at is pure noise.
+            isSpaceVisible: incoming.spaceName == selectedSpaceName
+        )
+        await refreshUnread()
+    }
+
+    /// Recomputes the badge total from the cache.
+    func refreshUnread() async {
+        do {
+            totalUnread = try await sync.totalUnread()
+            await notifications.setBadge(totalUnread)
+        } catch {
+            logger.error("Unread tally failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Fetches read state in bounded passes, like title resolution.
+    func loadReadStates() async {
+        for _ in 0..<40 {
+            if Task.isCancelled { return }
+            do {
+                guard try await sync.pendingReadStateCount() > 0 else { break }
+                try await sync.refreshReadStates()
+                try? await Task.sleep(for: .milliseconds(250))
+            } catch {
+                logger.error("Read state pass failed: \(error.localizedDescription)")
+                break
+            }
+        }
+        await refreshUnread()
     }
 
     func stopRealtime() async {
@@ -129,9 +177,26 @@ final class ChatSessionModel {
 
         do {
             try await sync.loadInitialHistoryIfNeeded(for: spaceName)
+            // Opening a conversation is reading it. Best-effort: failing to clear the
+            // badge is not worth an error banner over the messages themselves.
+            try? await sync.markRead(spaceName: spaceName)
+            await refreshUnread()
         } catch {
             logger.error("History load failed for \(spaceName): \(error.localizedDescription)")
             messageError = error.localizedDescription
+        }
+    }
+
+    /// Marks every space with unread messages as read.
+    func markAllRead() async {
+        do {
+            let names = try await sync.unreadSpaceNames()
+            for name in names {
+                try? await sync.markRead(spaceName: name)
+            }
+            await refreshUnread()
+        } catch {
+            logger.error("Mark all read failed: \(error.localizedDescription)")
         }
     }
 

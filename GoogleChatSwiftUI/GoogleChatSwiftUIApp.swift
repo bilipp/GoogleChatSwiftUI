@@ -44,6 +44,16 @@ struct GoogleChatSwiftUIApp: App {
         // was open.
         .defaultSize(width: 1360, height: 820)
         .modelContainer(container)
+        .commands { ChatCommands() }
+
+        MenuBarExtra {
+            MenuBarContent()
+                .environment(auth)
+                .modelContainer(container)
+        } label: {
+            MenuBarLabel()
+                .environment(auth)
+        }
     }
 }
 

@@ -5,6 +5,7 @@ import Foundation
 /// This account has 762 spaces, the overwhelming majority dormant DMs. A flat list
 /// is unnavigable, so the default is activity-scoped and search reaches everything.
 enum SpaceFilter: String, CaseIterable, Identifiable, Sendable {
+    case unread
     case recent
     case all
     case spaces
@@ -14,6 +15,7 @@ enum SpaceFilter: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
+        case .unread: "Unread"
         case .recent: "Recent"
         case .all: "All"
         case .spaces: "Spaces"
@@ -23,6 +25,7 @@ enum SpaceFilter: String, CaseIterable, Identifiable, Sendable {
 
     var systemImage: String {
         switch self {
+        case .unread: "circle.badge.fill"
         case .recent: "clock"
         case .all: "tray.full"
         case .spaces: "number"
@@ -35,6 +38,8 @@ enum SpaceFilter: String, CaseIterable, Identifiable, Sendable {
 
     func matches(_ space: CachedSpace, now: Date) -> Bool {
         switch self {
+        case .unread:
+            return space.unreadCount > 0 || space.hasUnread
         case .all:
             return true
         case .recent:

@@ -57,6 +57,22 @@ final class CachedSpace {
     /// When this space's messages were last reconciled against the server.
     var lastSyncedAt: Date?
 
+    /// The signed-in user's read position, from the read-state API.
+    var lastReadTime: Date?
+    /// Distinguishes "read at the epoch" from "never fetched" — without it an
+    /// unfetched space would be indistinguishable from a fully unread one and every
+    /// space would light up as unread on first launch.
+    var didFetchReadState: Bool = false
+    /// Messages newer than `lastReadTime`, counted from cached history. Chat exposes
+    /// no unread count of its own, only a read timestamp.
+    var unreadCount: Int = 0
+
+    /// Only claimed when read state is actually known.
+    var hasUnread: Bool {
+        guard didFetchReadState, let lastReadTime, let lastActiveTime else { return false }
+        return lastActiveTime > lastReadTime
+    }
+
     /// Cascade: deleting a cached space should not orphan its messages.
     @Relationship(deleteRule: .cascade, inverse: \CachedMessage.space)
     var messages: [CachedMessage] = []

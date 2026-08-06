@@ -77,6 +77,15 @@ nonisolated extension ChatClient {
         try await delete(name)
     }
 
+    /// The signed-in user's read position in a space.
+    ///
+    /// Read state is per-caller: you can read and set your own and no one else's,
+    /// which is also why there are no read receipts anywhere in this app.
+    func spaceReadState(spaceName: String) async throws -> SpaceReadStateResponse {
+        let spaceID = spaceName.replacingOccurrences(of: "spaces/", with: "")
+        return try await get("users/me/spaces/\(spaceID)/spaceReadState", as: SpaceReadStateResponse.self)
+    }
+
     /// Marks a space read up to `time`.
     ///
     /// The read-state resource is per-caller: you can set your own and no one else's,

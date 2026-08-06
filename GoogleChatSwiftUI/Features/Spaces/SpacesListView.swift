@@ -10,6 +10,7 @@ struct SpacesListView: View {
     private var allSpaces: [CachedSpace]
     /// Directory profiles, for DM avatars. Chat supplies no images of its own.
     @Query private var users: [CachedUser]
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         @Bindable var session = session
@@ -44,6 +45,7 @@ struct SpacesListView: View {
         .task {
             if case .idle = session.spacesState { await session.refreshSpaces() }
             await session.startRealtime()
+            await session.loadReadStates()
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -53,6 +55,15 @@ struct SpacesListView: View {
             // Pub/Sub retains 24h, so nothing is lost across sleep, but the open
             // space should catch up immediately rather than waiting for the next event.
             Task { await session.reconcileSelectedSpace() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatRefreshSpaces)) { _ in
+            Task { await session.refreshSpaces() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatMarkAllRead)) { _ in
+            Task { await session.markAllRead() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatFocusSearch)) { _ in
+            isSearchFocused = true
         }
     }
 
@@ -85,6 +96,7 @@ struct SpacesListView: View {
             }
         }
         .searchable(text: $session.searchText, prompt: "Search all \(allSpaces.count) spaces")
+        .searchFocused($isSearchFocused)
         .overlay { emptyOverlay }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             RealtimeStatusBar(status: session.realtimeStatus)
@@ -175,6 +187,7 @@ private struct SpaceRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(space.title)
                     .lineLimit(1)
+                    .fontWeight(isUnread ? .semibold : .regular)
                 if let active = space.lastActiveTime {
                     Text(active.formatted(.relative(presentation: .named)))
                         .font(.caption)
@@ -182,10 +195,38 @@ private struct SpaceRow: View {
                 }
             }
             Spacer(minLength: 0)
+            unreadBadge
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(kind): \(space.title)")
+    }
+
+    private var isUnread: Bool { space.unreadCount > 0 || space.hasUnread }
+
+    /// A count when history is cached deeply enough to produce one, otherwise a dot.
+    ///
+    /// Chat exposes only a read timestamp, never an unread count, so the number is
+    /// derived from cached messages. A space whose history has not been backfilled
+    /// can be known-unread with a count of zero — showing "0" there would be a lie,
+    /// so it gets a dot instead.
+    @ViewBuilder
+    private var unreadBadge: some View {
+        if space.unreadCount > 0 {
+            Text("\(space.unreadCount)")
+                .font(.caption2.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.accentColor, in: .capsule)
+                .accessibilityLabel("\(space.unreadCount) unread")
+        } else if space.hasUnread {
+            Circle()
+                .fill(Color.accentColor)
+                .frame(width: 8, height: 8)
+                .accessibilityLabel("Unread")
+        }
     }
 
     /// A person's photo for DMs, a rounded tile for rooms. The shape difference is

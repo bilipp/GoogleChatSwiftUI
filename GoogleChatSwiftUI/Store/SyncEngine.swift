@@ -280,7 +280,65 @@ nonisolated struct SyncEngine: Sendable {
     }
 
     func markRead(spaceName: String) async throws {
-        try await client.markSpaceRead(spaceName: spaceName)
+        let now = Date()
+        try await client.markSpaceRead(spaceName: spaceName, upTo: now)
+        try await store.markReadLocally(spaceName: spaceName, at: now)
+    }
+
+    // MARK: - Read state
+
+    static let readStateBatch = 25
+
+    /// Read state is only checked for spaces active in the last 90 days.
+    ///
+    /// A space nobody has posted in for months is not going to be unread, and at 762
+    /// spaces the calls to prove that would dwarf everything else the app does.
+    static let readStateWindow: TimeInterval = 60 * 60 * 24 * 90
+
+    func pendingReadStateCount() async throws -> Int {
+        try await store.spacesNeedingReadState(
+            limit: Self.readStateBatch,
+            activeSince: Date().addingTimeInterval(-Self.readStateWindow)
+        ).count
+    }
+
+    /// Fetches read state for a batch of spaces concurrently.
+    func refreshReadStates() async throws {
+        let pending = try await store.spacesNeedingReadState(
+            limit: Self.readStateBatch,
+            activeSince: Date().addingTimeInterval(-Self.readStateWindow)
+        )
+        guard !pending.isEmpty else { return }
+
+        await withTaskGroup(of: (String, Date?, Bool).self) { group in
+            for spaceName in pending {
+                group.addTask {
+                    do {
+                        let state = try await self.client.spaceReadState(spaceName: spaceName)
+                        return (spaceName, state.lastReadTime, true)
+                    } catch {
+                        self.logger.error(
+                            "Read state failed for \(spaceName): \(error.localizedDescription)"
+                        )
+                        // Marked fetched anyway: a space whose read state cannot be
+                        // read would otherwise be retried on every pass forever.
+                        return (spaceName, nil, false)
+                    }
+                }
+            }
+            for await (spaceName, lastRead, _) in group {
+                try? await store.applyReadState(lastRead, for: spaceName)
+            }
+        }
+        logger.info("Fetched read state for \(pending.count) space(s)")
+    }
+
+    func totalUnread() async throws -> Int {
+        try await store.totalUnread()
+    }
+
+    func unreadSpaceNames() async throws -> [String] {
+        try await store.unreadSpaceNames()
     }
 
     /// Removes a failed placeholder that the user chose not to retry.

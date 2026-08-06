@@ -28,6 +28,19 @@ actor RealtimeCoordinator {
     private(set) var status: Status = .stopped
     private var statusHandler: (@Sendable (Status) -> Void)?
 
+    /// Details of a message that arrived from the event stream, for badging and
+    /// notifications. Carries only what the UI layer needs, so the coordinator does
+    /// not have to know about SwiftData models or notification policy.
+    nonisolated struct IncomingMessage: Sendable {
+        let spaceName: String
+        let senderChatName: String?
+        let body: String
+    }
+
+    private var incomingHandler: (@Sendable (IncomingMessage) -> Void)?
+    /// Identity of the signed-in user, so own messages are not counted or announced.
+    private var selfChatName: String?
+
     /// Pub/Sub synchronous pull often returns immediately when idle, so a short
     /// pause avoids a hot loop. Pull requests are cheap and, unlike polling the Chat
     /// API, cost no Chat quota — so this can stay tight enough to feel instant.
@@ -48,6 +61,14 @@ actor RealtimeCoordinator {
     func onStatusChange(_ handler: @escaping @Sendable (Status) -> Void) {
         statusHandler = handler
         handler(status)
+    }
+
+    func onIncomingMessage(_ handler: @escaping @Sendable (IncomingMessage) -> Void) {
+        incomingHandler = handler
+    }
+
+    func setSelfChatName(_ name: String?) {
+        selfChatName = name
     }
 
     private func setStatus(_ new: Status) {
@@ -155,16 +176,43 @@ actor RealtimeCoordinator {
 
     private func applyEvent(_ event: ChatEvent, touching spaces: inout Set<String>) async {
         switch event {
-        case .messageCreated(let message), .messageUpdated(let message):
+        case .messageCreated(let message):
             guard let space = event.spaceName else { return }
             do {
                 try await store.mergeMessages([message], into: space)
                 // Chat sends an ID with no display name, so an incoming message would
                 // otherwise appear as "Unknown" until the next full reload.
                 await sync.resolveSenders(from: [message])
+
+                let countsAsUnread = try await store.noteIncomingMessage(
+                    message,
+                    in: space,
+                    selfChatName: selfChatName
+                )
+                if countsAsUnread {
+                    incomingHandler?(
+                        IncomingMessage(
+                            spaceName: space,
+                            senderChatName: message.sender?.name,
+                            body: message.displayText
+                        )
+                    )
+                }
                 spaces.insert(space)
             } catch {
                 logger.error("Merging event message failed: \(error.localizedDescription)")
+            }
+
+        case .messageUpdated(let message):
+            // Edits must not badge or notify: the message was already accounted for
+            // when it first arrived.
+            guard let space = event.spaceName else { return }
+            do {
+                try await store.mergeMessages([message], into: space)
+                await sync.resolveSenders(from: [message])
+                spaces.insert(space)
+            } catch {
+                logger.error("Merging edited message failed: \(error.localizedDescription)")
             }
 
         case .messageDeleted(let name):
