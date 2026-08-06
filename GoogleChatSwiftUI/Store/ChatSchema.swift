@@ -125,6 +125,8 @@ final class CachedMessage {
     @Attribute(.unique) var name: String
 
     var text: String?
+    /// Chat's own plain-text stand-in for card messages.
+    var fallbackText: String?
     var createTime: Date?
     var lastUpdateTime: Date?
     var deleteTime: Date?
@@ -144,6 +146,14 @@ final class CachedMessage {
     /// Chat user IDs mentioned in this message, from its annotations.
     var mentionedUserIDs: [String] = []
 
+    /// `cardsV2` kept as raw JSON.
+    ///
+    /// Cards are a deeply nested, recursive tree of a dozen widget types. Modelling
+    /// that as SwiftData entities would be an enormous schema for data that is only
+    /// ever read and re-rendered, never queried or mutated — so it is stored as a
+    /// blob and decoded on demand.
+    var cardsJSON: Data?
+
     var space: CachedSpace?
 
     @Relationship(deleteRule: .cascade, inverse: \CachedReaction.message)
@@ -158,15 +168,48 @@ final class CachedMessage {
 
     var isDeleted: Bool { deleteTime != nil }
 
+    /// Decoded lazily and not cached: cards are rendered by SwiftUI, which already
+    /// re-evaluates only when the underlying row changes.
+    var cards: [ChatCard] {
+        guard let cardsJSON, !isDeleted else { return [] }
+        guard let decoded = try? JSONDecoder().decode([ChatCardWithID].self, from: cardsJSON) else {
+            return []
+        }
+        return decoded.compactMap(\.card)
+    }
+
+    var hasCards: Bool { cardsJSON != nil && !isDeleted }
+
+    /// Text to show in the bubble. Empty when a card carries the whole message, so
+    /// the bubble can be omitted entirely rather than showing a stub above the card.
     var displayText: String {
         if isDeleted { return "Message deleted" }
         if let text, !text.isEmpty { return text }
+        if hasCards { return "" }
         if attachmentCount > 0 { return "Attachment" }
-        return "Card message"
+        return ""
+    }
+
+    /// Plain-text summary for notifications and the menu bar, where a card cannot
+    /// be rendered.
+    var summaryText: String {
+        if isDeleted { return "Message deleted" }
+        if let text, !text.isEmpty { return text }
+        if let fallbackText, !fallbackText.isEmpty { return fallbackText }
+        if hasCards { return "Card message" }
+        if attachmentCount > 0 { return "Attachment" }
+        return "Message"
     }
 
     func apply(_ remote: ChatMessage) {
         text = remote.text
+        fallbackText = remote.fallbackText
+        // Re-encoded rather than carrying the original bytes: the wire payload is not
+        // retained after decoding, and round-tripping through our own models keeps the
+        // stored shape in step with what the renderer expects.
+        cardsJSON = (remote.cardsV2?.isEmpty == false)
+            ? try? JSONEncoder().encode(remote.cardsV2)
+            : nil
         createTime = remote.createTime
         lastUpdateTime = remote.lastUpdateTime
         deleteTime = remote.deleteTime

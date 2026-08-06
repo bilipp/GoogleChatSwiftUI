@@ -144,22 +144,32 @@ nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
     let deleteTime: Date?
     let text: String?
     let formattedText: String?
+    /// Plain-text stand-in Chat supplies for card messages, used in notifications.
+    let fallbackText: String?
     let thread: ChatThread?
     let threadReply: Bool?
     let attachment: [ChatAttachment]?
     let emojiReactionSummaries: [EmojiReactionSummary]?
     let annotations: [ChatAnnotation]?
+    let cardsV2: [ChatCardWithID]?
 
     var id: String { name }
     var isDeleted: Bool { deleteTime != nil }
 
-    /// Bot card messages carry no `text`. Rendering cards properly is Phase 7 work;
-    /// until then they need to read as something other than an empty bubble.
+    var hasCards: Bool { cardsV2?.isEmpty == false }
+
+    /// Fallback text for a message with no body of its own.
+    ///
+    /// Card messages usually carry no `text` at all; when cards render, the bubble
+    /// shows them instead of this, and `fallbackText` is what Chat itself supplies
+    /// for notification surfaces.
     var displayText: String {
         if isDeleted { return "Message deleted" }
         if let text, !text.isEmpty { return text }
+        if let fallbackText, !fallbackText.isEmpty { return fallbackText }
         if attachment?.isEmpty == false { return "Attachment" }
-        return "Card message"
+        if hasCards { return "Card message" }
+        return ""
     }
 }
 

@@ -31,14 +31,19 @@ nonisolated struct SyncEngine: Sendable {
         return spaces.count
     }
 
-    /// Loads the newest page of history for a space, if it isn't already cached.
+    /// Prepares a space for display: backfills it if empty, refreshes its head if not.
     ///
-    /// Idempotent and safe to call on every selection: it no-ops when messages are
-    /// already present, so re-opening a space costs nothing.
-    func loadInitialHistoryIfNeeded(for spaceName: String) async throws {
+    /// The refresh matters beyond freshness. Previously an already-cached space was
+    /// shown as-is, so any field added to the schema after those rows were written
+    /// stayed empty until the cache was destroyed. One call per space open keeps
+    /// cached content current instead.
+    func prepareHistory(for spaceName: String) async throws {
         let state = try await store.backfillState(for: spaceName)
-        guard !state.hasMessages else { return }
-        try await loadMoreHistory(for: spaceName)
+        if state.hasMessages {
+            try await reconcileHead(of: spaceName)
+        } else {
+            try await loadMoreHistory(for: spaceName)
+        }
     }
 
     /// Fetches the next page of older messages, resuming from the stored cursor.

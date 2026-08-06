@@ -176,7 +176,7 @@ final class ChatSessionModel {
         defer { loadingSpaceNames.remove(spaceName) }
 
         do {
-            try await sync.loadInitialHistoryIfNeeded(for: spaceName)
+            try await sync.prepareHistory(for: spaceName)
             // Opening a conversation is reading it. Best-effort: failing to clear the
             // badge is not worth an error banner over the messages themselves.
             try? await sync.markRead(spaceName: spaceName)

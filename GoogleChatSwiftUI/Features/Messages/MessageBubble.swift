@@ -33,6 +33,8 @@ struct MessageBubble: View {
     /// their sides. In a narrow pane a fixed 48pt gutter eats the text instead.
     private var gutter: CGFloat { isCompact ? 12 : 48 }
     private var maxBubbleWidth: CGFloat { isCompact ? 380 : 520 }
+    /// Cards need more room than prose; a 520pt cap makes multi-column cards unusable.
+    private var maxContentWidth: CGFloat { isCompact ? 380 : 560 }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -54,8 +56,15 @@ struct MessageBubble: View {
 
                 if isEditing {
                     editor
-                } else {
+                } else if !message.displayText.isEmpty {
                     bubble
+                }
+
+                // Cards render outside the bubble: they carry their own surface and
+                // border, and nesting them in a coloured bubble reads as two boxes.
+                ForEach(Array(message.cards.enumerated()), id: \.offset) { _, card in
+                    CardView(card: card)
+                        .contextMenu { contextMenu }
                 }
 
                 if !message.attachments.isEmpty {
@@ -86,7 +95,8 @@ struct MessageBubble: View {
                     failureBanner(reason)
                 }
             }
-            .frame(maxWidth: maxBubbleWidth, alignment: isOwn ? .trailing : .leading)
+            .frame(maxWidth: message.hasCards ? maxContentWidth : maxBubbleWidth,
+                   alignment: isOwn ? .trailing : .leading)
 
             if !isOwn { Spacer(minLength: gutter) }
         }
@@ -290,7 +300,7 @@ struct MessageBubble: View {
 
         Button("Copy Text") {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(message.displayText, forType: .string)
+            NSPasteboard.general.setString(message.summaryText, forType: .string)
         }
 
         // Chat permits editing and deleting only your own messages, so offering
@@ -317,6 +327,6 @@ struct MessageBubble: View {
     private var accessibilityDescription: String {
         let who = isOwn ? "You" : senderName
         let time = message.createTime?.formatted(date: .omitted, time: .shortened) ?? ""
-        return "\(who) at \(time): \(message.displayText)"
+        return "\(who) at \(time): \(message.summaryText)"
     }
 }
