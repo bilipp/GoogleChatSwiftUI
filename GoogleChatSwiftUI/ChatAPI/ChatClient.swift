@@ -58,6 +58,58 @@ nonisolated struct ChatClient: Sendable {
         return try await execute(request, as: T.self)
     }
 
+    func post<Body: Encodable & Sendable, T: Decodable & Sendable>(
+        _ path: String,
+        query: [URLQueryItem] = [],
+        body: Body,
+        as type: T.Type
+    ) async throws -> T {
+        try await mutate("POST", path: path, query: query, body: body, as: T.self)
+    }
+
+    /// Chat uses PATCH with an explicit `updateMask`; omitting the mask is rejected
+    /// rather than treated as "update everything".
+    func patch<Body: Encodable & Sendable, T: Decodable & Sendable>(
+        _ path: String,
+        updateMask: String,
+        body: Body,
+        as type: T.Type
+    ) async throws -> T {
+        try await mutate(
+            "PATCH",
+            path: path,
+            query: [URLQueryItem(name: "updateMask", value: updateMask)],
+            body: body,
+            as: T.self
+        )
+    }
+
+    func delete(_ path: String) async throws {
+        var request = URLRequest(url: Self.baseURL.appending(path: path))
+        request.httpMethod = "DELETE"
+        _ = try await executeRaw(request)
+    }
+
+    private func mutate<Body: Encodable & Sendable, T: Decodable & Sendable>(
+        _ method: String,
+        path: String,
+        query: [URLQueryItem],
+        body: Body,
+        as type: T.Type
+    ) async throws -> T {
+        var components = URLComponents(
+            url: Self.baseURL.appending(path: path),
+            resolvingAgainstBaseURL: false
+        )!
+        if !query.isEmpty { components.queryItems = query }
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await execute(request, as: T.self)
+    }
+
     private func execute<T: Decodable & Sendable>(
         _ request: URLRequest,
         as type: T.Type
@@ -121,7 +173,10 @@ nonisolated struct ChatClient: Sendable {
 
 // MARK: - Endpoints
 
-extension ChatClient {
+/// `nonisolated` for the same reason as the write endpoints: default main-actor
+/// isolation would silently run response decoding — 762 spaces' worth — on the main
+/// thread. Nothing errors, because `async` calls cross actors happily; it just hitches.
+nonisolated extension ChatClient {
     /// Spaces the signed-in user belongs to.
     ///
     /// User auth scopes this to the caller's own memberships — there is no way to

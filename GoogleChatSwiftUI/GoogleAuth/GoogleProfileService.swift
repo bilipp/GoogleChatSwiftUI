@@ -7,8 +7,19 @@ import Foundation
 nonisolated struct GoogleUserProfile: Sendable, Equatable {
     var displayName: String
     var photoURL: URL?
-    /// People API resource name, e.g. `people/c123456789`.
+    /// People API resource name, e.g. `people/123456789012345678901`.
     var resourceName: String
+    /// Numeric Google profile ID, from the PROFILE metadata source.
+    var profileID: String?
+
+    /// The identity Chat uses for `Message.sender.name`, e.g. `users/1234567890`.
+    ///
+    /// People and Chat namespace users differently — a People `resourceName` cannot
+    /// be compared against a Chat sender directly. The numeric PROFILE source ID is
+    /// the value both APIs agree on.
+    var chatUserName: String? {
+        profileID.map { "users/\($0)" }
+    }
 }
 
 /// Reads the signed-in user's profile from the People API.
@@ -26,7 +37,7 @@ nonisolated struct GoogleProfileService: Sendable {
             string: "https://people.googleapis.com/v1/people/me"
         )!
         components.queryItems = [
-            URLQueryItem(name: "personFields", value: "names,photos")
+            URLQueryItem(name: "personFields", value: "names,photos,metadata")
         ]
 
         var request = URLRequest(url: components.url!)
@@ -46,18 +57,30 @@ nonisolated struct GoogleProfileService: Sendable {
         }
 
         let payload = try JSONDecoder().decode(PeopleResponse.self, from: data)
+        let profileID = payload.metadata?.sources?
+            .first { $0.type == "PROFILE" }?
+            .id
+
         return GoogleUserProfile(
             displayName: payload.names?.first?.displayName ?? "Unknown",
             photoURL: payload.photos?.first?.url.flatMap(URL.init(string:)),
-            resourceName: payload.resourceName ?? ""
+            resourceName: payload.resourceName ?? "",
+            profileID: profileID
         )
     }
 
     private struct PeopleResponse: Decodable {
         struct Name: Decodable { let displayName: String? }
         struct Photo: Decodable { let url: String? }
+        struct Source: Decodable {
+            let type: String?
+            let id: String?
+        }
+        struct Metadata: Decodable { let sources: [Source]? }
+
         let resourceName: String?
         let names: [Name]?
         let photos: [Photo]?
+        let metadata: Metadata?
     }
 }

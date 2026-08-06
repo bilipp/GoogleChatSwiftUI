@@ -49,7 +49,8 @@ private struct RootView: View {
                 if session == nil {
                     session = ChatSessionModel(
                         tokenProvider: auth.tokenProvider,
-                        container: modelContext.container
+                        container: modelContext.container,
+                        profile: currentProfile
                     )
                 }
             } else {
@@ -61,5 +62,10 @@ private struct RootView: View {
     private var isSignedIn: Bool {
         if case .signedIn = auth.state { return true }
         return false
+    }
+
+    private var currentProfile: GoogleUserProfile? {
+        if case .signedIn(let profile) = auth.state { return profile }
+        return nil
     }
 }

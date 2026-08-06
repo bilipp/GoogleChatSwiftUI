@@ -87,6 +87,13 @@ final class CachedMessage {
     var isThreadReply: Bool = false
     var attachmentCount: Int = 0
 
+    /// Set while a locally-composed message is in flight. The row is rendered
+    /// immediately so sending feels instant, then either confirmed by the server
+    /// response or rolled back.
+    var isPending: Bool = false
+    /// Non-nil when a send failed and the row is offering a retry.
+    var sendFailureReason: String?
+
     var space: CachedSpace?
 
     init(name: String) {

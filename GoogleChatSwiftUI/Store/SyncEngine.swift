@@ -58,6 +58,91 @@ nonisolated struct SyncEngine: Sendable {
         return !(page.nextPageToken ?? "").isEmpty
     }
 
+    // MARK: - Writes
+
+    /// Sends a message, showing it locally before the round-trip completes.
+    ///
+    /// On failure the placeholder is kept and flagged rather than discarded, so the
+    /// user's typed text is never silently lost — they can retry or copy it out.
+    func send(
+        text: String,
+        to spaceName: String,
+        threadName: String? = nil,
+        senderName: String?,
+        senderDisplayName: String?
+    ) async throws {
+        let clientID = ChatClient.newClientMessageID()
+
+        try await store.insertPendingMessage(
+            clientID: clientID,
+            text: text,
+            spaceName: spaceName,
+            senderName: senderName,
+            senderDisplayName: senderDisplayName,
+            threadName: threadName
+        )
+
+        do {
+            let created = try await client.createMessage(
+                in: spaceName,
+                text: text,
+                threadName: threadName,
+                clientMessageID: clientID
+            )
+            try await store.confirmPendingMessage(
+                clientID: clientID,
+                spaceName: spaceName,
+                server: created
+            )
+        } catch {
+            logger.error("Send failed in \(spaceName): \(error.localizedDescription)")
+            try? await store.markSendFailed(
+                clientID: clientID,
+                spaceName: spaceName,
+                reason: error.localizedDescription
+            )
+            throw error
+        }
+    }
+
+    /// Retries a failed send by discarding the flagged placeholder and sending afresh.
+    func retrySend(
+        messageName: String,
+        text: String,
+        in spaceName: String,
+        senderName: String?,
+        senderDisplayName: String?
+    ) async throws {
+        try await store.discardMessage(named: messageName)
+        try await send(
+            text: text,
+            to: spaceName,
+            senderName: senderName,
+            senderDisplayName: senderDisplayName
+        )
+    }
+
+    /// Edits a message. The local cache updates only after the server accepts, so a
+    /// rejected edit never leaves the UI showing text that does not exist server-side.
+    func edit(messageName: String, newText: String) async throws {
+        let updated = try await client.updateMessage(name: messageName, text: newText)
+        try await store.applyEdit(to: messageName, text: updated.text ?? newText)
+    }
+
+    func delete(messageName: String) async throws {
+        try await client.deleteMessage(name: messageName)
+        try await store.applyDeletion(to: messageName)
+    }
+
+    func markRead(spaceName: String) async throws {
+        try await client.markSpaceRead(spaceName: spaceName)
+    }
+
+    /// Removes a failed placeholder that the user chose not to retry.
+    func discard(messageName: String) async throws {
+        try await store.discardMessage(named: messageName)
+    }
+
     /// Re-fetches the newest page and merges it.
     ///
     /// The event stream is best-effort, not a durable log, so it must never be the

@@ -92,7 +92,98 @@ actor ChatStore {
         }
     }
 
+    // MARK: - Optimistic writes
+
+    /// Inserts a locally-composed message so it renders immediately.
+    ///
+    /// The placeholder is keyed by the same client-assigned ID used as the API's
+    /// idempotency key, so when the server echoes the message back it lands on this
+    /// row instead of creating a duplicate.
+    func insertPendingMessage(
+        clientID: String,
+        text: String,
+        spaceName: String,
+        senderName: String?,
+        senderDisplayName: String?,
+        threadName: String?
+    ) throws {
+        guard let space = try space(named: spaceName) else { return }
+
+        let placeholder = CachedMessage(name: "\(spaceName)/messages/\(clientID)")
+        placeholder.text = text
+        placeholder.createTime = Date()
+        placeholder.senderName = senderName
+        placeholder.senderDisplayName = senderDisplayName
+        placeholder.threadName = threadName
+        placeholder.isThreadReply = threadName != nil
+        placeholder.isPending = true
+        placeholder.space = space
+
+        modelContext.insert(placeholder)
+        try modelContext.save()
+    }
+
+    /// Replaces the placeholder with the server's version of the message.
+    func confirmPendingMessage(clientID: String, spaceName: String, server: ChatMessage) throws {
+        guard let space = try space(named: spaceName) else { return }
+        let placeholderName = "\(spaceName)/messages/\(clientID)"
+
+        if let existing = try message(named: placeholderName) {
+            // The server assigns the canonical resource name, which usually differs
+            // from the client-assigned one. Delete and re-insert rather than mutating
+            // a @Attribute(.unique) primary key in place.
+            modelContext.delete(existing)
+        }
+
+        try upsert([server], into: space)
+        if let confirmed = try message(named: server.name) {
+            confirmed.isPending = false
+            confirmed.sendFailureReason = nil
+        }
+        try modelContext.save()
+    }
+
+    /// Marks a placeholder as failed so the UI can offer a retry.
+    func markSendFailed(clientID: String, spaceName: String, reason: String) throws {
+        let name = "\(spaceName)/messages/\(clientID)"
+        guard let placeholder = try message(named: name) else { return }
+        placeholder.isPending = false
+        placeholder.sendFailureReason = reason
+        try modelContext.save()
+    }
+
+    func discardMessage(named name: String) throws {
+        guard let message = try message(named: name) else { return }
+        modelContext.delete(message)
+        try modelContext.save()
+    }
+
+    /// Applies an edit locally after the server has accepted it.
+    func applyEdit(to name: String, text: String) throws {
+        guard let message = try message(named: name) else { return }
+        message.text = text
+        message.lastUpdateTime = Date()
+        try modelContext.save()
+    }
+
+    /// Tombstones a message locally. Chat keeps deleted messages visible as
+    /// "Message deleted", so the row stays rather than vanishing.
+    func applyDeletion(to name: String) throws {
+        guard let message = try message(named: name) else { return }
+        message.deleteTime = Date()
+        message.text = nil
+        try modelContext.save()
+    }
+
     // MARK: - Queries
+
+    func message(named name: String) throws -> CachedMessage? {
+        var descriptor = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate { $0.name == name }
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
+    }
 
     func space(named name: String) throws -> CachedSpace? {
         var descriptor = FetchDescriptor<CachedSpace>(

@@ -50,15 +50,23 @@ struct MessageListView: View {
                 .help("Fetch older messages")
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            if let error = session.messageError {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                if let error = session.messageError {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary)
+                }
+                MessageComposer(
+                    spaceTitle: spaceTitle,
+                    isSending: session.isSending(spaceName)
+                ) { text in
+                    Task { await session.send(text, to: spaceName) }
+                }
             }
         }
     }
@@ -79,7 +87,9 @@ struct MessageListView: View {
                                     // Consecutive messages from one sender read as a
                                     // block, matching how Chat itself groups them.
                                     showsSender: index == 0
-                                        || group.messages[index - 1].senderName != message.senderName
+                                        || group.messages[index - 1].senderName != message.senderName,
+                                    isOwn: session.isOwnMessage(message),
+                                    spaceName: spaceName
                                 )
                                 .id(message.name)
                             }
@@ -141,8 +151,14 @@ private struct DayHeader: View {
 }
 
 private struct MessageRow: View {
+    @Environment(ChatSessionModel.self) private var session
     let message: CachedMessage
     let showsSender: Bool
+    let isOwn: Bool
+    let spaceName: String
+
+    @State private var isEditing = false
+    @State private var draft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -155,17 +171,97 @@ private struct MessageRow: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if message.lastUpdateTime.map({ updated in
+                        updated.timeIntervalSince(message.createTime ?? updated) > 1
+                    }) == true {
+                        Text("edited")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.top, 8)
             }
 
-            Text(message.displayText)
-                .font(.body)
-                .foregroundStyle(message.isDeleted ? .secondary : .primary)
-                .italic(message.isDeleted)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if isEditing {
+                editor
+            } else {
+                Text(message.displayText)
+                    .font(.body)
+                    .foregroundStyle(message.isDeleted ? .secondary : .primary)
+                    .italic(message.isDeleted)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(message.isPending ? 0.5 : 1)
+            }
+
+            if let reason = message.sendFailureReason {
+                failureBanner(reason)
+            }
         }
+        .contextMenu { contextMenu }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var contextMenu: some View {
+        Button("Copy") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(message.displayText, forType: .string)
+        }
+        // Chat only permits editing and deleting your own messages, so offering
+        // these on someone else's would be a guaranteed 403.
+        if isOwn && !message.isDeleted && !message.isPending {
+            Divider()
+            Button("Edit") {
+                draft = message.text ?? ""
+                isEditing = true
+            }
+            Button("Delete", role: .destructive) {
+                Task { await session.delete(messageName: message.name) }
+            }
+        }
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Edit message", text: $draft, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...10)
+            HStack {
+                Button("Save") {
+                    let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    isEditing = false
+                    guard !text.isEmpty, text != message.text else { return }
+                    Task { await session.edit(messageName: message.name, newText: text) }
+                }
+                .keyboardShortcut(.return, modifiers: [])
+                Button("Cancel", role: .cancel) { isEditing = false }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func failureBanner(_ reason: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text("Not sent — \(reason)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Retry") {
+                Task {
+                    await session.retrySend(
+                        messageName: message.name,
+                        text: message.text ?? "",
+                        in: spaceName
+                    )
+                }
+            }
+            Button("Discard", role: .destructive) {
+                Task { await session.discardFailedMessage(named: message.name) }
+            }
+        }
+        .controlSize(.small)
+        .padding(.vertical, 2)
     }
 }
