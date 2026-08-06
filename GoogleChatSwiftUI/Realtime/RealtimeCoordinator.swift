@@ -159,6 +159,9 @@ actor RealtimeCoordinator {
             guard let space = event.spaceName else { return }
             do {
                 try await store.mergeMessages([message], into: space)
+                // Chat sends an ID with no display name, so an incoming message would
+                // otherwise appear as "Unknown" until the next full reload.
+                await sync.resolveSenders(from: [message])
                 spaces.insert(space)
             } catch {
                 logger.error("Merging event message failed: \(error.localizedDescription)")

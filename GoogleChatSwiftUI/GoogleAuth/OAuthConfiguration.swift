@@ -32,6 +32,11 @@ nonisolated enum OAuthConfiguration {
         "https://www.googleapis.com/auth/chat.customemojis.readonly",
         "https://www.googleapis.com/auth/pubsub",
         "https://www.googleapis.com/auth/userinfo.profile",
+        // Chat returns user IDs but never display names — not in memberships, not on
+        // message senders. Resolving `users/123` to a human name means reading the
+        // Workspace directory, which is what this scope is for. Without it every DM
+        // is titled "Direct message" and every sender reads "Unknown".
+        "https://www.googleapis.com/auth/directory.readonly",
     ]
 
     static var scopeString: String { scopes.joined(separator: " ") }

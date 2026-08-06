@@ -10,6 +10,8 @@ struct MessageBubble: View {
     @Environment(ChatSessionModel.self) private var session
 
     let message: CachedMessage
+    /// Directory profile for the sender, when one has been resolved.
+    let sender: CachedUser?
     let isOwn: Bool
     let isFirstInGroup: Bool
     let isLastInGroup: Bool
@@ -33,7 +35,7 @@ struct MessageBubble: View {
 
             VStack(alignment: isOwn ? .trailing : .leading, spacing: 2) {
                 if isFirstInGroup && !isOwn {
-                    Text(message.senderDisplayName ?? "Unknown")
+                    Text(senderName)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.leading, 4)
@@ -67,10 +69,16 @@ struct MessageBubble: View {
 
     // MARK: - Pieces
 
+    /// Falls back to the name stamped on the message, which is set for locally
+    /// composed messages before any directory lookup has happened.
+    private var senderName: String {
+        sender?.displayName ?? message.senderDisplayName ?? "Unknown"
+    }
+
     @ViewBuilder
     private var avatarSlot: some View {
         if isFirstInGroup {
-            InitialsAvatar(name: message.senderDisplayName)
+            Avatar(name: senderName, photoURL: sender?.photoURL)
         } else {
             Color.clear.frame(width: 28, height: 1)
         }
@@ -203,43 +211,8 @@ struct MessageBubble: View {
     }
 
     private var accessibilityDescription: String {
-        let sender = isOwn ? "You" : (message.senderDisplayName ?? "Unknown")
+        let who = isOwn ? "You" : senderName
         let time = message.createTime?.formatted(date: .omitted, time: .shortened) ?? ""
-        return "\(sender) at \(time): \(message.displayText)"
-    }
-}
-
-/// Circular initials avatar.
-///
-/// Chat's API supplies no avatar URL for message senders, so initials are the
-/// honest option rather than a generic silhouette for everyone.
-struct InitialsAvatar: View {
-    let name: String?
-
-    var body: some View {
-        Circle()
-            .fill(tint.gradient)
-            .frame(width: 28, height: 28)
-            .overlay {
-                Text(initials)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-            }
-            .accessibilityHidden(true)
-    }
-
-    private var initials: String {
-        guard let name, !name.isEmpty else { return "?" }
-        let parts = name.split(separator: " ").prefix(2)
-        let letters = parts.compactMap(\.first).map(String.init)
-        return letters.isEmpty ? "?" : letters.joined().uppercased()
-    }
-
-    /// Stable per-person colour so faces stay recognisable while scrolling.
-    private var tint: Color {
-        let palette: [Color] = [.blue, .purple, .pink, .orange, .green, .teal, .indigo, .brown]
-        guard let name, !name.isEmpty else { return .gray }
-        let hash = name.unicodeScalars.reduce(into: 0) { $0 = ($0 &* 31 &+ Int($1.value)) & 0xFFFF }
-        return palette[hash % palette.count]
+        return "\(who) at \(time): \(message.displayText)"
     }
 }

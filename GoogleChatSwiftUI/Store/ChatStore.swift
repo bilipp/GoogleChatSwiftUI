@@ -66,9 +66,64 @@ actor ChatStore {
         return try modelContext.fetch(descriptor).map(\.name)
     }
 
-    func setResolvedTitle(_ title: String?, for spaceName: String) throws {
+    /// Caches directory lookups so names survive relaunch and are shared by the
+    /// sidebar and the transcript.
+    func upsertPeople(_ people: [DirectoryPerson]) throws {
+        guard !people.isEmpty else { return }
+        let names = Set(people.map(\.chatUserName))
+        let existing = try modelContext.fetch(
+            FetchDescriptor<CachedUser>(predicate: #Predicate { names.contains($0.name) })
+        )
+        var byName = Dictionary(uniqueKeysWithValues: existing.map { ($0.name, $0) })
+
+        for person in people {
+            let target: CachedUser
+            if let found = byName[person.chatUserName] {
+                target = found
+            } else {
+                let created = CachedUser(name: person.chatUserName)
+                modelContext.insert(created)
+                byName[person.chatUserName] = created
+                target = created
+            }
+            target.displayName = person.displayName
+            target.photoURL = person.photoURL
+        }
+        try modelContext.save()
+    }
+
+    /// Which of these Chat user IDs have no cached directory profile yet.
+    func unknownUserIDs(_ ids: [String]) throws -> [String] {
+        guard !ids.isEmpty else { return [] }
+        let wanted = Set(ids)
+        let known = try modelContext.fetch(
+            FetchDescriptor<CachedUser>(predicate: #Predicate { wanted.contains($0.name) })
+        )
+        var alreadyNamed: Set<String> = []
+        for user in known where user.displayName != nil {
+            alreadyNamed.insert(user.name)
+        }
+        return Array(wanted.subtracting(alreadyNamed))
+    }
+
+    /// Cached display names for the given Chat user IDs.
+    func displayNames(for ids: [String]) throws -> [String: String] {
+        guard !ids.isEmpty else { return [:] }
+        let wanted = Set(ids)
+        let users = try modelContext.fetch(
+            FetchDescriptor<CachedUser>(predicate: #Predicate { wanted.contains($0.name) })
+        )
+        var result: [String: String] = [:]
+        for user in users {
+            if let displayName = user.displayName { result[user.name] = displayName }
+        }
+        return result
+    }
+
+    func setResolvedTitle(_ title: String?, peers: [String] = [], for spaceName: String) throws {
         guard let space = try space(named: spaceName) else { return }
         space.resolvedTitle = title
+        space.peerUserIDs = peers
         // Marked resolved even on failure, so an unnameable space is not retried
         // on every launch forever.
         space.didResolveTitle = true

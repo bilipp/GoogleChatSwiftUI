@@ -10,6 +10,7 @@ import SwiftData
 nonisolated struct SyncEngine: Sendable {
     private let client: ChatClient
     private let store: ChatStore
+    private let directoryService: DirectoryService
     private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "sync")
 
     /// One screenful plus margin. Small enough to render fast, large enough that
@@ -19,6 +20,7 @@ nonisolated struct SyncEngine: Sendable {
     init(client: ChatClient, store: ChatStore) {
         self.client = client
         self.store = store
+        directoryService = DirectoryService(transport: client.transport)
     }
 
     /// Refreshes the space list. Cheap — a handful of paginated calls — so it runs
@@ -53,6 +55,7 @@ nonisolated struct SyncEngine: Sendable {
         )
         let messages = page.messages ?? []
         try await store.appendHistory(messages, to: spaceName, nextPageToken: page.nextPageToken)
+        await resolveSenders(from: messages)
 
         logger.info("Backfilled \(messages.count) messages for \(spaceName)")
         return !(page.nextPageToken ?? "").isEmpty
@@ -68,47 +71,87 @@ nonisolated struct SyncEngine: Sendable {
         try await store.spacesNeedingTitles(limit: Self.titleResolutionBatch).count
     }
 
-    /// Names DMs and unnamed group chats from their memberships.
+    /// Names DMs and unnamed group chats.
     ///
-    /// Runs a bounded batch concurrently — resolution is independent per space, and
-    /// doing it serially would leave the sidebar showing placeholders for a long time.
+    /// Two stages, because Chat gives us IDs and the People API gives us names:
+    /// fetch memberships for a batch of spaces concurrently, then resolve every
+    /// distinct user across the whole batch in one directory call. Resolving
+    /// per-space instead would repeat the same colleagues dozens of times.
     func resolvePendingTitles(excludingUser selfChatName: String?) async throws {
         let pending = try await store.spacesNeedingTitles(limit: Self.titleResolutionBatch)
         guard !pending.isEmpty else { return }
 
-        await withTaskGroup(of: (String, String?).self) { group in
+        var peersBySpace: [String: [String]] = [:]
+
+        await withTaskGroup(of: (String, [String]).self) { group in
             for spaceName in pending {
                 group.addTask {
-                    let title = try? await self.peerTitle(
-                        for: spaceName,
-                        excluding: selfChatName
-                    )
-                    return (spaceName, title)
+                    do {
+                        let peers = try await self.peerIDs(for: spaceName, excluding: selfChatName)
+                        return (spaceName, peers)
+                    } catch {
+                        self.logger.error(
+                            "Member lookup failed for \(spaceName): \(error.localizedDescription)"
+                        )
+                        return (spaceName, [])
+                    }
                 }
             }
-            for await (spaceName, title) in group {
-                try? await store.setResolvedTitle(title, for: spaceName)
+            for await (spaceName, peers) in group {
+                peersBySpace[spaceName] = peers
             }
         }
-        logger.info("Resolved titles for \(pending.count) space(s)")
+
+        let everyone = Array(Set(peersBySpace.values.flatMap { $0 }))
+        let directory = (try? await directoryService.people(forChatUserNames: everyone)) ?? [:]
+
+        if !directory.isEmpty {
+            try? await store.upsertPeople(Array(directory.values))
+        }
+
+        for spaceName in pending {
+            let peers = peersBySpace[spaceName] ?? []
+            let names = peers.compactMap { directory[$0]?.displayName }
+            // Group chats read better as "Ana, Ben, Chen" than as a single name.
+            let title = names.isEmpty ? nil : names.joined(separator: ", ")
+            try? await store.setResolvedTitle(title, peers: peers, for: spaceName)
+        }
+
+        logger.info("Resolved \(pending.count) space(s) via \(directory.count) directory profile(s)")
     }
 
-    /// Builds a title from everyone in the space who isn't the signed-in user.
-    private func peerTitle(for spaceName: String, excluding selfChatName: String?) async throws -> String? {
+    /// Caches directory profiles for the senders of a batch of messages.
+    ///
+    /// `Message.sender` carries an ID and an empty `displayName`, so without this
+    /// every bubble reads "Unknown". Names are *not* copied onto the messages: the
+    /// transcript looks senders up in `CachedUser` instead, so one profile fetch
+    /// fixes every message that person has ever sent, including already-cached ones.
+    func resolveSenders(from messages: [ChatMessage]) async {
+        let ids = Array(Set(messages.compactMap { $0.sender?.name }))
+        guard !ids.isEmpty else { return }
+
+        let unknown = (try? await store.unknownUserIDs(ids)) ?? []
+        guard !unknown.isEmpty else { return }
+
+        let directory = (try? await directoryService.people(forChatUserNames: unknown)) ?? [:]
+        guard !directory.isEmpty else { return }
+
+        try? await store.upsertPeople(Array(directory.values))
+        logger.info("Resolved \(directory.count) sender profile(s)")
+    }
+
+    /// The other humans in a space.
+    ///
+    /// Bots are excluded deliberately: naming a DM after the assistant that happens
+    /// to be installed in it tells the user nothing about who they were talking to.
+    private func peerIDs(for spaceName: String, excluding selfChatName: String?) async throws -> [String] {
         let response = try await client.listMembers(in: spaceName)
-        let names = (response.memberships ?? [])
+        return (response.memberships ?? [])
             .filter(\.isJoined)
             .compactMap(\.member)
-            .filter { member in
-                guard let selfChatName, let name = member.name else { return true }
-                return name != selfChatName
-            }
-            .compactMap(\.displayName)
-            .filter { !$0.isEmpty }
-
-        guard !names.isEmpty else { return nil }
-        // Group chats read better as "Ana, Ben, Chen" than as a single name.
-        return names.joined(separator: ", ")
+            .filter { $0.type != .bot }
+            .compactMap(\.name)
+            .filter { $0 != selfChatName }
     }
 
     // MARK: - Writes
@@ -203,6 +246,8 @@ nonisolated struct SyncEngine: Sendable {
     /// Pub/Sub message.
     func reconcileHead(of spaceName: String) async throws {
         let page = try await client.listMessages(in: spaceName, pageSize: Self.historyPageSize)
-        try await store.mergeMessages(page.messages ?? [], into: spaceName)
+        let messages = page.messages ?? []
+        try await store.mergeMessages(messages, into: spaceName)
+        await resolveSenders(from: messages)
     }
 }

@@ -8,6 +8,10 @@ import SwiftUI
 struct MessageListView: View {
     @Environment(ChatSessionModel.self) private var session
     @Query private var messages: [CachedMessage]
+    /// Sender identity lives in `CachedUser`, not on the message, so one directory
+    /// fetch names every message that person has ever sent — including ones already
+    /// cached before the lookup happened.
+    @Query private var users: [CachedUser]
 
     private let spaceName: String
     private let spaceTitle: String
@@ -88,6 +92,7 @@ struct MessageListView: View {
                         ForEach(group.entries, id: \.message.name) { entry in
                             MessageBubble(
                                 message: entry.message,
+                                sender: sender(for: entry.message),
                                 isOwn: entry.isOwn,
                                 isFirstInGroup: entry.isFirstInGroup,
                                 isLastInGroup: entry.isLastInGroup,
@@ -106,6 +111,15 @@ struct MessageListView: View {
                 withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy) }
             }
         }
+    }
+
+    private var usersByID: [String: CachedUser] {
+        Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private func sender(for message: CachedMessage) -> CachedUser? {
+        guard let id = message.senderName else { return nil }
+        return usersByID[id]
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {

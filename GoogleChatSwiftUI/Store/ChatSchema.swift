@@ -39,6 +39,9 @@ final class CachedSpace {
     /// Set once membership resolution has been attempted, successfully or not, so a
     /// space with genuinely unnameable members isn't retried on every launch.
     var didResolveTitle: Bool = false
+    /// Human members other than the signed-in user, kept so the sidebar can show
+    /// their avatars without re-querying memberships.
+    var peerUserIDs: [String] = []
 
     /// Pagination cursor for backfilling this space's history. Nil once exhausted.
     var backfillPageToken: String?

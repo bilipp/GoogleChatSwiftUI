@@ -8,6 +8,8 @@ struct SpacesListView: View {
     @Environment(ChatSessionModel.self) private var session
     @Query(sort: [SortDescriptor(\CachedSpace.lastActiveTime, order: .reverse)])
     private var allSpaces: [CachedSpace]
+    /// Directory profiles, for DM avatars. Chat supplies no images of its own.
+    @Query private var users: [CachedUser]
 
     var body: some View {
         @Bindable var session = session
@@ -57,7 +59,7 @@ struct SpacesListView: View {
             }
         )) {
             ForEach(visibleSpaces) { space in
-                SpaceRow(space: space).tag(space.name)
+                SpaceRow(space: space, peer: peer(for: space)).tag(space.name)
             }
         }
         .searchable(text: $session.searchText, prompt: "Search all \(allSpaces.count) spaces")
@@ -88,6 +90,19 @@ struct SpacesListView: View {
                 Button("Sign Out") { Task { await auth.signOut() } }
             }
         }
+    }
+
+    private var usersByID: [String: CachedUser] {
+        Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The single other person in a DM. Group chats intentionally get a tile instead
+    /// of one arbitrary member's face.
+    private func peer(for space: CachedSpace) -> CachedUser? {
+        guard space.spaceType == .directMessage,
+              let id = space.peerUserIDs.first
+        else { return nil }
+        return usersByID[id]
     }
 
     /// Search overrides the filter — if you're looking for a dormant DM by name,
@@ -130,29 +145,38 @@ struct SpacesListView: View {
 
 private struct SpaceRow: View {
     let space: CachedSpace
+    let peer: CachedUser?
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(space.title).lineLimit(1)
+        HStack(spacing: 10) {
+            icon
+            VStack(alignment: .leading, spacing: 1) {
+                Text(space.title)
+                    .lineLimit(1)
                 if let active = space.lastActiveTime {
                     Text(active.formatted(.relative(presentation: .named)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-        } icon: {
-            Image(systemName: icon).foregroundStyle(.tint)
+            Spacer(minLength: 0)
         }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
         .accessibilityLabel("\(kind): \(space.title)")
     }
 
-    private var icon: String {
+    /// A person's photo for DMs, a rounded tile for rooms. The shape difference is
+    /// what makes the two scannable apart — Chat exposes no space imagery at all.
+    @ViewBuilder
+    private var icon: some View {
         switch space.spaceType {
-        case .directMessage: "person.fill"
-        case .groupChat: "person.2.fill"
-        case .space: "number"
-        default: "bubble.left"
+        case .directMessage:
+            Avatar(name: space.title, photoURL: peer?.photoURL, size: 30)
+        case .groupChat:
+            SpaceIcon(title: space.title, symbol: "person.2.fill", size: 30)
+        default:
+            SpaceIcon(title: space.title, symbol: nil, size: 30)
         }
     }
 
