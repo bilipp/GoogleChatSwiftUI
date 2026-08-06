@@ -39,7 +39,7 @@ struct SidebarFilterBar: View {
                         showsMuted.toggle()
                     } label: {
                         optionLabel(
-                            title: showsMuted ? "Hiding nothing" : "Hidden",
+                            title: showsMuted ? "Listed at the bottom" : "Hidden",
                             caption: "Conversations you silenced",
                             count: mutedCount,
                             isSelected: showsMuted

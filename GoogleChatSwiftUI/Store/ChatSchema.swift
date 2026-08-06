@@ -63,16 +63,25 @@ final class CachedSpace {
     var sectionTitle: String?
     var sectionSortOrder: Int = 0
 
-    /// `ALL`, `MAIN_CONVERSATIONS`, `FOR_YOU`, or `OFF`.
-    var notificationSettingRaw: String?
-    var didFetchNotificationSetting: Bool = false
-
-    /// Treated as muted when notifications are off.
+    /// Pinned and muted are this app's own, set here and stored here.
     ///
-    /// The API's own `muteSetting` is Developer Preview only and absent for us, so
-    /// `notificationSetting == "OFF"` is the generally available equivalent. A user
-    /// who narrowed a space to `FOR_YOU` has not muted it, so that does not count.
-    var isMuted: Bool { notificationSettingRaw == "OFF" }
+    /// Neither comes from Chat. Pinning has no API representation at all — no field
+    /// on `Space`, no section type, no method — and the mute signal the API does
+    /// offer did not match what this account sees on chat.google.com, so trusting it
+    /// produced a sidebar that disagreed with the web client. Local state is at least
+    /// honest about being local: it is exactly what the user set here.
+    ///
+    /// The consequence is that neither travels. Pinning a space here leaves it
+    /// unpinned in the web client, and vice versa.
+    var isPinned: Bool = false
+    var isMuted: Bool = false
+    /// Position within the pinned group, lowest first.
+    ///
+    /// An explicit index rather than a pin timestamp, because the group is
+    /// user-orderable: a timestamp can only express "when", and reordering by
+    /// rewriting timestamps would encode the arrangement in a field that claims to
+    /// mean something else. Meaningless while `isPinned` is false.
+    var pinnedOrder: Int = 0
 
     /// The signed-in user's read position, from the read-state API.
     var lastReadTime: Date?

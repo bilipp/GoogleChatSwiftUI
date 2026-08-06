@@ -166,30 +166,56 @@ actor ChatStore {
         return sectionForSpace.count
     }
 
-    /// Spaces still needing a notification-setting lookup, most active first.
-    ///
-    /// Bounded the same way as read state: one call per space, and mute state on a
-    /// conversation nobody has touched in months is not worth a request.
-    func spacesNeedingNotificationSetting(limit: Int, activeSince: Date) throws -> [String] {
-        var descriptor = FetchDescriptor<CachedSpace>(
-            predicate: #Predicate<CachedSpace> { space in
-                !space.didFetchNotificationSetting && space.lastActiveTime != nil
-            },
-            sortBy: [SortDescriptor(\.lastActiveTime, order: .reverse)]
-        )
-        descriptor.fetchLimit = limit
-        return try modelContext.fetch(descriptor)
-            .filter { ($0.lastActiveTime ?? .distantPast) >= activeSince }
-            .map(\.name)
+    /// Local pin state. Chat has no equivalent, so this never leaves the device.
+    func setPinned(_ pinned: Bool, for spaceName: String) throws {
+        guard let space = try space(named: spaceName) else { return }
+        space.isPinned = pinned
+        // New pins land at the end of the group; unpinning resets the index so a
+        // later re-pin does the same rather than reappearing at a position nobody
+        // remembers choosing.
+        space.pinnedOrder = pinned ? try nextPinnedOrder() : 0
+        try modelContext.save()
     }
 
-    func applyNotificationSetting(_ setting: String?, for spaceName: String) throws {
-        guard let space = try space(named: spaceName) else { return }
-        space.notificationSettingRaw = setting
-        // Marked fetched even on failure, so an unreadable space is not retried
-        // on every pass forever.
-        space.didFetchNotificationSetting = true
+    private func nextPinnedOrder() throws -> Int {
+        let descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { $0.isPinned }
+        )
+        let highest = try modelContext.fetch(descriptor).map(\.pinnedOrder).max()
+        return (highest ?? -1) + 1
+    }
+
+    /// Rewrites the pinned group's order from a full list of space names, in the
+    /// order they should appear.
+    ///
+    /// Takes the whole arrangement rather than a from/to pair: the caller already
+    /// holds the reordered list, and reindexing all of it leaves no gaps or ties to
+    /// reason about later.
+    func reorderPinned(_ spaceNames: [String]) throws {
+        let descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { $0.isPinned }
+        )
+        let pinned = try modelContext.fetch(descriptor)
+        var positions: [String: Int] = [:]
+        for (index, name) in spaceNames.enumerated() { positions[name] = index }
+
+        for space in pinned {
+            // A pinned space missing from the list sorts after everything named in
+            // it, rather than silently jumping to the top on a zero default.
+            space.pinnedOrder = positions[space.name] ?? spaceNames.count
+        }
         try modelContext.save()
+    }
+
+    /// Local mute state, likewise device-only.
+    func setMuted(_ muted: Bool, for spaceName: String) throws {
+        guard let space = try space(named: spaceName) else { return }
+        space.isMuted = muted
+        try modelContext.save()
+    }
+
+    func isMuted(spaceName: String) throws -> Bool {
+        try space(named: spaceName)?.isMuted ?? false
     }
 
     // MARK: - Search index
@@ -304,10 +330,14 @@ actor ChatStore {
         return try modelContext.fetch(descriptor).map(\.name)
     }
 
-    /// Total unread across every space, for the menu bar.
+    /// Total unread across every unmuted space, for the Dock badge and menu bar.
+    ///
+    /// Muted conversations are excluded so the badge agrees with the notifications:
+    /// silencing a space and then watching it drive the Dock count would defeat the
+    /// point of silencing it.
     func totalUnread() throws -> Int {
         let descriptor = FetchDescriptor<CachedSpace>(
-            predicate: #Predicate<CachedSpace> { $0.unreadCount > 0 }
+            predicate: #Predicate<CachedSpace> { $0.unreadCount > 0 && !$0.isMuted }
         )
         return try modelContext.fetch(descriptor).reduce(0) { $0 + $1.unreadCount }
     }

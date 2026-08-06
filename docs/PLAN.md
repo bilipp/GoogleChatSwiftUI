@@ -26,13 +26,12 @@ This shapes everything below. Verified against current docs (August 2026).
 - **Memberships** — list, get, create (invite), update, delete
 - **Attachments** — upload (`media.upload`) and download (`media.download`)
 - **Read state** — get/update per-space and per-thread read state for the calling user
-- **Pins** — list and manage pinned messages
 
 ### Hard limitations — design around these
 
 1. **No websocket, no streaming endpoint.** The only push mechanism is the Workspace Events API delivering to a Cloud Pub/Sub topic. This is why Pub/Sub is in the architecture at all.
 2. **No typing indicators.** Not exposed by any API, at any auth level. The "X is typing…" affordance in real Google Chat cannot be replicated.
-3. **No presence / online status.** Same story.
+3. **Presence is self-only.** `users.availability` reads and sets the *calling* user's state (`ACTIVE` / `IDLE` / `AWAY` / `DO_NOT_DISTURB`) plus a custom status. Other people's presence — the part that would actually show in a member list — is not readable.
 4. **User auth only sees the calling user's spaces.** `spaces.list` returns spaces you're a member of. Org-wide listing needs `spaces.search` with admin privileges — out of scope.
 5. **Read state is self-only.** You can read and set *your* read state; you cannot see whether others have read a message. No read receipts.
 6. **DM membership events are delayed.** For user subscriptions, membership events in a DM only fire after the first message is posted.
@@ -106,7 +105,8 @@ Swift 6 language mode, strict concurrency, no third-party dependencies. Layers a
 - **Reconcile**: on wake-from-sleep or network return, re-fetch the head of each active space to close gaps the event stream may have dropped. Events are best-effort, not a guaranteed log — the app must never trust them as the sole source of truth.
 
 **Features / App**
-- `NavigationSplitView`: sidebar (sections → spaces/DMs) │ message list │ `Inspector` (space details, members, pinned)
+- `NavigationSplitView`: sidebar (pinned → sections → muted) │ message list │ `Inspector` (space details, members)
+- **Pin and mute are local**, stored on `CachedSpace` and set from the sidebar's context menu. Neither has an API representation that works (§9), so neither syncs to the web client. Mute silences notifications and is excluded from the Dock badge and the menu-bar list; pin outranks both the activity scope and the mute toggle, so a pinned conversation is always listed. The pinned group is user-ordered — drag, or Move Up/Down/to Top from the context menu, since a drag is unreachable by keyboard and VoiceOver
 - Composer backed by `NSViewRepresentable` over `NSTextView` — needed for @-mention autocomplete, paste-to-attach, and correct multiline behaviour that `TextEditor` can't deliver
 - `MenuBarExtra` with unread count
 - `UNUserNotificationCenter` notifications for mentions and DMs
@@ -203,7 +203,7 @@ clickable and rich links — are in.
 | 4 | **Core UI** | NavigationSplitView, **activity-filtered sidebar with search**, message list with threading, day separators, sender grouping. Read-only but genuinely usable. |
 | 5 | **Writes** | Composer, send, edit, delete, reply-in-thread, mark-as-read. Optimistic local echo with rollback on failure. |
 | 6 | **Realtime** | Subscription creation, Pub/Sub pull loop, renewal, wake/network reconciliation. Messages appear within ~1 s without a refresh. |
-| 7 | **Rich content** | Reactions incl. custom emoji, attachment up/download, @-mention autocomplete and rendering, link previews, `cardsV2` rendering, pins. |
+| 7 | **Rich content** | Reactions incl. custom emoji, attachment up/download, @-mention autocomplete and rendering, link previews, `cardsV2` rendering. |
 | 8 | **Polish** | Notifications, MenuBarExtra unread count, menu commands and shortcuts, search, space/member management, accessibility pass, Liquid Glass styling. |
 
 ---
@@ -234,7 +234,6 @@ naive design assumes, and it forces two decisions:
 
 ## 8. Remaining work
 
-- **Pins**
 - **Menu-bar space selection** — clicking a conversation there activates the window but does not select the space; needs cross-scene selection state
 - Multi-account support is out of scope for v1; the auth layer keeps it possible without redesign
 
@@ -256,6 +255,8 @@ Each of these cost a wrong assumption first, and each shaped the design:
 | No message search endpoint exists at any auth level | Search is local over cached history, and says so in the UI |
 | Subscription max TTL is undocumented and varies with `includeResource` | Renewal patches `ttl: 0` ("extend to maximum") on a timer, so the value never needs knowing |
 | Card `onClick.action` calls back into the app that sent the card | Interactive card content is unreachable as a user: link buttons work, action buttons and form widgets render disabled |
+| Nothing named pin, star, or favourite exists anywhere in the v1 discovery document — no field on `Space`, no section type beyond `CUSTOM_SECTION` / `DEFAULT_DIRECT_MESSAGES` / `DEFAULT_SPACES` / `DEFAULT_APPS`, no method | Pinning is local to this app: a `CachedSpace` flag in SwiftData, invisible to chat.google.com |
+| `spaceNotificationSetting` returns values that do not match what this account sees on chat.google.com — muted spaces come back unmuted — so neither `muteSetting` nor `notificationSetting == "OFF"` produced a sidebar that agreed with the web client | Mute is local. Both the endpoint and the `chat.users.spacesettings` scope were dropped |
 
 ## 10. Project-wide gotcha
 

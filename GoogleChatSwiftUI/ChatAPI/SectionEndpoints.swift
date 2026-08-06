@@ -75,16 +75,6 @@ nonisolated struct ListSectionItemsResponse: Decodable, Sendable {
     let nextPageToken: String?
 }
 
-/// Per-space notification preference for the signed-in user.
-nonisolated struct SpaceNotificationSetting: Decodable, Sendable {
-    let name: String?
-    /// `ALL`, `MAIN_CONVERSATIONS`, `FOR_YOU`, or `OFF`.
-    let notificationSetting: String?
-    /// `MUTED` / `UNMUTED`. Developer Preview only, so absent for us — see
-    /// `ChatClient.spaceNotificationSetting`.
-    let muteSetting: String?
-}
-
 // MARK: - Endpoints
 
 nonisolated extension ChatClient {
@@ -123,19 +113,5 @@ nonisolated extension ChatClient {
             token = page.nextPageToken.flatMap { $0.isEmpty ? nil : $0 }
         } while token != nil
         return collected
-    }
-
-    /// The user's notification preference for a space.
-    ///
-    /// `muteSetting` — the field that actually means "muted" in the web UI — is
-    /// Developer Preview only and will be absent without membership of that
-    /// programme. `notificationSetting == "OFF"` is the generally available signal
-    /// that a space is silenced, so that is what this app treats as muted.
-    func spaceNotificationSetting(spaceName: String) async throws -> SpaceNotificationSetting {
-        let spaceID = spaceName.replacingOccurrences(of: "spaces/", with: "")
-        return try await get(
-            "users/me/spaces/\(spaceID)/spaceNotificationSetting",
-            as: SpaceNotificationSetting.self
-        )
     }
 }

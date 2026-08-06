@@ -29,7 +29,7 @@ final class ChatSessionModel {
     var scope: SpaceScope = .recent
     var kind: SpaceKind = .all
     /// Muted conversations are hidden by default: the point of muting one is not to
-    /// think about it, and Chat itself keeps them out of the way.
+    /// think about it. Pinned ones are listed regardless — see `visibleSpaces`.
     var showsMuted: Bool = false
     /// Filters the sidebar's conversation list.
     var searchText: String = ""
@@ -99,6 +99,12 @@ final class ChatSessionModel {
             try? await sync.markRead(spaceName: incoming.spaceName)
         }
 
+        // Muting has to mean silence, not just a different place in the sidebar —
+        // a muted space that still raises banners is not muted in any sense the
+        // user would recognise. The message is still cached and still counted;
+        // only the alert is dropped.
+        let isMuted = (try? await sync.isMuted(spaceName: incoming.spaceName)) ?? false
+
         await notifications.notify(
             spaceTitle: incoming.spaceTitle,
             senderName: incoming.senderDisplayName,
@@ -106,7 +112,8 @@ final class ChatSessionModel {
             spaceName: incoming.spaceName,
             // Suppressed for the conversation already on screen — an alert for
             // something the user is looking at is pure noise.
-            isSpaceVisible: isOnScreen
+            isSpaceVisible: isOnScreen,
+            isMuted: isMuted
         )
         await refreshUnread()
     }
@@ -193,18 +200,39 @@ final class ChatSessionModel {
         await resolveTitles()
     }
 
-    /// Fetches per-space mute state in bounded passes, like read state.
-    func loadNotificationSettings() async {
-        for _ in 0..<40 {
-            if Task.isCancelled { return }
-            do {
-                guard try await sync.pendingNotificationSettingCount() > 0 else { break }
-                try await sync.refreshNotificationSettings()
-                try? await Task.sleep(for: .milliseconds(250))
-            } catch {
-                logger.error("Notification setting pass failed: \(error.localizedDescription)")
-                break
-            }
+    // MARK: - Local sidebar preferences
+
+    /// Pin and mute are this app's own state — see `CachedSpace.isPinned`. Nothing
+    /// is sent to Chat, so these cannot fail for a network reason and there is no
+    /// optimistic update to roll back.
+    func setPinned(_ pinned: Bool, for spaceName: String) async {
+        do {
+            try await sync.setPinned(pinned, for: spaceName)
+        } catch {
+            logger.error("Pin toggle failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// - Parameter spaceNames: the pinned group in its new order, top first.
+    func reorderPinned(_ spaceNames: [String]) async {
+        do {
+            try await sync.reorderPinned(spaceNames)
+        } catch {
+            logger.error("Pin reorder failed: \(error.localizedDescription)")
+        }
+    }
+
+    func setMuted(_ muted: Bool, for spaceName: String) async {
+        do {
+            try await sync.setMuted(muted, for: spaceName)
+            // Muting something you are looking at would otherwise drop it out of the
+            // sidebar while it stays open in the transcript, which reads as a bug.
+            if muted, !showsMuted, spaceName == selectedSpaceName { showsMuted = true }
+            // Muted spaces are out of the badge total, so it moves the moment
+            // this is toggled either way.
+            await refreshUnread()
+        } catch {
+            logger.error("Mute toggle failed: \(error.localizedDescription)")
         }
     }
 

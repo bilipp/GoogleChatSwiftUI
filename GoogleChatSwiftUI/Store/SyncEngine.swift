@@ -87,44 +87,22 @@ nonisolated struct SyncEngine: Sendable {
         return assigned
     }
 
-    static let notificationSettingBatch = 25
-
-    func pendingNotificationSettingCount() async throws -> Int {
-        try await store.spacesNeedingNotificationSetting(
-            limit: Self.notificationSettingBatch,
-            activeSince: Date().addingTimeInterval(-Self.readStateWindow)
-        ).count
+    /// Pin and mute are local preferences, so these are straight writes to the store
+    /// with no request behind them.
+    func setPinned(_ pinned: Bool, for spaceName: String) async throws {
+        try await store.setPinned(pinned, for: spaceName)
     }
 
-    /// Fetches per-space notification preferences concurrently.
-    func refreshNotificationSettings() async throws {
-        let pending = try await store.spacesNeedingNotificationSetting(
-            limit: Self.notificationSettingBatch,
-            activeSince: Date().addingTimeInterval(-Self.readStateWindow)
-        )
-        guard !pending.isEmpty else { return }
+    func reorderPinned(_ spaceNames: [String]) async throws {
+        try await store.reorderPinned(spaceNames)
+    }
 
-        await withTaskGroup(of: (String, String?).self) { group in
-            for spaceName in pending {
-                group.addTask {
-                    do {
-                        let setting = try await self.client.spaceNotificationSetting(
-                            spaceName: spaceName
-                        )
-                        return (spaceName, setting.notificationSetting)
-                    } catch {
-                        self.logger.error(
-                            "Notification setting failed for \(spaceName): \(error.localizedDescription)"
-                        )
-                        return (spaceName, nil)
-                    }
-                }
-            }
-            for await (spaceName, setting) in group {
-                try? await store.applyNotificationSetting(setting, for: spaceName)
-            }
-        }
-        logger.info("Fetched notification settings for \(pending.count) space(s)")
+    func setMuted(_ muted: Bool, for spaceName: String) async throws {
+        try await store.setMuted(muted, for: spaceName)
+    }
+
+    func isMuted(spaceName: String) async throws -> Bool {
+        try await store.isMuted(spaceName: spaceName)
     }
 
     // MARK: - Title resolution

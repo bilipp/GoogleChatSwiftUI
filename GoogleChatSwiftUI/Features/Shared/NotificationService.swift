@@ -27,16 +27,19 @@ final class NotificationService {
 
     /// Posts a notification for a message that arrived elsewhere.
     ///
-    /// - Parameter isSpaceVisible: suppresses the notification when the user is
-    ///   already looking at that conversation, where an alert is pure noise.
+    /// - Parameters:
+    ///   - isSpaceVisible: suppresses the notification when the user is already
+    ///     looking at that conversation, where an alert is pure noise.
+    ///   - isMuted: suppresses it because the user silenced the conversation.
     func notify(
         spaceTitle: String,
         senderName: String?,
         body: String,
         spaceName: String,
-        isSpaceVisible: Bool
+        isSpaceVisible: Bool,
+        isMuted: Bool
     ) async {
-        guard isAuthorized, !isSpaceVisible else { return }
+        guard isAuthorized, !isSpaceVisible, !isMuted else { return }
         // A frontmost app does not need banners for what is already on screen.
         guard !NSApplication.shared.isActive else { return }
 

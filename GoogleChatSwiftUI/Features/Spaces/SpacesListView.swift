@@ -95,7 +95,6 @@ struct SpacesListView: View {
             await session.startRealtime()
             await session.prepareSearchIndex()
             await session.loadReadStates()
-            await session.loadNotificationSettings()
         }
         // Subsequent clicks, while the app is already running.
         .onChange(of: NotificationRouter.shared.pendingSpaceName) { _, pending in
@@ -175,8 +174,11 @@ struct SpacesListView: View {
             ForEach(groupedSpaces, id: \.title) { group in
                 Section(group.title) {
                     ForEach(group.spaces) { space in
-                        SpaceRow(space: space, peer: peer(for: space)).tag(space.name)
+                        SpaceRow(space: space, peer: peer(for: space))
+                            .tag(space.name)
+                            .contextMenu { rowMenu(for: space) }
                     }
+                    .onMove(perform: moveHandler(for: group))
                 }
             }
         }
@@ -262,15 +264,98 @@ struct SpacesListView: View {
         }
         let now = Date()
         return allSpaces.filter { space in
+            guard session.kind.matches(space) else { return false }
+            // Pinning outranks both the scope and the muted toggle: it is an explicit
+            // "keep this in front of me", and a pin that vanished because the
+            // conversation went quiet for a month would be worse than no pin at all.
+            if space.isPinned { return true }
             guard session.showsMuted || !space.isMuted else { return false }
-            return session.scope.matches(space, now: now) && session.kind.matches(space)
+            return session.scope.matches(space, now: now)
         }
     }
 
+    /// Pinned rows are counted out: they are listed regardless of this toggle, so
+    /// including them would promise rows the toggle cannot actually reveal.
     private var mutedCount: Int {
         let now = Date()
         return allSpaces.count { space in
-            space.isMuted && session.scope.matches(space, now: now) && session.kind.matches(space)
+            space.isMuted && !space.isPinned
+                && session.scope.matches(space, now: now) && session.kind.matches(space)
+        }
+    }
+
+    /// The pinned group in the arrangement the user chose.
+    ///
+    /// Pinned wins over muted for a space that is both: you can pin something you
+    /// have silenced, and the pin is the more deliberate of the two instructions.
+    private var pinnedSpaces: [CachedSpace] {
+        visibleSpaces
+            .filter(\.isPinned)
+            // Ties fall back to the query's recency order, so a group pinned before
+            // ordering existed still lists in a stable, sensible sequence.
+            .sorted { $0.pinnedOrder < $1.pinnedOrder }
+    }
+
+    /// Only the pinned group is arrangeable: the others are ordered by the server's
+    /// section order and by recency, neither of which is this app's to overrule.
+    /// `nil` leaves those rows undraggable.
+    ///
+    /// Spelled out as a typed closure rather than a ternary inside the list body,
+    /// which pushed that expression past what the type checker would solve.
+    private func moveHandler(for group: SpaceGroup) -> ((IndexSet, Int) -> Void)? {
+        guard group.isPinned else { return nil }
+        return { offsets, destination in movePinned(from: offsets, to: destination) }
+    }
+
+    /// Drag-to-reorder within the pinned section.
+    private func movePinned(from offsets: IndexSet, to destination: Int) {
+        var names = pinnedSpaces.map(\.name)
+        names.move(fromOffsets: offsets, toOffset: destination)
+        Task { await session.reorderPinned(names) }
+    }
+
+    /// The same reorder by one step, for the context menu.
+    ///
+    /// Dragging is the obvious gesture but the worst one to rely on alone here: the
+    /// rows are also a selection list, the group can be taller than the sidebar, and
+    /// a drag is unreachable by keyboard or VoiceOver.
+    private func movePinned(_ space: CachedSpace, by delta: Int) {
+        var names = pinnedSpaces.map(\.name)
+        guard let index = names.firstIndex(of: space.name),
+              names.indices.contains(index + delta)
+        else { return }
+        names.swapAt(index, index + delta)
+        Task { await session.reorderPinned(names) }
+    }
+
+    @ViewBuilder
+    private func rowMenu(for space: CachedSpace) -> some View {
+        Button(space.isPinned ? "Unpin" : "Pin", systemImage: space.isPinned ? "pin.slash" : "pin") {
+            Task { await session.setPinned(!space.isPinned, for: space.name) }
+        }
+        Button(
+            space.isMuted ? "Unmute" : "Mute",
+            systemImage: space.isMuted ? "bell" : "bell.slash"
+        ) {
+            Task { await session.setMuted(!space.isMuted, for: space.name) }
+        }
+
+        if space.isPinned {
+            let order = pinnedSpaces.map(\.name)
+            let index = order.firstIndex(of: space.name)
+            Divider()
+            Button("Move Up", systemImage: "arrow.up") { movePinned(space, by: -1) }
+                .disabled(index == nil || index == 0)
+            Button("Move Down", systemImage: "arrow.down") { movePinned(space, by: 1) }
+                .disabled(index == nil || index == order.count - 1)
+            // Goes through the same offsets-based move as a drag: stepping it up by
+            // its own index would swap with the current top rather than move past it,
+            // which is a different arrangement entirely.
+            Button("Move to Top", systemImage: "arrow.up.to.line") {
+                guard let index else { return }
+                movePinned(from: IndexSet(integer: index), to: 0)
+            }
+            .disabled(index == nil || index == 0)
         }
     }
 
@@ -278,15 +363,43 @@ struct SpacesListView: View {
         let title: String
         let sortOrder: Int
         let spaces: [CachedSpace]
+        /// Drives `.onMove`: only this group can be rearranged.
+        var isPinned = false
     }
 
-    /// Mirrors the web client's sidebar: conversations grouped under their section,
-    /// in the order the user arranged them.
+    /// Pinned first, then the sections, then muted — the shape the web client's
+    /// sidebar has, built from this app's own pin and mute state.
     ///
-    /// Falls back to one flat unlabelled group when sections have not loaded, so the
-    /// sidebar never becomes a single header called "Section".
+    /// Muted conversations are pulled out of their sections rather than shown in
+    /// place. Returning them to the sections they came from would scatter the very
+    /// rows you asked to keep out of the way through the whole list; a single trailing
+    /// group keeps them one glance away instead.
     private var groupedSpaces: [SpaceGroup] {
         let spaces = visibleSpaces
+        let pinned = pinnedSpaces
+        let muted = spaces.filter { $0.isMuted && !$0.isPinned }
+        let rest = spaces.filter { !$0.isPinned && !$0.isMuted }
+
+        // `.min` / `.max` so these two hold their ends of the list even against a
+        // custom section the user dragged to the very top or bottom of their sidebar.
+        var groups: [SpaceGroup] = []
+        if !pinned.isEmpty {
+            groups.append(
+                SpaceGroup(title: "Pinned", sortOrder: .min, spaces: pinned, isPinned: true)
+            )
+        }
+        if !rest.isEmpty {
+            groups.append(contentsOf: sectionGroups(for: rest))
+        }
+        if !muted.isEmpty {
+            groups.append(SpaceGroup(title: "Muted", sortOrder: .max, spaces: muted))
+        }
+        return groups
+    }
+
+    /// Falls back to one flat unlabelled group when sections have not loaded, so the
+    /// sidebar never becomes a single header called "Section".
+    private func sectionGroups(for spaces: [CachedSpace]) -> [SpaceGroup] {
         let hasSections = spaces.contains { $0.sectionTitle != nil }
         guard hasSections else {
             return [SpaceGroup(title: "Conversations", sortOrder: 0, spaces: spaces)]
@@ -352,6 +465,14 @@ private struct SpaceRow: View {
                 }
             }
             Spacer(minLength: 0)
+            // A pinned space keeps its place at the top whether or not it is muted,
+            // so the group header alone cannot say which — this can.
+            if space.isMuted && space.isPinned {
+                Image(systemName: "bell.slash")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .accessibilityLabel("Muted")
+            }
             unreadBadge
         }
         .padding(.vertical, 2)

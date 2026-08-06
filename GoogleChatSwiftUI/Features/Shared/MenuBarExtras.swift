@@ -19,9 +19,17 @@ struct MenuBarLabel: View {
 
 struct MenuBarContent: View {
     @Environment(AuthModel.self) private var auth
-    @Query(filter: #Predicate<CachedSpace> { $0.unreadCount > 0 },
+    /// Muted conversations are left out: the menu-bar peek is a "what needs me?"
+    /// list, and a muted space is by definition not that.
+    @Query(filter: #Predicate<CachedSpace> { $0.unreadCount > 0 && !$0.isMuted },
            sort: [SortDescriptor(\CachedSpace.lastActiveTime, order: .reverse)])
     private var unreadSpaces: [CachedSpace]
+
+    /// Pinned first, then by recency. Sorted here rather than in the query because
+    /// `Bool` is not `Comparable`, so it cannot be a `SortDescriptor` key path.
+    private var rankedUnread: [CachedSpace] {
+        unreadSpaces.filter(\.isPinned) + unreadSpaces.filter { !$0.isPinned }
+    }
 
     var body: some View {
         if case .signedIn = auth.state {
@@ -32,7 +40,7 @@ struct MenuBarContent: View {
                 Divider()
                 // Capped: an unbounded menu of 700 rows is unusable, and the top few
                 // by recency are what anyone actually wants from a menu-bar peek.
-                ForEach(unreadSpaces.prefix(10)) { space in
+                ForEach(rankedUnread.prefix(10)) { space in
                     Button("\(space.title) (\(space.unreadCount))") {
                         activateApp()
                     }
