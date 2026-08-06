@@ -191,6 +191,8 @@ Required changes:
 Each phase ends at something runnable, not a half-integrated layer.
 
 Status as of 2026-08-06: phases 0–7 complete, 8 partial.
+All three of the last requested features — message search, file upload,
+clickable and rich links — are in.
 
 | # | Phase | Outcome |
 |---|---|---|
@@ -232,8 +234,6 @@ naive design assumes, and it forces two decisions:
 
 ## 8. Remaining work
 
-- **Attachment upload** — download works; upload does not
-- **Message search** — Chat has no search endpoint, so this must be local over cached history
 - **Pins**
 - **Menu-bar space selection** — clicking a conversation there activates the window but does not select the space; needs cross-scene selection state
 - Multi-account support is out of scope for v1; the auth layer keeps it possible without redesign
@@ -251,6 +251,9 @@ Each of these cost a wrong assumption first, and each shaped the design:
 | Chat API app configuration is *not* required for user-auth calls | No console work beyond consent screen + client — see [`SETUP.md`](SETUP.md) |
 | Drive-hosted attachments carry no `attachmentDataRef` | They open in a browser; there is no media resource to download |
 | Annotation `startIndex` units are unspecified (code points vs UTF-16) | Mentions are highlighted by name match, not by offset |
+| `Attachment.thumbnailUri` / `downloadUri` are links for a human in a browser, not app-fetchable | Previews and downloads go through `media.download` with the data ref |
+| `RichLinkMetadata` has identifiers and a URI but no title, thumbnail, or description | Rich links render as typed chips; real previews would need Drive/Calendar scopes |
+| No message search endpoint exists at any auth level | Search is local over cached history, and says so in the UI |
 | Subscription max TTL is undocumented and varies with `includeResource` | Renewal patches `ttl: 0` ("extend to maximum") on a timer, so the value never needs knowing |
 | Card `onClick.action` calls back into the app that sent the card | Interactive card content is unreachable as a user: link buttons work, action buttons and form widgets render disabled |
 
