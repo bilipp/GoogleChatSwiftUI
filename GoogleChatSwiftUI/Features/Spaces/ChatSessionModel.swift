@@ -215,6 +215,24 @@ final class ChatSessionModel {
         try? await sync.discard(messageName: name)
     }
 
+    func toggleReaction(_ emoji: String, on messageName: String) async {
+        messageError = nil
+        do {
+            try await sync.toggleReaction(
+                emoji: emoji,
+                on: messageName,
+                selfChatName: profile?.chatUserName
+            )
+        } catch {
+            logger.error("Reaction toggle failed: \(error.localizedDescription)")
+            messageError = error.localizedDescription
+        }
+    }
+
+    func downloadAttachment(resourceName: String) async throws -> Data {
+        try await sync.downloadAttachment(resourceName: resourceName)
+    }
+
     /// Whether the signed-in user authored this message — the gate for edit/delete,
     /// which Chat only permits on your own messages.
     func isOwnMessage(_ message: CachedMessage) -> Bool {

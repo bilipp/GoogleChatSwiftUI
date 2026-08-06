@@ -12,6 +12,8 @@ struct MessageBubble: View {
     let message: CachedMessage
     /// Directory profile for the sender, when one has been resolved.
     let sender: CachedUser?
+    /// Display names of users mentioned in this message, for highlighting.
+    let mentionNames: [String]
     let isOwn: Bool
     let isFirstInGroup: Bool
     let isLastInGroup: Bool
@@ -45,6 +47,19 @@ struct MessageBubble: View {
                     editor
                 } else {
                     bubble
+                }
+
+                if !message.attachments.isEmpty {
+                    AttachmentList(attachments: message.attachments, isOwn: isOwn)
+                }
+
+                if !message.reactions.isEmpty || isHovering {
+                    ReactionBar(
+                        reactions: message.reactions,
+                        isOwn: isOwn
+                    ) { emoji in
+                        Task { await session.toggleReaction(emoji, on: message.name) }
+                    }
                 }
 
                 if isLastInGroup || isHovering {
@@ -84,8 +99,17 @@ struct MessageBubble: View {
         }
     }
 
+    /// Mention highlighting matches on display name, so the sender's own directory
+    /// entry is irrelevant here — only the mentioned users' names matter.
+    private var renderedText: AttributedString {
+        guard !message.isDeleted, let raw = message.text, !raw.isEmpty else {
+            return AttributedString(message.displayText)
+        }
+        return ChatTextRenderer.attributed(raw, mentionNames: mentionNames, isOwn: isOwn)
+    }
+
     private var bubble: some View {
-        Text(message.displayText)
+        Text(renderedText)
             .font(.body)
             .italic(message.isDeleted)
             .foregroundStyle(foreground)

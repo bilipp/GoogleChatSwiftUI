@@ -98,6 +98,52 @@ nonisolated extension ChatClient {
     static func newClientMessageID() -> String {
         "client-" + UUID().uuidString.lowercased()
     }
+
+    // MARK: - Reactions
+
+    func createReaction(messageName: String, unicode: String) async throws -> ChatReaction {
+        try await post(
+            "\(messageName)/reactions",
+            body: CreateReactionBody(emoji: .init(unicode: unicode, customEmoji: nil)),
+            as: ChatReaction.self
+        )
+    }
+
+    func deleteReaction(name: String) async throws {
+        try await delete(name)
+    }
+
+    /// Everyone's reactions to a message.
+    ///
+    /// `Message.emojiReactionSummaries` gives counts but never says whether *you*
+    /// reacted, and there is no field that does — so toggling requires this call to
+    /// find your own reaction's resource name.
+    func listReactions(messageName: String) async throws -> ListReactionsResponse {
+        try await get(
+            "\(messageName)/reactions",
+            query: [URLQueryItem(name: "pageSize", value: "200")],
+            as: ListReactionsResponse.self
+        )
+    }
+
+    // MARK: - Media
+
+    /// Downloads an attachment's bytes.
+    /// - Parameter resourceName: from `attachmentDataRef.resourceName`.
+    func downloadAttachment(resourceName: String) async throws -> Data {
+        var components = URLComponents(
+            string: "https://chat.googleapis.com/v1/media/\(resourceName)"
+        )!
+        components.queryItems = [URLQueryItem(name: "alt", value: "media")]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "GET"
+        return try await transport.data(for: request)
+    }
+}
+
+private nonisolated struct CreateReactionBody: Encodable, Sendable {
+    let emoji: ChatEmoji
 }
 
 nonisolated struct SpaceReadStateResponse: Decodable, Sendable {

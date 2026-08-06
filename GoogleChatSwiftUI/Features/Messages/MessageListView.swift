@@ -93,6 +93,7 @@ struct MessageListView: View {
                             MessageBubble(
                                 message: entry.message,
                                 sender: sender(for: entry.message),
+                                mentionNames: mentionNames(in: entry.message),
                                 isOwn: entry.isOwn,
                                 isFirstInGroup: entry.isFirstInGroup,
                                 isLastInGroup: entry.isLastInGroup,
@@ -120,6 +121,10 @@ struct MessageListView: View {
     private func sender(for message: CachedMessage) -> CachedUser? {
         guard let id = message.senderName else { return nil }
         return usersByID[id]
+    }
+
+    private func mentionNames(in message: CachedMessage) -> [String] {
+        message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {

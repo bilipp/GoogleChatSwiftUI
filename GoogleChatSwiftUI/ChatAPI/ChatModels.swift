@@ -75,19 +75,61 @@ nonisolated struct ChatThread: Decodable, Sendable, Hashable {
 }
 
 nonisolated struct ChatAttachment: Decodable, Sendable, Hashable {
+    /// Pointer used by `media.download`; distinct from the user-facing `downloadUri`.
+    nonisolated struct DataRef: Decodable, Sendable, Hashable {
+        let resourceName: String?
+    }
+
     let name: String?
     let contentName: String?
     let contentType: String?
     let thumbnailUri: String?
     let downloadUri: String?
+    let attachmentDataRef: DataRef?
+    let source: String?
+}
+
+nonisolated struct ChatEmoji: Codable, Sendable, Hashable {
+    nonisolated struct CustomEmoji: Codable, Sendable, Hashable {
+        let uid: String?
+    }
+    let unicode: String?
+    let customEmoji: CustomEmoji?
+
+    /// Custom emoji have no unicode representation, so they degrade to a marker
+    /// rather than rendering as nothing.
+    var display: String { unicode ?? "🧩" }
 }
 
 nonisolated struct EmojiReactionSummary: Decodable, Sendable, Hashable {
-    nonisolated struct Emoji: Decodable, Sendable, Hashable {
-        let unicode: String?
-    }
-    let emoji: Emoji?
+    let emoji: ChatEmoji?
     let reactionCount: Int?
+}
+
+nonisolated struct ChatReaction: Decodable, Sendable, Hashable {
+    /// Resource name, e.g. `spaces/A/messages/B/reactions/C` — needed to delete.
+    let name: String?
+    let user: ChatUser?
+    let emoji: ChatEmoji?
+}
+
+nonisolated struct ListReactionsResponse: Decodable, Sendable {
+    let reactions: [ChatReaction]?
+    let nextPageToken: String?
+}
+
+/// Structured spans Chat attaches to message text: mentions, slash commands, links.
+nonisolated struct ChatAnnotation: Decodable, Sendable, Hashable {
+    nonisolated struct UserMention: Decodable, Sendable, Hashable {
+        let user: ChatUser?
+        /// `ADD` when the user was added to the thread, `MENTION` otherwise.
+        let type: String?
+    }
+
+    let type: String?
+    let startIndex: Int?
+    let length: Int?
+    let userMention: UserMention?
 }
 
 nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
@@ -103,6 +145,7 @@ nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
     let threadReply: Bool?
     let attachment: [ChatAttachment]?
     let emojiReactionSummaries: [EmojiReactionSummary]?
+    let annotations: [ChatAnnotation]?
 
     var id: String { name }
     var isDeleted: Bool { deleteTime != nil }

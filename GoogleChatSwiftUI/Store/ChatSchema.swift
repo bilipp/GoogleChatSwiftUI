@@ -10,7 +10,13 @@ enum ChatSchemaV1: VersionedSchema {
     static var versionIdentifier: Schema.Version { .init(1, 0, 0) }
 
     static var models: [any PersistentModel.Type] {
-        [CachedSpace.self, CachedMessage.self, CachedUser.self]
+        [
+            CachedSpace.self,
+            CachedMessage.self,
+            CachedUser.self,
+            CachedReaction.self,
+            CachedAttachment.self,
+        ]
     }
 }
 
@@ -112,7 +118,16 @@ final class CachedMessage {
     /// Non-nil when a send failed and the row is offering a retry.
     var sendFailureReason: String?
 
+    /// Chat user IDs mentioned in this message, from its annotations.
+    var mentionedUserIDs: [String] = []
+
     var space: CachedSpace?
+
+    @Relationship(deleteRule: .cascade, inverse: \CachedReaction.message)
+    var reactions: [CachedReaction] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \CachedAttachment.message)
+    var attachments: [CachedAttachment] = []
 
     init(name: String) {
         self.name = name
@@ -137,6 +152,71 @@ final class CachedMessage {
         threadName = remote.thread?.name
         isThreadReply = remote.threadReply ?? false
         attachmentCount = remote.attachment?.count ?? 0
+        // Written as a loop: the equivalent filter/compactMap chain over an optional
+        // array of nested optionals exceeds the type checker's budget.
+        var mentions: [String] = []
+        for annotation in remote.annotations ?? [] where annotation.type == "USER_MENTION" {
+            if let id = annotation.userMention?.user?.name {
+                mentions.append(id)
+            }
+        }
+        mentionedUserIDs = mentions
+    }
+}
+
+@Model
+final class CachedReaction {
+    /// `<messageName>|<emoji>` — one row per distinct emoji on a message.
+    @Attribute(.unique) var key: String
+    var emoji: String
+    var count: Int
+    /// The signed-in user's own reaction resource name, when they have reacted.
+    /// Chat never reports this in message summaries, so it is filled in lazily.
+    var myReactionName: String?
+
+    var message: CachedMessage?
+
+    init(key: String, emoji: String, count: Int) {
+        self.key = key
+        self.emoji = emoji
+        self.count = count
+    }
+
+    var reactedByMe: Bool { myReactionName != nil }
+}
+
+@Model
+final class CachedAttachment {
+    /// Chat resource name of the attachment.
+    @Attribute(.unique) var name: String
+    var contentName: String?
+    var contentType: String?
+    var thumbnailURI: String?
+    var downloadURI: String?
+    /// Pointer for `media.download`, absent for Drive-hosted files.
+    var dataResourceName: String?
+
+    var message: CachedMessage?
+
+    init(name: String) {
+        self.name = name
+    }
+
+    var displayName: String { contentName ?? "Attachment" }
+
+    var isImage: Bool { contentType?.hasPrefix("image/") ?? false }
+
+    /// Drive-hosted attachments have no media resource and must open in a browser.
+    var isDownloadable: Bool { dataResourceName != nil }
+
+    var symbol: String {
+        guard let type = contentType else { return "doc" }
+        if type.hasPrefix("image/") { return "photo" }
+        if type.hasPrefix("video/") { return "film" }
+        if type.hasPrefix("audio/") { return "waveform" }
+        if type.contains("pdf") { return "doc.richtext" }
+        if type.contains("zip") || type.contains("compressed") { return "doc.zipper" }
+        return "doc"
     }
 }
 

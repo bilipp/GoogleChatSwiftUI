@@ -163,6 +163,125 @@ actor ChatStore {
         try modelContext.save()
     }
 
+    /// Mirrors a message's reaction summaries into cached rows.
+    ///
+    /// `myReactionName` is preserved across refreshes: the server summary never says
+    /// whether you reacted, so re-applying it would wipe knowledge we paid an extra
+    /// call to obtain.
+    private func syncReactions(of remote: ChatMessage, on cached: CachedMessage) {
+        let summaries = remote.emojiReactionSummaries ?? []
+        var existing = Dictionary(
+            cached.reactions.map { ($0.emoji, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        for summary in summaries {
+            guard let emoji = summary.emoji?.display else { continue }
+            let count = summary.reactionCount ?? 0
+            if let row = existing.removeValue(forKey: emoji) {
+                row.count = count
+            } else {
+                let row = CachedReaction(
+                    key: "\(cached.name)|\(emoji)",
+                    emoji: emoji,
+                    count: count
+                )
+                row.message = cached
+                modelContext.insert(row)
+            }
+        }
+
+        // Anything left is a reaction that was fully removed server-side.
+        for (_, stale) in existing {
+            modelContext.delete(stale)
+        }
+    }
+
+    private func syncAttachments(of remote: ChatMessage, on cached: CachedMessage) {
+        let incoming = remote.attachment ?? []
+        guard !incoming.isEmpty || !cached.attachments.isEmpty else { return }
+
+        var existing = Dictionary(
+            cached.attachments.compactMap { row -> (String, CachedAttachment)? in (row.name, row) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        for attachment in incoming {
+            guard let name = attachment.name else { continue }
+            let row = existing.removeValue(forKey: name) ?? {
+                let created = CachedAttachment(name: name)
+                created.message = cached
+                modelContext.insert(created)
+                return created
+            }()
+            row.contentName = attachment.contentName
+            row.contentType = attachment.contentType
+            row.thumbnailURI = attachment.thumbnailUri
+            row.downloadURI = attachment.downloadUri
+            row.dataResourceName = attachment.attachmentDataRef?.resourceName
+        }
+
+        for (_, stale) in existing {
+            modelContext.delete(stale)
+        }
+    }
+
+    /// Records the signed-in user's own reaction so it can be toggled off later.
+    func setMyReaction(_ reactionName: String?, emoji: String, on messageName: String) throws {
+        let key = "\(messageName)|\(emoji)"
+        var descriptor = FetchDescriptor<CachedReaction>(
+            predicate: #Predicate { $0.key == key }
+        )
+        descriptor.fetchLimit = 1
+
+        if let row = try modelContext.fetch(descriptor).first {
+            row.myReactionName = reactionName
+            // Optimistic count nudge; the next refresh replaces it with the truth.
+            row.count = max(0, row.count + (reactionName == nil ? -1 : 1))
+            if row.count == 0 && reactionName == nil {
+                modelContext.delete(row)
+            }
+        } else if reactionName != nil, let message = try message(named: messageName) {
+            let row = CachedReaction(key: key, emoji: emoji, count: 1)
+            row.myReactionName = reactionName
+            row.message = message
+            modelContext.insert(row)
+        }
+        try modelContext.save()
+    }
+
+    /// Applies a full reaction listing, which is the only way to learn which
+    /// reactions are the signed-in user's own.
+    func applyReactionListing(
+        _ reactions: [ChatReaction],
+        for messageName: String,
+        selfChatName: String?
+    ) throws {
+        guard let message = try message(named: messageName) else { return }
+
+        var counts: [String: Int] = [:]
+        var mine: [String: String] = [:]
+
+        for reaction in reactions {
+            guard let emoji = reaction.emoji?.display else { continue }
+            counts[emoji, default: 0] += 1
+            if let selfChatName, reaction.user?.name == selfChatName, let name = reaction.name {
+                mine[emoji] = name
+            }
+        }
+
+        for row in message.reactions {
+            modelContext.delete(row)
+        }
+        for (emoji, count) in counts {
+            let row = CachedReaction(key: "\(messageName)|\(emoji)", emoji: emoji, count: count)
+            row.myReactionName = mine[emoji]
+            row.message = message
+            modelContext.insert(row)
+        }
+        try modelContext.save()
+    }
+
     /// Upsert keyed on the message resource name, which is what makes paginated
     /// backfill and the live event stream converge instead of duplicating.
     private func upsert(_ messages: [ChatMessage], into space: CachedSpace) throws {
@@ -176,15 +295,20 @@ actor ChatStore {
         var byName = Dictionary(uniqueKeysWithValues: existing.map { ($0.name, $0) })
 
         for message in messages {
+            let target: CachedMessage
             if let found = byName[message.name] {
                 found.apply(message)
+                target = found
             } else {
                 let created = CachedMessage(name: message.name)
                 created.apply(message)
                 created.space = space
                 modelContext.insert(created)
                 byName[message.name] = created
+                target = created
             }
+            syncReactions(of: message, on: target)
+            syncAttachments(of: message, on: target)
         }
     }
 

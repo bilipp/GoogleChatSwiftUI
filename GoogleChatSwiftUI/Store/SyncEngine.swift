@@ -230,6 +230,49 @@ nonisolated struct SyncEngine: Sendable {
         try await store.applyDeletion(to: messageName)
     }
 
+    // MARK: - Reactions
+
+    /// Adds or removes the signed-in user's reaction.
+    ///
+    /// Chat reports reaction *counts* but never whether you are among the reactors,
+    /// and offers no field that would. So a toggle first lists the message's
+    /// reactions to find your own — one extra call, paid only on interaction rather
+    /// than on every message load.
+    func toggleReaction(
+        emoji: String,
+        on messageName: String,
+        selfChatName: String?
+    ) async throws {
+        let listing = try await client.listReactions(messageName: messageName)
+        let reactions = listing.reactions ?? []
+
+        let mine = reactions.first { reaction in
+            reaction.emoji?.display == emoji && reaction.user?.name == selfChatName
+        }
+
+        if let mine, let name = mine.name {
+            try await client.deleteReaction(name: name)
+            try await store.setMyReaction(nil, emoji: emoji, on: messageName)
+        } else {
+            let created = try await client.createReaction(messageName: messageName, unicode: emoji)
+            try await store.setMyReaction(created.name, emoji: emoji, on: messageName)
+        }
+
+        // Re-read so counts reflect everyone's reactions, not just the local nudge.
+        let refreshed = try await client.listReactions(messageName: messageName)
+        try await store.applyReactionListing(
+            refreshed.reactions ?? [],
+            for: messageName,
+            selfChatName: selfChatName
+        )
+    }
+
+    // MARK: - Attachments
+
+    func downloadAttachment(resourceName: String) async throws -> Data {
+        try await client.downloadAttachment(resourceName: resourceName)
+    }
+
     func markRead(spaceName: String) async throws {
         try await client.markSpaceRead(spaceName: spaceName)
     }
