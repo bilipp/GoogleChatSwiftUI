@@ -20,10 +20,12 @@ struct ChatCommands: Commands {
         }
 
         CommandGroup(after: .textEditing) {
+            // No "Search Messages" item: `.searchable` installs its own Find entry
+            // with ⌘F, and a second one here would shadow it.
             Button("Search Conversations") {
                 NotificationCenter.default.post(name: .chatFocusSearch, object: nil)
             }
-            .keyboardShortcut("f")
+            .keyboardShortcut("f", modifiers: [.command, .option])
         }
     }
 }

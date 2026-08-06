@@ -130,6 +130,39 @@ actor ChatStore {
         try modelContext.save()
     }
 
+    // MARK: - Search index
+
+    /// Fills `searchableText` for rows cached before the column existed.
+    ///
+    /// Purely local — no network — so it can run in full on launch. Without it,
+    /// search would silently miss every message already in the cache, and would only
+    /// improve as spaces happened to be reopened.
+    /// - Returns: how many rows were indexed.
+    ///
+    /// Deliberately fetches every message rather than predicating on an empty index.
+    /// A non-optional column added by lightweight migration is NULL in pre-existing
+    /// rows, not `""`, so `searchableText.isEmpty` matched nothing and the first
+    /// version of this silently indexed zero messages. Comparing against the freshly
+    /// computed value also self-heals if the index formula ever changes.
+    @discardableResult
+    func backfillSearchIndex() throws -> Int {
+        let all = try modelContext.fetch(FetchDescriptor<CachedMessage>())
+        var indexed = 0
+
+        for message in all {
+            let expected = CachedMessage.searchIndex(
+                text: message.text,
+                fallback: message.fallbackText
+            )
+            guard !expected.isEmpty, message.searchableText != expected else { continue }
+            message.searchableText = expected
+            indexed += 1
+        }
+
+        if indexed > 0 { try modelContext.save() }
+        return indexed
+    }
+
     // MARK: - Read state
 
     /// Spaces worth checking read state for, most recently active first.

@@ -19,7 +19,19 @@ struct SpacesListView: View {
             sidebar
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300)
         } detail: {
-            if let selected = selectedSpace {
+            if session.isSearchingMessages {
+                // Replaces the transcript rather than overlaying it: search results
+                // and a conversation are two different things to be reading.
+                MessageSearchResults(
+                    query: session.messageQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+                    scopedTo: session.messageSearchScope == .currentConversation
+                        ? session.selectedSpaceName
+                        : nil
+                )
+                // Re-queries when the text or scope changes; without this the fetch
+                // descriptor built in `init` would be reused.
+                .id("\(session.messageQuery)|\(session.messageSearchScope.rawValue)")
+            } else if let selected = selectedSpace {
                 MessageListView(
                     spaceName: selected.name,
                     spaceTitle: selected.title,
@@ -49,9 +61,21 @@ struct SpacesListView: View {
                 )
             }
         }
+        // `.searchable` rather than a hand-rolled toolbar field. A TextField hosted
+        // in a ToolbarItem cannot be focused programmatically at all — toolbar content
+        // lives in a separate hierarchy — so no amount of FocusState plumbing made ⌘F
+        // work. SwiftUI's own search field is in the toolbar *and* wires up ⌘F.
+        .searchable(
+            text: $session.messageQuery,
+            placement: .toolbar,
+            prompt: "Search messages"
+        )
+        .searchScopes($session.messageSearchScope, activation: .onTextEntry) {
+            ForEach(MessageSearchScope.allCases) { option in
+                Text(option.title).tag(option)
+            }
+        }
         .toolbar {
-            // Trailing edge of the window. The search slot beside it is deliberately
-            // left empty for message search.
             ToolbarItem(placement: .primaryAction) {
                 ProfileMenu(
                     profile: currentProfile,
@@ -64,6 +88,7 @@ struct SpacesListView: View {
         .task {
             if case .idle = session.spacesState { await session.refreshSpaces() }
             await session.startRealtime()
+            await session.prepareSearchIndex()
             await session.loadReadStates()
         }
         .onReceive(

@@ -27,7 +27,19 @@ final class ChatSessionModel {
 
     var scope: SpaceScope = .recent
     var kind: SpaceKind = .all
+    /// Filters the sidebar's conversation list.
     var searchText: String = ""
+
+    /// Searches message bodies. Separate from `searchText`, which filters
+    /// conversation names — conflating them would make one field mean two things.
+    var messageQuery: String = ""
+    var messageSearchScope: MessageSearchScope = .allConversations
+    /// Message the transcript should jump to, set when a search result is opened.
+    var scrollTarget: String?
+
+    var isSearchingMessages: Bool {
+        messageQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
     var selectedSpaceName: String?
     /// Thread currently open in the inspector, e.g. `spaces/A/threads/B`.
     var selectedThreadName: String?
@@ -93,6 +105,16 @@ final class ChatSessionModel {
             await notifications.setBadge(totalUnread)
         } catch {
             logger.error("Unread tally failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Indexes existing cached messages so search covers them.
+    func prepareSearchIndex() async {
+        do {
+            let indexed = try await sync.backfillSearchIndex()
+            if indexed > 0 { logger.info("Indexed \(indexed) message(s) for search") }
+        } catch {
+            logger.error("Search index backfill failed: \(error.localizedDescription)")
         }
     }
 

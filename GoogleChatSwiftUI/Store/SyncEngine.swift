@@ -338,6 +338,12 @@ nonisolated struct SyncEngine: Sendable {
         logger.info("Fetched read state for \(pending.count) space(s)")
     }
 
+    /// Indexes cached messages for search. Local only, so it is cheap to run fully.
+    @discardableResult
+    func backfillSearchIndex() async throws -> Int {
+        try await store.backfillSearchIndex()
+    }
+
     func totalUnread() async throws -> Int {
         try await store.totalUnread()
     }

@@ -87,6 +87,26 @@ struct MessageListView: View {
     /// stack lost its position on relayout; and a spinner inside the scroll content
     /// shifted every message down and back up as it came and went.
     private var transcript: some View {
+        // A reader is back, but only to serve an explicit jump target set by opening a
+        // search result. It never fires on content or selection changes, which is what
+        // made the old imperative scrolling jump.
+        ScrollViewReader { proxy in
+            scrollContent
+                .onChange(of: session.scrollTarget, initial: true) { _, target in
+                    guard let target, messages.contains(where: { $0.name == target }) else {
+                        return
+                    }
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+                    // Cleared so returning to this conversation later opens at the
+                    // bottom as usual rather than back at an old search hit.
+                    session.scrollTarget = nil
+                }
+        }
+    }
+
+    private var scrollContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(days, id: \.day) { group in

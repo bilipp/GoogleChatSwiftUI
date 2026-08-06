@@ -146,6 +146,15 @@ final class CachedMessage {
     /// Chat user IDs mentioned in this message, from its annotations.
     var mentionedUserIDs: [String] = []
 
+    /// Lowercased message text, kept non-optional purely so it can be queried.
+    ///
+    /// SwiftData cannot reliably translate a predicate over an optional String —
+    /// force-unwrapping inside `#Predicate` throws at runtime, which is how the
+    /// display-name backfill silently failed earlier. A plain non-optional column
+    /// sidesteps the problem, and lowercasing at write time makes search a simple
+    /// `contains` rather than a locale-sensitive comparison the store can't index.
+    var searchableText: String = ""
+
     /// `cardsV2` kept as raw JSON.
     ///
     /// Cards are a deeply nested, recursive tree of a dozen widget types. Modelling
@@ -201,9 +210,19 @@ final class CachedMessage {
         return "Message"
     }
 
+    /// Builds the search column from every text-bearing field, so a card message is
+    /// findable by its fallback text even though it has no body of its own.
+    static func searchIndex(text: String?, fallback: String?) -> String {
+        [text, fallback]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .lowercased()
+    }
+
     func apply(_ remote: ChatMessage) {
         text = remote.text
         fallbackText = remote.fallbackText
+        searchableText = Self.searchIndex(text: remote.text, fallback: remote.fallbackText)
         // Re-encoded rather than carrying the original bytes: the wire payload is not
         // retained after decoding, and round-tripping through our own models keeps the
         // stored shape in step with what the renderer expects.
