@@ -67,6 +67,10 @@ struct MessageBubble: View {
                         .contextMenu { contextMenu }
                 }
 
+                ForEach(Array(message.richLinks.enumerated()), id: \.offset) { _, link in
+                    RichLinkChip(link: link)
+                }
+
                 if !message.attachments.isEmpty {
                     AttachmentList(attachments: message.attachments, isOwn: isOwn)
                 }

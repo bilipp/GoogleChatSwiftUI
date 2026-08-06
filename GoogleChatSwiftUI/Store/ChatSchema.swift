@@ -155,6 +155,10 @@ final class CachedMessage {
     /// `contains` rather than a locale-sensitive comparison the store can't index.
     var searchableText: String = ""
 
+    /// Rich-link annotations kept as raw JSON, for the same reason as cards: a nested
+    /// tree that is only ever read and re-rendered, never queried.
+    var richLinksJSON: Data?
+
     /// `cardsV2` kept as raw JSON.
     ///
     /// Cards are a deeply nested, recursive tree of a dozen widget types. Modelling
@@ -188,6 +192,15 @@ final class CachedMessage {
     }
 
     var hasCards: Bool { cardsJSON != nil && !isDeleted }
+
+    /// Smart chips Chat recognised in the text — Drive files, Calendar events, Meet
+    /// links. Decoded lazily, like cards.
+    var richLinks: [RichLinkMetadata] {
+        guard let richLinksJSON, !isDeleted else { return [] }
+        guard let decoded = try? JSONDecoder().decode([ChatAnnotation].self, from: richLinksJSON)
+        else { return [] }
+        return decoded.compactMap(\.richLinkMetadata)
+    }
 
     /// Text to show in the bubble. Empty when a card carries the whole message, so
     /// the bubble can be omitted entirely rather than showing a stub above the card.
@@ -229,6 +242,9 @@ final class CachedMessage {
         cardsJSON = (remote.cardsV2?.isEmpty == false)
             ? try? JSONEncoder().encode(remote.cardsV2)
             : nil
+
+        let richLinks = (remote.annotations ?? []).filter { $0.richLinkMetadata != nil }
+        richLinksJSON = richLinks.isEmpty ? nil : try? JSONEncoder().encode(richLinks)
         createTime = remote.createTime
         lastUpdateTime = remote.lastUpdateTime
         deleteTime = remote.deleteTime

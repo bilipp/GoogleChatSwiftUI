@@ -15,8 +15,47 @@ nonisolated enum ChatTextRenderer {
         isOwn: Bool = false
     ) -> AttributedString {
         var result = applyInlineMarkup(to: raw)
+        linkifyURLs(in: &result, isOwn: isOwn)
         highlightMentions(in: &result, names: mentionNames, isOwn: isOwn)
         return result
+    }
+
+    // MARK: - Links
+
+    /// Detector is built once: `NSDataDetector` compiles a regex on init, and doing
+    /// that per message would show up while scrolling a long transcript.
+    private static let urlDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue
+    )
+
+    /// Makes bare URLs tappable.
+    ///
+    /// Chat sends links as plain text with no markup around them, so nothing else in
+    /// this renderer would notice them. `NSDataDetector` is used rather than a regex
+    /// because it handles the awkward cases — trailing punctuation, parenthesised
+    /// URLs, bare domains without a scheme — that hand-rolled patterns get wrong.
+    private static func linkifyURLs(in text: inout AttributedString, isOwn: Bool) {
+        let plain = String(text.characters)
+        guard let urlDetector, !plain.isEmpty else { return }
+
+        let matches = urlDetector.matches(
+            in: plain,
+            range: NSRange(plain.startIndex..., in: plain)
+        )
+
+        // Applied back to front so each replacement leaves earlier indices valid.
+        for match in matches.reversed() {
+            guard let url = match.url,
+                  let stringRange = Range(match.range, in: plain),
+                  let lower = AttributedString.Index(stringRange.lowerBound, within: text),
+                  let upper = AttributedString.Index(stringRange.upperBound, within: text)
+            else { continue }
+
+            text[lower..<upper].link = url
+            text[lower..<upper].underlineStyle = .single
+            // Accent-on-accent would vanish inside an own-message bubble.
+            text[lower..<upper].foregroundColor = isOwn ? .white : .accentColor
+        }
     }
 
     // MARK: - Markup

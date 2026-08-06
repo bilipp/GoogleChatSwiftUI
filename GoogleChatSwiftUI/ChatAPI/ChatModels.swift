@@ -4,8 +4,8 @@ import Foundation
 // decoder applies `.convertFromSnakeCase`-free explicit keys because Chat uses
 // lowerCamelCase on the wire already.
 
-nonisolated struct ChatUser: Decodable, Sendable, Hashable, Identifiable {
-    enum UserType: String, Decodable, Sendable {
+nonisolated struct ChatUser: Codable, Sendable, Hashable, Identifiable {
+    enum UserType: String, Codable, Sendable {
         case unspecified = "TYPE_UNSPECIFIED"
         case human = "HUMAN"
         case bot = "BOT"
@@ -126,8 +126,8 @@ nonisolated struct ListReactionsResponse: Decodable, Sendable {
 }
 
 /// Structured spans Chat attaches to message text: mentions, slash commands, links.
-nonisolated struct ChatAnnotation: Decodable, Sendable, Hashable {
-    nonisolated struct UserMention: Decodable, Sendable, Hashable {
+nonisolated struct ChatAnnotation: Codable, Sendable, Hashable {
+    nonisolated struct UserMention: Codable, Sendable, Hashable {
         let user: ChatUser?
         /// `ADD` when the user was added to the thread, `MENTION` otherwise.
         let type: String?
@@ -137,6 +137,45 @@ nonisolated struct ChatAnnotation: Decodable, Sendable, Hashable {
     let startIndex: Int?
     let length: Int?
     let userMention: UserMention?
+    let richLinkMetadata: RichLinkMetadata?
+}
+
+/// A smart chip: a Drive file, Calendar event, Meet space, Chat space, or Gmail
+/// message that Chat recognised in the message text.
+nonisolated struct RichLinkMetadata: Codable, Sendable, Hashable {
+    nonisolated struct DriveLinkData: Codable, Sendable, Hashable {
+        nonisolated struct DriveDataRef: Codable, Sendable, Hashable {
+            let driveFileId: String?
+        }
+        let driveDataRef: DriveDataRef?
+        let mimeType: String?
+    }
+
+    nonisolated struct ChatSpaceLinkData: Codable, Sendable, Hashable {
+        let space: String?
+        let thread: String?
+        let message: String?
+    }
+
+    nonisolated struct CalendarEventLinkData: Codable, Sendable, Hashable {
+        let calendarId: String?
+        let eventId: String?
+    }
+
+    nonisolated struct MeetSpaceLinkData: Codable, Sendable, Hashable {
+        let meetingCode: String?
+        /// `MEETING` or `HUDDLE`.
+        let type: String?
+        let huddleStatus: String?
+    }
+
+    let uri: String?
+    /// `DRIVE_FILE`, `CHAT_SPACE`, `GMAIL_MESSAGE`, `MEET_SPACE`, `CALENDAR_EVENT`.
+    let richLinkType: String?
+    let driveLinkData: DriveLinkData?
+    let chatSpaceLinkData: ChatSpaceLinkData?
+    let calendarEventLinkData: CalendarEventLinkData?
+    let meetSpaceLinkData: MeetSpaceLinkData?
 }
 
 nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
