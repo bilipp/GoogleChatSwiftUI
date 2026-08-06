@@ -58,6 +58,59 @@ nonisolated struct SyncEngine: Sendable {
         return !(page.nextPageToken ?? "").isEmpty
     }
 
+    // MARK: - Title resolution
+
+    /// How many DM/group-chat titles to resolve per pass. Each costs one API call,
+    /// so this is deliberately bounded rather than resolving all 762 spaces.
+    static let titleResolutionBatch = 25
+
+    func pendingTitleCount() async throws -> Int {
+        try await store.spacesNeedingTitles(limit: Self.titleResolutionBatch).count
+    }
+
+    /// Names DMs and unnamed group chats from their memberships.
+    ///
+    /// Runs a bounded batch concurrently — resolution is independent per space, and
+    /// doing it serially would leave the sidebar showing placeholders for a long time.
+    func resolvePendingTitles(excludingUser selfChatName: String?) async throws {
+        let pending = try await store.spacesNeedingTitles(limit: Self.titleResolutionBatch)
+        guard !pending.isEmpty else { return }
+
+        await withTaskGroup(of: (String, String?).self) { group in
+            for spaceName in pending {
+                group.addTask {
+                    let title = try? await self.peerTitle(
+                        for: spaceName,
+                        excluding: selfChatName
+                    )
+                    return (spaceName, title)
+                }
+            }
+            for await (spaceName, title) in group {
+                try? await store.setResolvedTitle(title, for: spaceName)
+            }
+        }
+        logger.info("Resolved titles for \(pending.count) space(s)")
+    }
+
+    /// Builds a title from everyone in the space who isn't the signed-in user.
+    private func peerTitle(for spaceName: String, excluding selfChatName: String?) async throws -> String? {
+        let response = try await client.listMembers(in: spaceName)
+        let names = (response.memberships ?? [])
+            .filter(\.isJoined)
+            .compactMap(\.member)
+            .filter { member in
+                guard let selfChatName, let name = member.name else { return true }
+                return name != selfChatName
+            }
+            .compactMap(\.displayName)
+            .filter { !$0.isEmpty }
+
+        guard !names.isEmpty else { return nil }
+        // Group chats read better as "Ana, Ben, Chen" than as a single name.
+        return names.joined(separator: ", ")
+    }
+
     // MARK: - Writes
 
     /// Sends a message, showing it locally before the round-trip completes.

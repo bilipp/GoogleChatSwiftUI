@@ -87,6 +87,19 @@ nonisolated extension ChatClient {
         return collected
     }
 
+    /// Members of a space.
+    ///
+    /// This is the only way to name a DM: `spaces.list` returns no `displayName` for
+    /// direct messages or unnamed group chats, so the peer's name has to come from
+    /// their membership.
+    func listMembers(in space: String, pageSize: Int = 20) async throws -> ListMembersResponse {
+        try await get(
+            "\(space)/members",
+            query: [URLQueryItem(name: "pageSize", value: String(pageSize))],
+            as: ListMembersResponse.self
+        )
+    }
+
     /// Messages in a space, newest first.
     /// - Parameter space: resource name, e.g. `spaces/AAAA1111`.
     func listMessages(

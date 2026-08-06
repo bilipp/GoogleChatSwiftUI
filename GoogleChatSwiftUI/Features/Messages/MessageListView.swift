@@ -31,11 +31,11 @@ struct MessageListView: View {
                     ContentUnavailableView(
                         "No Messages",
                         systemImage: "bubble",
-                        description: Text("This space has no messages yet.")
+                        description: Text("Say something to start the conversation.")
                     )
                 }
             } else {
-                messageScroll
+                transcript
             }
         }
         .navigationTitle(spaceTitle)
@@ -71,197 +71,152 @@ struct MessageListView: View {
         }
     }
 
-    private var messageScroll: some View {
+    private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if session.isLoading(spaceName) {
-                        ProgressView().controlSize(.small).padding(8)
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity)
+                            .padding(8)
                     }
 
-                    ForEach(groupedByDay, id: \.day) { group in
-                        Section {
-                            ForEach(Array(group.messages.enumerated()), id: \.element.name) { index, message in
-                                MessageRow(
-                                    message: message,
-                                    // Consecutive messages from one sender read as a
-                                    // block, matching how Chat itself groups them.
-                                    showsSender: index == 0
-                                        || group.messages[index - 1].senderName != message.senderName,
-                                    isOwn: session.isOwnMessage(message),
-                                    spaceName: spaceName
-                                )
-                                .id(message.name)
-                            }
-                        } header: {
-                            DayHeader(day: group.day)
+                    ForEach(days, id: \.day) { group in
+                        DayDivider(day: group.day)
+
+                        ForEach(group.entries, id: \.message.name) { entry in
+                            MessageBubble(
+                                message: entry.message,
+                                isOwn: entry.isOwn,
+                                isFirstInGroup: entry.isFirstInGroup,
+                                isLastInGroup: entry.isLastInGroup,
+                                spaceName: spaceName
+                            )
+                            .id(entry.message.name)
                         }
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
-            .onAppear {
-                if let last = messages.last { proxy.scrollTo(last.name, anchor: .bottom) }
+            .scrollBounceBehavior(.basedOnSize)
+            .onAppear { scrollToBottom(proxy) }
+            .onChange(of: messages.last?.name) { _, _ in
+                withAnimation(.easeOut(duration: 0.2)) { scrollToBottom(proxy) }
             }
         }
     }
 
-    private struct DayGroup {
-        let day: Date
-        let messages: [CachedMessage]
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        guard let last = messages.last else { return }
+        proxy.scrollTo(last.name, anchor: .bottom)
     }
 
-    /// Written imperatively on purpose: the equivalent chained
-    /// `Dictionary(grouping:).map { ... .sorted { ... } }.sorted { ... }` exceeds the
-    /// type checker's time budget and fails to compile.
-    private var groupedByDay: [DayGroup] {
+    // MARK: - Grouping
+
+    /// A message plus its position within a run from the same sender.
+    private struct Entry {
+        let message: CachedMessage
+        let isOwn: Bool
+        let isFirstInGroup: Bool
+        let isLastInGroup: Bool
+    }
+
+    private struct DayGroup {
+        let day: Date
+        let entries: [Entry]
+    }
+
+    /// Messages bucketed by day, then annotated with sender-run position.
+    ///
+    /// Written imperatively: the equivalent chained `Dictionary(grouping:)` and
+    /// `map`/`sorted` pipeline exceeds the type checker's time budget and fails
+    /// to compile.
+    private var days: [DayGroup] {
         let calendar = Calendar.current
         var buckets: [Date: [CachedMessage]] = [:]
 
         for message in messages {
             let timestamp = message.createTime ?? Date.distantPast
-            let day = calendar.startOfDay(for: timestamp)
-            buckets[day, default: []].append(message)
+            buckets[calendar.startOfDay(for: timestamp), default: []].append(message)
         }
 
-        var groups: [DayGroup] = []
+        var result: [DayGroup] = []
         for (day, items) in buckets {
             let ordered = items.sorted { lhs, rhs in
                 let left = lhs.createTime ?? Date.distantPast
                 let right = rhs.createTime ?? Date.distantPast
                 return left < right
             }
-            groups.append(DayGroup(day: day, messages: ordered))
+            result.append(DayGroup(day: day, entries: annotate(ordered)))
         }
-        return groups.sorted { $0.day < $1.day }
+        return result.sorted { $0.day < $1.day }
+    }
+
+    /// A run breaks on a sender change, or on a gap long enough that the messages
+    /// are no longer one thought.
+    private func annotate(_ ordered: [CachedMessage]) -> [Entry] {
+        let groupingWindow: TimeInterval = 5 * 60
+        var entries: [Entry] = []
+
+        for (index, message) in ordered.enumerated() {
+            let previous = index > 0 ? ordered[index - 1] : nil
+            let next = index < ordered.count - 1 ? ordered[index + 1] : nil
+
+            let startsRun = previous.map { earlier in
+                earlier.senderName != message.senderName
+                    || gap(from: earlier, to: message) > groupingWindow
+            } ?? true
+
+            let endsRun = next.map { later in
+                later.senderName != message.senderName
+                    || gap(from: message, to: later) > groupingWindow
+            } ?? true
+
+            entries.append(
+                Entry(
+                    message: message,
+                    isOwn: session.isOwnMessage(message),
+                    isFirstInGroup: startsRun,
+                    isLastInGroup: endsRun
+                )
+            )
+        }
+        return entries
+    }
+
+    private func gap(from earlier: CachedMessage, to later: CachedMessage) -> TimeInterval {
+        let start = earlier.createTime ?? Date.distantPast
+        let end = later.createTime ?? Date.distantPast
+        return end.timeIntervalSince(start)
     }
 }
 
-private struct DayHeader: View {
+/// Centred date pill separating days.
+private struct DayDivider: View {
     let day: Date
 
     var body: some View {
-        Text(day.formatted(.dateTime.weekday(.wide).day().month(.wide)))
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .center)
-    }
-}
-
-private struct MessageRow: View {
-    @Environment(ChatSessionModel.self) private var session
-    let message: CachedMessage
-    let showsSender: Bool
-    let isOwn: Bool
-    let spaceName: String
-
-    @State private var isEditing = false
-    @State private var draft = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if showsSender {
-                HStack(spacing: 6) {
-                    Text(message.senderDisplayName ?? "Unknown")
-                        .font(.subheadline.weight(.semibold))
-                    if let created = message.createTime {
-                        Text(created.formatted(date: .omitted, time: .shortened))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if message.lastUpdateTime.map({ updated in
-                        updated.timeIntervalSince(message.createTime ?? updated) > 1
-                    }) == true {
-                        Text("edited")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.top, 8)
-            }
-
-            if isEditing {
-                editor
-            } else {
-                Text(message.displayText)
-                    .font(.body)
-                    .foregroundStyle(message.isDeleted ? .secondary : .primary)
-                    .italic(message.isDeleted)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .opacity(message.isPending ? 0.5 : 1)
-            }
-
-            if let reason = message.sendFailureReason {
-                failureBanner(reason)
-            }
-        }
-        .contextMenu { contextMenu }
-        .accessibilityElement(children: .combine)
-    }
-
-    @ViewBuilder
-    private var contextMenu: some View {
-        Button("Copy") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(message.displayText, forType: .string)
-        }
-        // Chat only permits editing and deleting your own messages, so offering
-        // these on someone else's would be a guaranteed 403.
-        if isOwn && !message.isDeleted && !message.isPending {
-            Divider()
-            Button("Edit") {
-                draft = message.text ?? ""
-                isEditing = true
-            }
-            Button("Delete", role: .destructive) {
-                Task { await session.delete(messageName: message.name) }
-            }
-        }
-    }
-
-    private var editor: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            TextField("Edit message", text: $draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...10)
-            HStack {
-                Button("Save") {
-                    let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    isEditing = false
-                    guard !text.isEmpty, text != message.text else { return }
-                    Task { await session.edit(messageName: message.name, newText: text) }
-                }
-                .keyboardShortcut(.return, modifiers: [])
-                Button("Cancel", role: .cancel) { isEditing = false }
-                    .keyboardShortcut(.escape, modifiers: [])
-            }
-            .controlSize(.small)
-        }
-    }
-
-    private func failureBanner(_ reason: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text("Not sent — \(reason)")
-                .font(.caption)
+        HStack {
+            Rectangle().fill(.quaternary).frame(height: 1)
+            Text(label)
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-            Button("Retry") {
-                Task {
-                    await session.retrySend(
-                        messageName: message.name,
-                        text: message.text ?? "",
-                        in: spaceName
-                    )
-                }
-            }
-            Button("Discard", role: .destructive) {
-                Task { await session.discardFailedMessage(named: message.name) }
-            }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(.quaternary, in: .capsule)
+                .fixedSize()
+            Rectangle().fill(.quaternary).frame(height: 1)
         }
-        .controlSize(.small)
-        .padding(.vertical, 2)
+        .padding(.vertical, 14)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Messages from \(label)")
+    }
+
+    private var label: String {
+        if Calendar.current.isDateInToday(day) { return "Today" }
+        if Calendar.current.isDateInYesterday(day) { return "Yesterday" }
+        return day.formatted(.dateTime.weekday(.wide).day().month(.wide))
     }
 }

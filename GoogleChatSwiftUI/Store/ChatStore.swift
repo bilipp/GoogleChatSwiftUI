@@ -20,18 +20,59 @@ actor ChatStore {
         var byName = Dictionary(uniqueKeysWithValues: existing.map { ($0.name, $0) })
 
         for space in remote {
+            let target: CachedSpace
             if let found = byName[space.name] {
                 found.apply(space)
+                target = found
             } else {
                 let created = CachedSpace(name: space.name)
                 created.apply(space)
                 modelContext.insert(created)
                 byName[space.name] = created
+                target = created
+            }
+
+            // A space Chat already names needs no members lookup. Marking it resolved
+            // here keeps it out of the pending-title query entirely.
+            if let name = target.displayName, !name.isEmpty {
+                target.didResolveTitle = true
             }
         }
 
         try modelContext.save()
         logger.info("Upserted \(remote.count) spaces")
+    }
+
+    /// Space names that still need a members lookup to be nameable, newest first.
+    ///
+    /// The predicate filters in the store rather than fetching a page and filtering
+    /// in memory: an in-memory filter would only ever see the most-recently-active
+    /// slice, leaving every older DM permanently unnamed and search useless.
+    func spacesNeedingTitles(limit: Int) throws -> [String] {
+        let directMessage = ChatSpace.SpaceType.directMessage.rawValue
+        let groupChat = ChatSpace.SpaceType.groupChat.rawValue
+
+        // Kept to two clauses: adding the displayName check inline exceeds the type
+        // checker's budget. Spaces that already have a name are marked resolved at
+        // upsert instead, so they never reach this query.
+        var descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { space in
+                !space.didResolveTitle
+                    && (space.spaceTypeRaw == directMessage || space.spaceTypeRaw == groupChat)
+            },
+            sortBy: [SortDescriptor(\.lastActiveTime, order: .reverse)]
+        )
+        descriptor.fetchLimit = limit
+        return try modelContext.fetch(descriptor).map(\.name)
+    }
+
+    func setResolvedTitle(_ title: String?, for spaceName: String) throws {
+        guard let space = try space(named: spaceName) else { return }
+        space.resolvedTitle = title
+        // Marked resolved even on failure, so an unnameable space is not retried
+        // on every launch forever.
+        space.didResolveTitle = true
+        try modelContext.save()
     }
 
     // MARK: - Messages

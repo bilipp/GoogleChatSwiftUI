@@ -33,6 +33,13 @@ final class CachedSpace {
     var lastActiveTime: Date?
     var memberCount: Int?
 
+    /// Peer names for DMs and unnamed group chats, resolved from the members API and
+    /// cached because Chat never supplies a `displayName` for them.
+    var resolvedTitle: String?
+    /// Set once membership resolution has been attempted, successfully or not, so a
+    /// space with genuinely unnameable members isn't retried on every launch.
+    var didResolveTitle: Bool = false
+
     /// Pagination cursor for backfilling this space's history. Nil once exhausted.
     var backfillPageToken: String?
     /// Whether history has been walked to the beginning.
@@ -54,11 +61,19 @@ final class CachedSpace {
 
     var title: String {
         if let displayName, !displayName.isEmpty { return displayName }
+        if let resolvedTitle, !resolvedTitle.isEmpty { return resolvedTitle }
         switch spaceType {
-        case .directMessage: return "Direct message"
-        case .groupChat: return "Group chat"
+        case .directMessage: return didResolveTitle ? "Direct message" : "…"
+        case .groupChat: return didResolveTitle ? "Group chat" : "…"
         default: return name
         }
+    }
+
+    /// DMs and unnamed group chats need a members lookup to be nameable at all.
+    var needsTitleResolution: Bool {
+        guard !didResolveTitle else { return false }
+        guard displayName?.isEmpty ?? true else { return false }
+        return spaceType == .directMessage || spaceType == .groupChat
     }
 
     func apply(_ remote: ChatSpace) {

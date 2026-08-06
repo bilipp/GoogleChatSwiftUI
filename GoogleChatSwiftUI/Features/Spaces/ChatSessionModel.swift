@@ -79,6 +79,37 @@ final class ChatSessionModel {
             logger.error("Space refresh failed: \(error.localizedDescription)")
             spacesState = .failed(error.localizedDescription)
         }
+        await resolveTitles()
+    }
+
+    /// Fills in DM and group-chat names, which Chat does not supply.
+    ///
+    /// Runs to completion across every space, in bounded concurrent passes, so the
+    /// sidebar fills in progressively rather than stalling. Names are cached
+    /// permanently, so this is a one-time cost on first launch — but it has to cover
+    /// all spaces, not just recent ones, or search would return unnamed rows.
+    func resolveTitles() async {
+        // Generous ceiling rather than an exact count: a safety net against a bug
+        // that never marks spaces resolved, not a real expected bound.
+        let maxPasses = 60
+
+        for pass in 0..<maxPasses {
+            if Task.isCancelled { return }
+            do {
+                guard try await sync.pendingTitleCount() > 0 else {
+                    if pass > 0 { logger.info("Title resolution complete after \(pass) pass(es)") }
+                    return
+                }
+                try await sync.resolvePendingTitles(excludingUser: profile?.chatUserName)
+                // Smooths the request rate: Chat quotas are per-user-per-minute and
+                // a few hundred member lookups back-to-back would trip them.
+                try? await Task.sleep(for: .milliseconds(250))
+            } catch {
+                logger.error("Title resolution failed: \(error.localizedDescription)")
+                return
+            }
+        }
+        logger.warning("Title resolution hit its pass ceiling with work remaining")
     }
 
     /// Called when a space is selected. Fetches history only if nothing is cached,

@@ -128,3 +128,18 @@ nonisolated struct ListMessagesResponse: Decodable, Sendable {
     let messages: [ChatMessage]?
     let nextPageToken: String?
 }
+
+nonisolated struct ChatMembership: Decodable, Sendable, Hashable {
+    /// Resource name, e.g. `spaces/AAAA/members/BBBB`.
+    let name: String?
+    let state: String?
+    let role: String?
+    let member: ChatUser?
+
+    var isJoined: Bool { state == "JOINED" }
+}
+
+nonisolated struct ListMembersResponse: Decodable, Sendable {
+    let memberships: [ChatMembership]?
+    let nextPageToken: String?
+}

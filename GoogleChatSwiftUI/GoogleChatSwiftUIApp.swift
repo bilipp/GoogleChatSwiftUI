@@ -1,3 +1,4 @@
+import OSLog
 import SwiftData
 import SwiftUI
 
@@ -5,12 +6,30 @@ import SwiftUI
 struct GoogleChatSwiftUIApp: App {
     @State private var auth = AuthModel()
 
+    /// This store is a pure cache — every row can be re-fetched from Chat. So a
+    /// migration failure rebuilds it rather than crashing the app, which would be the
+    /// wrong trade for durable user data but is clearly right here.
     private let container: ModelContainer = {
+        let schema = Schema(versionedSchema: ChatSchemaV1.self)
         do {
-            let schema = Schema(versionedSchema: ChatSchemaV1.self)
             return try ModelContainer(for: schema, migrationPlan: ChatMigrationPlan.self)
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "store")
+            logger.error("Migration failed, rebuilding cache: \(error.localizedDescription)")
+
+            let url = URL.applicationSupportDirectory.appending(path: "default.store")
+            for suffix in ["", "-shm", "-wal"] {
+                try? FileManager.default.removeItem(
+                    at: url.deletingLastPathComponent()
+                        .appending(path: "default.store\(suffix)")
+                )
+            }
+
+            do {
+                return try ModelContainer(for: schema, migrationPlan: ChatMigrationPlan.self)
+            } catch {
+                fatalError("Could not create ModelContainer after rebuild: \(error)")
+            }
         }
     }()
 
