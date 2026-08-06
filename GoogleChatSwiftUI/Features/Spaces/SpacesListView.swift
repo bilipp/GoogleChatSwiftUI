@@ -49,6 +49,18 @@ struct SpacesListView: View {
                 )
             }
         }
+        .toolbar {
+            // Trailing edge of the window. The search slot beside it is deliberately
+            // left empty for message search.
+            ToolbarItem(placement: .primaryAction) {
+                ProfileMenu(
+                    profile: currentProfile,
+                    totalUnread: session.totalUnread,
+                    onSignOut: { Task { await auth.signOut() } },
+                    onMarkAllRead: { Task { await session.markAllRead() } }
+                )
+            }
+        }
         .task {
             if case .idle = session.spacesState { await session.refreshSpaces() }
             await session.startRealtime()
@@ -83,6 +95,11 @@ struct SpacesListView: View {
         )
     }
 
+    private var currentProfile: GoogleUserProfile? {
+        if case .signedIn(let profile) = auth.state { return profile }
+        return nil
+    }
+
     private var selectedSpace: CachedSpace? {
         guard let name = session.selectedSpaceName else { return nil }
         return allSpaces.first { $0.name == name }
@@ -102,35 +119,59 @@ struct SpacesListView: View {
                 SpaceRow(space: space, peer: peer(for: space)).tag(space.name)
             }
         }
-        .searchable(text: $session.searchText, prompt: "Search all \(allSpaces.count) spaces")
-        .searchFocused($isSearchFocused)
+        // Dissolves rows into the header instead of letting them slide under it.
+        .scrollEdgeEffectStyle(.hard, for: .top)
         .overlay { emptyOverlay }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            RealtimeStatusBar(status: session.realtimeStatus)
-        }
         .safeAreaInset(edge: .top, spacing: 0) {
-            Picker("Filter", selection: $session.filter) {
-                ForEach(SpaceFilter.allCases) { filter in
-                    Label(filter.title, systemImage: filter.systemImage).tag(filter)
-                }
+            VStack(spacing: 6) {
+                SidebarSearchField(
+                    text: $session.searchText,
+                    placeholder: "Search conversations",
+                    isFocused: $isSearchFocused
+                )
+                SidebarFilterBar(
+                    scope: $session.scope,
+                    kind: $session.kind,
+                    scopeCounts: scopeCounts,
+                    kindCounts: kindCounts,
+                    visibleCount: visibleSpaces.count
+                )
             }
-            .pickerStyle(.segmented)
-            .labelStyle(.iconOnly)
-            .padding(8)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await session.refreshSpaces() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(session.isRefreshingSpaces)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Sign Out") { Task { await auth.signOut() } }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            RealtimeStatusBar(
+                status: session.realtimeStatus,
+                isRefreshing: session.isRefreshingSpaces
+            ) {
+                Task { await session.refreshSpaces() }
             }
         }
+    }
+
+    /// How many rows each scope would show, honouring the current kind — so the
+    /// numbers in the menu match what picking that option actually produces.
+    private var scopeCounts: [SpaceScope: Int] {
+        let now = Date()
+        var counts: [SpaceScope: Int] = [:]
+        for option in SpaceScope.allCases {
+            counts[option] = allSpaces.count { space in
+                option.matches(space, now: now) && session.kind.matches(space)
+            }
+        }
+        return counts
+    }
+
+    private var kindCounts: [SpaceKind: Int] {
+        let now = Date()
+        var counts: [SpaceKind: Int] = [:]
+        for option in SpaceKind.allCases {
+            counts[option] = allSpaces.count { space in
+                session.scope.matches(space, now: now) && option.matches(space)
+            }
+        }
+        return counts
     }
 
     private var usersByID: [String: CachedUser] {
@@ -146,17 +187,20 @@ struct SpacesListView: View {
         return usersByID[id]
     }
 
-    /// Search overrides the filter — if you're looking for a dormant DM by name,
-    /// having "Recent" silently hide it would be actively unhelpful.
+    /// Search overrides the scope — if you're looking for a dormant DM by name,
+    /// having "Recent" silently hide it would be actively unhelpful. The kind filter
+    /// still applies, since that is a deliberate narrowing rather than a time limit.
     private var visibleSpaces: [CachedSpace] {
         let query = session.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
-            return allSpaces.filter {
-                $0.title.localizedCaseInsensitiveContains(query)
+            return allSpaces.filter { space in
+                session.kind.matches(space) && space.title.localizedCaseInsensitiveContains(query)
             }
         }
         let now = Date()
-        return allSpaces.filter { session.filter.matches($0, now: now) }
+        return allSpaces.filter { space in
+            session.scope.matches(space, now: now) && session.kind.matches(space)
+        }
     }
 
     @ViewBuilder

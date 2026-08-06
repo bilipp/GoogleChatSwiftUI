@@ -25,7 +25,8 @@ final class ChatSessionModel {
     private(set) var loadingSpaceNames: Set<String> = []
     private(set) var messageError: String?
 
-    var filter: SpaceFilter = .recent
+    var scope: SpaceScope = .recent
+    var kind: SpaceKind = .all
     var searchText: String = ""
     var selectedSpaceName: String?
     /// Thread currently open in the inspector, e.g. `spaces/A/threads/B`.

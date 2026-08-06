@@ -11,24 +11,29 @@ struct Avatar: View {
     var size: CGFloat = 28
 
     var body: some View {
-        Group {
+        // Initials sit underneath rather than in a `default` branch of the phase
+        // switch, so loading and failure both show them with no extra cases — and,
+        // more importantly, the stack always has a correctly sized child. With the
+        // image alone, a 96pt Google profile photo drove the layout and the frame
+        // below was treated as a suggestion, which is why this rendered oversized.
+        ZStack {
+            InitialsCircle(name: name, size: size)
+
             if let url = photoURL.flatMap(URL.init(string:)) {
                 AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        // Covers loading and failure alike: a blank circle would read
-                        // as a missing person rather than a pending image.
-                        InitialsCircle(name: name, size: size)
+                    if case .success(let image) = phase {
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
                     }
                 }
-            } else {
-                InitialsCircle(name: name, size: size)
             }
         }
         .frame(width: size, height: size)
         .clipShape(.circle)
+        // Clipping removes the hit region outside the circle, which leaves an avatar
+        // used as a button or menu label clickable only at its centre.
+        .contentShape(.circle)
         .accessibilityHidden(true)
     }
 }
