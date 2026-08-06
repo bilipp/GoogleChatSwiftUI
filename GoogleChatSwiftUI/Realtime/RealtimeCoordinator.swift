@@ -33,7 +33,10 @@ actor RealtimeCoordinator {
     /// not have to know about SwiftData models or notification policy.
     nonisolated struct IncomingMessage: Sendable {
         let spaceName: String
-        let senderChatName: String?
+        /// Resolved from the cache here rather than by the UI, which would have to
+        /// reach back into the store to turn `spaces/AAAA` into something readable.
+        let spaceTitle: String
+        let senderDisplayName: String?
         let body: String
     }
 
@@ -184,16 +187,20 @@ actor RealtimeCoordinator {
                 // otherwise appear as "Unknown" until the next full reload.
                 await sync.resolveSenders(from: [message])
 
-                let countsAsUnread = try await store.noteIncomingMessage(
+                let spaceTitle = try await store.noteIncomingMessage(
                     message,
                     in: space,
                     selfChatName: selfChatName
                 )
-                if countsAsUnread {
+                if let spaceTitle {
                     incomingHandler?(
                         IncomingMessage(
                             spaceName: space,
-                            senderChatName: message.sender?.name,
+                            spaceTitle: spaceTitle,
+                            // `resolveSenders` above has just cached this, so the
+                            // lookup is local and the banner names a person rather
+                            // than saying nothing.
+                            senderDisplayName: await senderName(of: message),
                             body: message.displayText
                         )
                     )
@@ -230,6 +237,13 @@ actor RealtimeCoordinator {
         case .unhandled(let type):
             logger.debug("Ignoring unhandled event type \(type)")
         }
+    }
+
+    /// Cached display name for a message's sender, or nil if the directory has not
+    /// caught up with them yet.
+    private func senderName(of message: ChatMessage) async -> String? {
+        guard let id = message.sender?.name else { return nil }
+        return try? await store.displayNames(for: [id])[id]
     }
 
     // MARK: - Renewal

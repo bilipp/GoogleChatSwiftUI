@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import OSLog
@@ -89,16 +90,34 @@ final class ChatSessionModel {
 
     /// Notifies and re-badges for a message that arrived from the event stream.
     private func handleIncoming(_ incoming: RealtimeCoordinator.IncomingMessage) async {
+        // Reading it is what the user is doing right now, so the arrival should not
+        // leave a badge behind. Only when the window is actually frontmost: a message
+        // in the last-selected space of a backgrounded app is unread like any other.
+        let isOnScreen = incoming.spaceName == selectedSpaceName
+            && NSApplication.shared.isActive
+        if isOnScreen {
+            try? await sync.markRead(spaceName: incoming.spaceName)
+        }
+
         await notifications.notify(
-            spaceTitle: incoming.spaceName,
-            senderName: nil,
+            spaceTitle: incoming.spaceTitle,
+            senderName: incoming.senderDisplayName,
             body: incoming.body,
             spaceName: incoming.spaceName,
             // Suppressed for the conversation already on screen — an alert for
             // something the user is looking at is pure noise.
-            isSpaceVisible: incoming.spaceName == selectedSpaceName
+            isSpaceVisible: isOnScreen
         )
         await refreshUnread()
+    }
+
+    /// Opens a conversation on behalf of something outside the sidebar — a clicked
+    /// notification — where the current view may be showing something else entirely.
+    func revealSpace(_ spaceName: String) async {
+        // A message search replaces the transcript with results, so a click that says
+        // "show me this conversation" has to clear it or nothing appears to happen.
+        messageQuery = ""
+        await openSpace(spaceName)
     }
 
     /// Recomputes the badge total from the cache.

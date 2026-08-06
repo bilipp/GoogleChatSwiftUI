@@ -4,6 +4,7 @@ import SwiftUI
 
 @main
 struct GoogleChatSwiftUIApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var auth = AuthModel()
 
     /// This store is a pure cache — every row can be re-fetched from Chat. So a
@@ -54,6 +55,18 @@ struct GoogleChatSwiftUIApp: App {
             MenuBarLabel()
                 .environment(auth)
         }
+    }
+}
+
+/// Exists only to install the notification delegate.
+///
+/// A pure SwiftUI app would have no need for one, but `UNUserNotificationCenter`
+/// requires its delegate to be set before the app finishes launching — earlier than
+/// any view's `task` runs, and the deadline for receiving the click that launched
+/// the app in the first place.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NotificationRouter.shared.install()
     }
 }
 

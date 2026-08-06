@@ -86,11 +86,21 @@ struct SpacesListView: View {
             }
         }
         .task {
+            // First, because this is a click that landed before the view existed —
+            // the one that launched the app — and the loaders below run in bounded
+            // passes that take seconds. The cache is already on disk, so the
+            // conversation opens without waiting for any of them.
+            await openFromNotification()
             if case .idle = session.spacesState { await session.refreshSpaces() }
             await session.startRealtime()
             await session.prepareSearchIndex()
             await session.loadReadStates()
             await session.loadNotificationSettings()
+        }
+        // Subsequent clicks, while the app is already running.
+        .onChange(of: NotificationRouter.shared.pendingSpaceName) { _, pending in
+            guard pending != nil else { return }
+            Task { await openFromNotification() }
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -110,6 +120,27 @@ struct SpacesListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .chatFocusSearch)) { _ in
             isSearchFocused = true
         }
+    }
+
+    /// Opens the conversation a clicked notification named.
+    ///
+    /// Relaxes any filter that would hide it. The filters are a browsing preference,
+    /// not a reason to refuse an explicit request — and without this the transcript
+    /// would open with no matching sidebar row, leaving no sense of where you are.
+    private func openFromNotification() async {
+        guard let name = NotificationRouter.shared.claimPendingSpace() else { return }
+
+        if let space = allSpaces.first(where: { $0.name == name }) {
+            if !session.kind.matches(space) { session.kind = .all }
+            if !session.scope.matches(space, now: Date()) { session.scope = .all }
+            if space.isMuted { session.showsMuted = true }
+            let query = session.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !query.isEmpty, !space.title.localizedCaseInsensitiveContains(query) {
+                session.searchText = ""
+            }
+        }
+
+        await session.revealSpace(name)
     }
 
     /// The inspector's own dismiss control clears the selected thread, keeping the

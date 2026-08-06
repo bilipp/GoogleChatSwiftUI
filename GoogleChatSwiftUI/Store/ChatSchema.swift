@@ -130,7 +130,13 @@ final class CachedSpace {
         threadingStateRaw = remote.spaceThreadingState
         spaceDescription = remote.spaceDetails?.description
         createTime = remote.createTime
-        lastActiveTime = remote.lastActiveTime
+        // Never moves backwards. A refresh that races a live message would otherwise
+        // undo the bump the event stream just applied, since the server's own space
+        // record lags the message that caused it.
+        if let remoteActive = remote.lastActiveTime,
+           remoteActive > (lastActiveTime ?? .distantPast) {
+            lastActiveTime = remoteActive
+        }
         memberCount = remote.membershipCount?.joinedDirectHumanUserCount
     }
 }

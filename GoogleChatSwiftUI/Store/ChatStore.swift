@@ -276,23 +276,25 @@ actor ChatStore {
     }
 
     /// Bumps the unread counter for a message that arrived while elsewhere.
-    /// - Returns: whether the message counted as unread.
-    @discardableResult
+    ///
+    /// - Returns: the space's display title when the message counted as unread, nil
+    ///   when it did not. The title comes back with the verdict because the caller
+    ///   needs it to announce the message and has no other route into the cache.
     func noteIncomingMessage(
         _ message: ChatMessage,
         in spaceName: String,
         selfChatName: String?
-    ) throws -> Bool {
-        guard let space = try space(named: spaceName) else { return false }
+    ) throws -> String? {
+        guard let space = try space(named: spaceName) else { return nil }
         // Your own messages are never unread, and neither is anything at or before
         // the read mark — realtime can redeliver.
-        guard message.sender?.name != selfChatName else { return false }
-        guard let created = message.createTime else { return false }
-        if let mark = space.lastReadTime, created <= mark { return false }
+        guard message.sender?.name != selfChatName else { return nil }
+        guard let created = message.createTime else { return nil }
+        if let mark = space.lastReadTime, created <= mark { return nil }
 
         space.unreadCount += 1
         try modelContext.save()
-        return true
+        return space.title
     }
 
     func unreadSpaceNames() throws -> [String] {
@@ -489,6 +491,18 @@ actor ChatStore {
             }
             syncReactions(of: message, on: target)
             syncAttachments(of: message, on: target)
+        }
+
+        // The sidebar sorts and scopes on `lastActiveTime`, and Chat only revises it
+        // on the space record — which the event stream never delivers. Without this a
+        // message arriving live leaves its conversation sitting wherever it was, and a
+        // space quiet for a month stays hidden behind the "Recent" filter entirely.
+        //
+        // Advanced rather than assigned: backfilling old history and merging an edit
+        // both pass through here, and neither is new activity.
+        if let newest = messages.compactMap(\.createTime).max(),
+           newest > (space.lastActiveTime ?? .distantPast) {
+            space.lastActiveTime = newest
         }
     }
 
