@@ -90,6 +90,7 @@ struct SpacesListView: View {
             await session.startRealtime()
             await session.prepareSearchIndex()
             await session.loadReadStates()
+            await session.loadNotificationSettings()
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -140,8 +141,12 @@ struct SpacesListView: View {
                 Task { await session.openSpace(name) }
             }
         )) {
-            ForEach(visibleSpaces) { space in
-                SpaceRow(space: space, peer: peer(for: space)).tag(space.name)
+            ForEach(groupedSpaces, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.spaces) { space in
+                        SpaceRow(space: space, peer: peer(for: space)).tag(space.name)
+                    }
+                }
             }
         }
         // Dissolves rows into the header instead of letting them slide under it.
@@ -157,8 +162,10 @@ struct SpacesListView: View {
                 SidebarFilterBar(
                     scope: $session.scope,
                     kind: $session.kind,
+                    showsMuted: $session.showsMuted,
                     scopeCounts: scopeCounts,
                     kindCounts: kindCounts,
+                    mutedCount: mutedCount,
                     visibleCount: visibleSpaces.count
                 )
             }
@@ -224,8 +231,51 @@ struct SpacesListView: View {
         }
         let now = Date()
         return allSpaces.filter { space in
-            session.scope.matches(space, now: now) && session.kind.matches(space)
+            guard session.showsMuted || !space.isMuted else { return false }
+            return session.scope.matches(space, now: now) && session.kind.matches(space)
         }
+    }
+
+    private var mutedCount: Int {
+        let now = Date()
+        return allSpaces.count { space in
+            space.isMuted && session.scope.matches(space, now: now) && session.kind.matches(space)
+        }
+    }
+
+    private struct SpaceGroup {
+        let title: String
+        let sortOrder: Int
+        let spaces: [CachedSpace]
+    }
+
+    /// Mirrors the web client's sidebar: conversations grouped under their section,
+    /// in the order the user arranged them.
+    ///
+    /// Falls back to one flat unlabelled group when sections have not loaded, so the
+    /// sidebar never becomes a single header called "Section".
+    private var groupedSpaces: [SpaceGroup] {
+        let spaces = visibleSpaces
+        let hasSections = spaces.contains { $0.sectionTitle != nil }
+        guard hasSections else {
+            return [SpaceGroup(title: "Conversations", sortOrder: 0, spaces: spaces)]
+        }
+
+        var buckets: [String: [CachedSpace]] = [:]
+        var orders: [String: Int] = [:]
+        for space in spaces {
+            let title = space.sectionTitle ?? "Other"
+            buckets[title, default: []].append(space)
+            // Ungrouped spaces sort last rather than interleaving with real sections.
+            orders[title] = space.sectionTitle == nil ? Int.max : space.sectionSortOrder
+        }
+
+        return buckets
+            .map { SpaceGroup(title: $0.key, sortOrder: orders[$0.key] ?? 0, spaces: $0.value) }
+            .sorted { lhs, rhs in
+                if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+                return lhs.title < rhs.title
+            }
     }
 
     @ViewBuilder

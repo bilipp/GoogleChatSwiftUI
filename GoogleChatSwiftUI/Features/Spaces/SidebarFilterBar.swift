@@ -9,9 +9,11 @@ import SwiftUI
 struct SidebarFilterBar: View {
     @Binding var scope: SpaceScope
     @Binding var kind: SpaceKind
+    @Binding var showsMuted: Bool
     /// Row count each option would produce, so the menu shows consequences.
     let scopeCounts: [SpaceScope: Int]
     let kindCounts: [SpaceKind: Int]
+    let mutedCount: Int
     let visibleCount: Int
 
     var body: some View {
@@ -30,6 +32,20 @@ struct SidebarFilterBar: View {
                             )
                         }
                     }
+                }
+
+                Section("Muted") {
+                    Button {
+                        showsMuted.toggle()
+                    } label: {
+                        optionLabel(
+                            title: showsMuted ? "Hiding nothing" : "Hidden",
+                            caption: "Conversations you silenced",
+                            count: mutedCount,
+                            isSelected: showsMuted
+                        )
+                    }
+                    .disabled(mutedCount == 0)
                 }
 
                 Section("Include") {
@@ -75,7 +91,11 @@ struct SidebarFilterBar: View {
     /// Reflects both axes, but stays short: the kind is only named when it is
     /// actually narrowing anything.
     private var buttonTitle: String {
-        kind == .all ? scope.title : "\(scope.title) · \(kind.shortTitle)"
+        var parts = [scope.title]
+        if kind != .all { parts.append(kind.shortTitle) }
+        // Only surfaced when it changes what is listed, to keep the button short.
+        if showsMuted && mutedCount > 0 { parts.append("+muted") }
+        return parts.joined(separator: " · ")
     }
 
     private func optionLabel(

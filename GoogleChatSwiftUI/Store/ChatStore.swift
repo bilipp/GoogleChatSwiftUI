@@ -130,6 +130,68 @@ actor ChatStore {
         try modelContext.save()
     }
 
+    // MARK: - Sections and mute state
+
+    /// Assigns spaces to navigation sections.
+    ///
+    /// Spaces absent from the mapping are cleared rather than left alone: a space moved
+    /// out of a custom section would otherwise keep showing under it forever.
+    func applySections(
+        _ sections: [ChatSection],
+        items: [ChatSectionItem]
+    ) throws -> Int {
+        var byName: [String: ChatSection] = [:]
+        for section in sections {
+            if let name = section.name { byName[name] = section }
+        }
+
+        var sectionForSpace: [String: ChatSection] = [:]
+        for item in items {
+            guard let space = item.space,
+                  let sectionName = item.sectionName,
+                  let section = byName[sectionName]
+            else { continue }
+            sectionForSpace[space] = section
+        }
+
+        let all = try modelContext.fetch(FetchDescriptor<CachedSpace>())
+        for space in all {
+            let section = sectionForSpace[space.name]
+            space.sectionName = section?.name
+            space.sectionTitle = section?.title
+            space.sectionSortOrder = section?.sortOrder ?? 0
+        }
+
+        try modelContext.save()
+        return sectionForSpace.count
+    }
+
+    /// Spaces still needing a notification-setting lookup, most active first.
+    ///
+    /// Bounded the same way as read state: one call per space, and mute state on a
+    /// conversation nobody has touched in months is not worth a request.
+    func spacesNeedingNotificationSetting(limit: Int, activeSince: Date) throws -> [String] {
+        var descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { space in
+                !space.didFetchNotificationSetting && space.lastActiveTime != nil
+            },
+            sortBy: [SortDescriptor(\.lastActiveTime, order: .reverse)]
+        )
+        descriptor.fetchLimit = limit
+        return try modelContext.fetch(descriptor)
+            .filter { ($0.lastActiveTime ?? .distantPast) >= activeSince }
+            .map(\.name)
+    }
+
+    func applyNotificationSetting(_ setting: String?, for spaceName: String) throws {
+        guard let space = try space(named: spaceName) else { return }
+        space.notificationSettingRaw = setting
+        // Marked fetched even on failure, so an unreadable space is not retried
+        // on every pass forever.
+        space.didFetchNotificationSetting = true
+        try modelContext.save()
+    }
+
     // MARK: - Search index
 
     /// Fills `searchableText` for rows cached before the column existed.

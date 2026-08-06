@@ -29,6 +29,9 @@ nonisolated enum OAuthConfiguration {
         "https://www.googleapis.com/auth/chat.memberships",
         "https://www.googleapis.com/auth/chat.users.readstate",
         "https://www.googleapis.com/auth/chat.users.sections",
+        // Per-space notification preference, which is how muted conversations are
+        // identified — the API's own `muteSetting` is Developer Preview only.
+        "https://www.googleapis.com/auth/chat.users.spacesettings",
         "https://www.googleapis.com/auth/chat.customemojis.readonly",
         "https://www.googleapis.com/auth/pubsub",
         "https://www.googleapis.com/auth/userinfo.profile",

@@ -66,6 +66,67 @@ nonisolated struct SyncEngine: Sendable {
         return !(page.nextPageToken ?? "").isEmpty
     }
 
+    // MARK: - Sections and mute state
+
+    /// Mirrors the Chat web client's sidebar grouping.
+    ///
+    /// Cheap: one paginated call for the sections plus one for every space's assignment,
+    /// so this runs on launch alongside the space list rather than in bounded passes.
+    @discardableResult
+    /// - Parameter user: the caller's own resource name. `users/me` is rejected by
+    ///   this endpoint with a 500, unlike most of the Chat API.
+    func refreshSections(user: String) async throws -> Int {
+        let sections = try await client.listSections(user: user)
+        guard !sections.isEmpty else {
+            logger.info("No sections configured for this account")
+            return 0
+        }
+        let items = try await client.listAllSectionItems(user: user)
+        let assigned = try await store.applySections(sections, items: items)
+        logger.info("Mapped \(assigned) space(s) into \(sections.count) section(s)")
+        return assigned
+    }
+
+    static let notificationSettingBatch = 25
+
+    func pendingNotificationSettingCount() async throws -> Int {
+        try await store.spacesNeedingNotificationSetting(
+            limit: Self.notificationSettingBatch,
+            activeSince: Date().addingTimeInterval(-Self.readStateWindow)
+        ).count
+    }
+
+    /// Fetches per-space notification preferences concurrently.
+    func refreshNotificationSettings() async throws {
+        let pending = try await store.spacesNeedingNotificationSetting(
+            limit: Self.notificationSettingBatch,
+            activeSince: Date().addingTimeInterval(-Self.readStateWindow)
+        )
+        guard !pending.isEmpty else { return }
+
+        await withTaskGroup(of: (String, String?).self) { group in
+            for spaceName in pending {
+                group.addTask {
+                    do {
+                        let setting = try await self.client.spaceNotificationSetting(
+                            spaceName: spaceName
+                        )
+                        return (spaceName, setting.notificationSetting)
+                    } catch {
+                        self.logger.error(
+                            "Notification setting failed for \(spaceName): \(error.localizedDescription)"
+                        )
+                        return (spaceName, nil)
+                    }
+                }
+            }
+            for await (spaceName, setting) in group {
+                try? await store.applyNotificationSetting(setting, for: spaceName)
+            }
+        }
+        logger.info("Fetched notification settings for \(pending.count) space(s)")
+    }
+
     // MARK: - Title resolution
 
     /// How many DM/group-chat titles to resolve per pass. Each costs one API call,

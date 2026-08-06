@@ -27,6 +27,9 @@ final class ChatSessionModel {
 
     var scope: SpaceScope = .recent
     var kind: SpaceKind = .all
+    /// Muted conversations are hidden by default: the point of muting one is not to
+    /// think about it, and Chat itself keeps them out of the way.
+    var showsMuted: Bool = false
     /// Filters the sidebar's conversation list.
     var searchText: String = ""
 
@@ -154,7 +157,36 @@ final class ChatSessionModel {
             logger.error("Space refresh failed: \(error.localizedDescription)")
             spacesState = .failed(error.localizedDescription)
         }
+        // Sections are cheap and shape the whole sidebar, so they refresh with the
+        // space list rather than in bounded passes.
+        do {
+            if let user = profile?.chatUserName {
+                try await sync.refreshSections(user: user)
+            }
+        } catch {
+            // Google currently answers users.sections.list with 500 INTERNAL for this
+            // account, with either `users/me` or the numeric id, and the scope is
+            // granted — so this is server-side, not something the client can fix. The
+            // sidebar falls back to one flat group, so it is logged once at info level
+            // rather than shouted about as an error on every launch.
+            logger.info("Sections unavailable: \(error.localizedDescription)")
+        }
         await resolveTitles()
+    }
+
+    /// Fetches per-space mute state in bounded passes, like read state.
+    func loadNotificationSettings() async {
+        for _ in 0..<40 {
+            if Task.isCancelled { return }
+            do {
+                guard try await sync.pendingNotificationSettingCount() > 0 else { break }
+                try await sync.refreshNotificationSettings()
+                try? await Task.sleep(for: .milliseconds(250))
+            } catch {
+                logger.error("Notification setting pass failed: \(error.localizedDescription)")
+                break
+            }
+        }
     }
 
     /// Fills in DM and group-chat names, which Chat does not supply.

@@ -57,6 +57,23 @@ final class CachedSpace {
     /// When this space's messages were last reconciled against the server.
     var lastSyncedAt: Date?
 
+    /// Navigation section this space sits in, from the sections API — the same
+    /// grouping the Chat web client shows in its sidebar.
+    var sectionName: String?
+    var sectionTitle: String?
+    var sectionSortOrder: Int = 0
+
+    /// `ALL`, `MAIN_CONVERSATIONS`, `FOR_YOU`, or `OFF`.
+    var notificationSettingRaw: String?
+    var didFetchNotificationSetting: Bool = false
+
+    /// Treated as muted when notifications are off.
+    ///
+    /// The API's own `muteSetting` is Developer Preview only and absent for us, so
+    /// `notificationSetting == "OFF"` is the generally available equivalent. A user
+    /// who narrowed a space to `FOR_YOU` has not muted it, so that does not count.
+    var isMuted: Bool { notificationSettingRaw == "OFF" }
+
     /// The signed-in user's read position, from the read-state API.
     var lastReadTime: Date?
     /// Distinguishes "read at the epoch" from "never fetched" — without it an
