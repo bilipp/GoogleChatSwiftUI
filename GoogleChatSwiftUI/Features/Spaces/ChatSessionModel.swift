@@ -45,8 +45,40 @@ final class ChatSessionModel {
         messageQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
     }
     var selectedSpaceName: String?
+
+    /// What the right-hand inspector is showing.
+    ///
+    /// One state rather than two flags because the list and a single thread are two
+    /// views of the same panel, and a thread opened from the list has somewhere to go
+    /// back to — which a pair of independent booleans cannot express.
+    enum ThreadInspector: Equatable {
+        case closed
+        case list
+        case thread(name: String, cameFromList: Bool)
+    }
+
+    private(set) var threadInspector: ThreadInspector = .closed
+
+    /// Where the user had read to in the open thread, captured as it was opened.
+    ///
+    /// Opening a thread clears its unread mark immediately, which would otherwise
+    /// destroy the only evidence of where the new replies begin — the answer to the
+    /// question that made them open it.
+    private(set) var openedThreadReadMark: Date?
+
     /// Thread currently open in the inspector, e.g. `spaces/A/threads/B`.
-    var selectedThreadName: String?
+    var selectedThreadName: String? {
+        if case .thread(let name, _) = threadInspector { return name }
+        return nil
+    }
+
+    var isThreadListOpen: Bool { threadInspector == .list }
+
+    /// Whether the open thread has a list behind it to return to.
+    var canReturnToThreadList: Bool {
+        if case .thread(_, let cameFromList) = threadInspector { return cameFromList }
+        return false
+    }
 
     private(set) var sendingSpaceNames: Set<String> = []
     private(set) var realtimeStatus: RealtimeCoordinator.Status = .stopped
@@ -269,7 +301,7 @@ final class ChatSessionModel {
     /// Called when a space is selected. Fetches history only if nothing is cached,
     /// which is what keeps 762 spaces affordable.
     func openSpace(_ spaceName: String) async {
-        if selectedSpaceName != spaceName { selectedThreadName = nil }
+        if selectedSpaceName != spaceName { threadInspector = .closed }
         selectedSpaceName = spaceName
         // The query was the means of finding this conversation, and it has served its
         // purpose the moment the conversation is open. Left applied it would hold the
@@ -295,12 +327,19 @@ final class ChatSessionModel {
         }
     }
 
-    /// Marks every space with unread messages as read.
+    /// Marks every space with unread messages as read, threads included.
+    ///
+    /// Threads are cleared separately because a space read mark deliberately does not
+    /// reach them — but "mark all as read" means all of it, including the replies the
+    /// space mark cannot speak for.
     func markAllRead() async {
         do {
             let names = try await sync.unreadSpaceNames()
             for name in names {
                 try? await sync.markRead(spaceName: name)
+            }
+            for name in try await sync.spacesWithUnreadThreads() {
+                try? await sync.markAllThreadsRead(spaceName: name)
             }
             await refreshUnread()
         } catch {
@@ -333,8 +372,78 @@ final class ChatSessionModel {
 
     /// Opens a thread in the inspector. Selecting a different space closes it, since
     /// a thread from another conversation would be stale context.
-    func openThread(_ threadName: String?) {
-        selectedThreadName = threadName
+    ///
+    /// Opening is reading: the mark advances here rather than when the pane draws, so
+    /// it happens once per open regardless of how the view is rebuilt.
+    func openThread(_ threadName: String, fromList: Bool = false) {
+        threadInspector = .thread(name: threadName, cameFromList: fromList)
+        openedThreadReadMark = nil
+        Task {
+            let previous = await markThreadRead(threadName)
+            // Discarded if the user has already moved on, so a slow write cannot
+            // draw someone else's read line into the thread now on screen.
+            guard selectedThreadName == threadName else { return }
+            openedThreadReadMark = previous
+        }
+    }
+
+    /// Opens the space's thread list — the panel that makes an unread reply findable
+    /// at all, since replies never appear in the main transcript.
+    func openThreadList() {
+        threadInspector = .list
+    }
+
+    func closeThreadInspector() {
+        threadInspector = .closed
+    }
+
+    /// Backs out of a thread to the list it was opened from, or closes the panel when
+    /// the thread was opened straight from the transcript.
+    func closeThreadPane() {
+        threadInspector = canReturnToThreadList ? .list : .closed
+    }
+
+    /// - Returns: where the user had previously read to in this thread, if anywhere.
+    @discardableResult
+    func markThreadRead(_ threadName: String) async -> Date? {
+        do {
+            let previous = try await sync.markThreadRead(threadName: threadName)
+            await refreshUnread()
+            return previous
+        } catch {
+            logger.error("Thread read mark failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func markAllThreadsRead(in spaceName: String) async {
+        do {
+            try await sync.markAllThreadsRead(spaceName: spaceName)
+            await refreshUnread()
+        } catch {
+            logger.error("Marking threads read failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Checks unread threads against the server's read marks, so a thread already
+    /// read on chat.google.com does not sit here demanding attention.
+    func refreshThreadReadStates(in spaceName: String) async {
+        do {
+            let checked = try await sync.refreshThreadReadStates(in: spaceName)
+            if checked > 0 { await refreshUnread() }
+        } catch {
+            logger.error("Thread read state pass failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Builds thread rows over messages cached before threads were tracked.
+    func prepareThreadIndex() async {
+        do {
+            let linked = try await sync.backfillThreads()
+            if linked > 0 { logger.info("Linked \(linked) message(s) to threads") }
+        } catch {
+            logger.error("Thread index backfill failed: \(error.localizedDescription)")
+        }
     }
 
     func send(

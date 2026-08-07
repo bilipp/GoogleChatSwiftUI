@@ -19,6 +19,15 @@ struct ChatCommands: Commands {
             .keyboardShortcut("a", modifiers: [.command, .shift])
         }
 
+        CommandGroup(after: .sidebar) {
+            // Unread thread replies are unreachable from the transcript, so the panel
+            // that lists them earns a shortcut of its own rather than only a button.
+            Button("Show Threads") {
+                NotificationCenter.default.post(name: .chatToggleThreads, object: nil)
+            }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
+        }
+
         CommandGroup(after: .textEditing) {
             // No "Search Messages" item: `.searchable` installs its own Find entry
             // with ⌘F, and a second one here would shadow it.
@@ -38,4 +47,5 @@ extension Notification.Name {
     static let chatRefreshSpaces = Notification.Name("chatRefreshSpaces")
     static let chatMarkAllRead = Notification.Name("chatMarkAllRead")
     static let chatFocusSearch = Notification.Name("chatFocusSearch")
+    static let chatToggleThreads = Notification.Name("chatToggleThreads")
 }

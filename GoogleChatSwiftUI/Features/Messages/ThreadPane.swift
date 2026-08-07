@@ -57,6 +57,20 @@ struct ThreadPane: View {
 
     private var header: some View {
         HStack {
+            // Only when there is a list behind this thread. A thread opened from the
+            // transcript has nothing to go back to, and a back button that closed the
+            // panel instead would be lying about where it leads.
+            if session.canReturnToThreadList {
+                Button {
+                    session.closeThreadPane()
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                .help("Back to threads")
+                .accessibilityLabel("Back to threads")
+            }
+
             VStack(alignment: .leading, spacing: 1) {
                 Text("Thread").font(.headline)
                 Text(replyLabel)
@@ -65,7 +79,7 @@ struct ThreadPane: View {
             }
             Spacer()
             Button {
-                session.openThread(nil)
+                session.closeThreadInspector()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
@@ -89,6 +103,13 @@ struct ThreadPane: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(messages.enumerated()), id: \.element.name) { index, message in
+                    // Marks where the replies the user had not seen begin. Opening
+                    // the thread has already cleared the unread mark by now, so this
+                    // is drawn from the position captured as it was opened.
+                    if message.name == firstUnreadName {
+                        NewRepliesDivider()
+                    }
+
                     // The root gets a separator beneath it so the distinction
                     // between "the thing being discussed" and the discussion
                     // stays visible while scrolling.
@@ -117,6 +138,20 @@ struct ThreadPane: View {
         .defaultScrollAnchor(.bottom, for: .sizeChanges)
     }
 
+    /// The first reply that had arrived since the user last read this thread.
+    ///
+    /// Own replies are skipped: coming back to a thread you answered should not
+    /// announce your own message as the new thing to read.
+    private var firstUnreadName: String? {
+        guard let mark = session.openedThreadReadMark else { return nil }
+        let first = messages.first { message in
+            guard message.isThreadReply, !message.isDeleted else { return false }
+            guard let created = message.createTime, created > mark else { return false }
+            return !session.isOwnMessage(message)
+        }
+        return first?.name
+    }
+
     private var usersByID: [String: CachedUser] {
         Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
     }
@@ -128,5 +163,22 @@ struct ThreadPane: View {
 
     private func mentionNames(in message: CachedMessage) -> [String] {
         message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
+    }
+}
+
+/// The line between what the user had already read and what they came here for.
+private struct NewRepliesDivider: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(Color.accentColor.opacity(0.5)).frame(height: 1)
+            Text("New")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .fixedSize()
+            Rectangle().fill(Color.accentColor.opacity(0.5)).frame(height: 1)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("New replies below")
     }
 }

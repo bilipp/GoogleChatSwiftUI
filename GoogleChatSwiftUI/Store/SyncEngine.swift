@@ -393,10 +393,81 @@ nonisolated struct SyncEngine: Sendable {
         logger.info("Fetched read state for \(pending.count) space(s)")
     }
 
+    // MARK: - Thread read state
+
+    /// How many threads to check against the server per pass, for the same reason as
+    /// `readStateBatch`: one call each, against a per-user-per-minute quota.
+    static let threadReadStateBatch = 25
+
+    /// Marks a thread read.
+    ///
+    /// Local only — deliberately, not for lack of trying. Chat exposes
+    /// `getThreadReadState` but no update counterpart, so there is nothing to send.
+    /// A thread read here stays unread on chat.google.com.
+    /// - Returns: the read mark it replaced.
+    @discardableResult
+    func markThreadRead(threadName: String) async throws -> Date? {
+        try await store.markThreadRead(threadName: threadName)
+    }
+
+    func markAllThreadsRead(spaceName: String) async throws {
+        try await store.markAllThreadsRead(spaceName: spaceName)
+    }
+
+    /// Reconciles unread threads against the server's own read marks.
+    ///
+    /// Only threads this app currently believes are unread, and only once each: a
+    /// thread read on the web client is the one case where the local mark is wrong,
+    /// and checking a thread already known to be read could only confirm it.
+    /// - Returns: how many threads were checked.
+    @discardableResult
+    func refreshThreadReadStates(in spaceName: String) async throws -> Int {
+        let pending = try await store.threadsNeedingServerReadState(
+            spaceName: spaceName,
+            limit: Self.threadReadStateBatch
+        )
+        guard !pending.isEmpty else { return 0 }
+
+        await withTaskGroup(of: (String, Date?).self) { group in
+            for threadName in pending {
+                group.addTask {
+                    do {
+                        let state = try await self.client.threadReadState(threadName: threadName)
+                        return (threadName, state.lastReadTime)
+                    } catch {
+                        self.logger.error(
+                            "Thread read state failed for \(threadName): \(error.localizedDescription)"
+                        )
+                        // Recorded as checked regardless, so a thread the endpoint
+                        // will not answer for is not retried on every visit.
+                        return (threadName, nil)
+                    }
+                }
+            }
+            for await (threadName, lastRead) in group {
+                try? await store.applyThreadReadState(lastRead, for: threadName)
+            }
+        }
+
+        logger.info("Checked read state for \(pending.count) thread(s) in \(spaceName)")
+        return pending.count
+    }
+
+    func spacesWithUnreadThreads() async throws -> [String] {
+        try await store.spacesWithUnreadThreads()
+    }
+
     /// Indexes cached messages for search. Local only, so it is cheap to run fully.
     @discardableResult
     func backfillSearchIndex() async throws -> Int {
         try await store.backfillSearchIndex()
+    }
+
+    /// Builds thread rows over already-cached messages. Local only, like the search
+    /// index backfill.
+    @discardableResult
+    func backfillThreads() async throws -> Int {
+        try await store.backfillThreads()
     }
 
     func totalUnread() async throws -> Int {

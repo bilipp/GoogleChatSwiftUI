@@ -107,6 +107,7 @@ Swift 6 language mode, strict concurrency, no third-party dependencies. Layers a
 **Features / App**
 - `NavigationSplitView`: sidebar (pinned → sections → muted) │ message list │ `Inspector` (space details, members)
 - **Pin and mute are local**, stored on `CachedSpace` and set from the sidebar's context menu. Neither has an API representation that works (§9), so neither syncs to the web client. Mute silences notifications and is excluded from the Dock badge and the menu-bar list; pin outranks both the activity scope and the mute toggle, so a pinned conversation is always listed. The pinned group is user-ordered — drag, or Move Up/Down/to Top from the context menu, since a drag is unreachable by keyboard and VoiceOver
+- **Threads have their own index and their own read state.** The inspector holds either the thread list (⌘⇧T, or the toolbar button, which carries the unread count) or a single thread, with a back button between them. A thread reply is invisible from the transcript of a threaded space, so per-thread read marks on `CachedThread` are what keep an unread reply findable after the space itself has been opened and marked read — see §9. They are local, because Chat has a `getThreadReadState` and no update counterpart
 - Composer backed by `NSViewRepresentable` over `NSTextView` — needed for @-mention autocomplete, paste-to-attach, and correct multiline behaviour that `TextEditor` can't deliver
 - `MenuBarExtra` with unread count
 - `UNUserNotificationCenter` notifications for mentions and DMs
@@ -191,9 +192,9 @@ Required changes:
 
 Each phase ends at something runnable, not a half-integrated layer.
 
-Status as of 2026-08-06: phases 0–7 complete, 8 partial.
-All three of the last requested features — message search, file upload,
-clickable and rich links — are in.
+Status as of 2026-08-07: phases 0–7 complete, 8 partial.
+The last requested features — message search, file upload, clickable and rich
+links, Chat's text formatting, and the thread index with per-thread unread — are in.
 
 | # | Phase | Outcome |
 |---|---|---|
@@ -257,6 +258,9 @@ Each of these cost a wrong assumption first, and each shaped the design:
 | Subscription max TTL is undocumented and varies with `includeResource` | Renewal patches `ttl: 0` ("extend to maximum") on a timer, so the value never needs knowing |
 | Card `onClick.action` calls back into the app that sent the card | Interactive card content is unreachable as a user: link buttons work, action buttons and form widgets render disabled |
 | Nothing named pin, star, or favourite exists anywhere in the v1 discovery document — no field on `Space`, no section type beyond `CUSTOM_SECTION` / `DEFAULT_DIRECT_MESSAGES` / `DEFAULT_SPACES` / `DEFAULT_APPS`, no method | Pinning is local to this app: a `CachedSpace` flag in SwiftData, invisible to chat.google.com |
+| `Message` carries no formatted or structured body — Chat's own markup (`*bold*`, `_italic_`, `~strike~`, `` `code` ``, ```` ```blocks``` ````, `> quotes`, `- bullets`) arrives literally in `text`, and the [syntax](https://support.google.com/chat/answer/7649118) is documented for humans rather than specified | Rendering is ours: `ChatTextRenderer` parses the markup into blocks, and its boundary rules (a delimiter must sit at a word edge) are pinned by tests, since `snake_case` and URL paths would otherwise turn into italics |
+| Thread read state is readable (`users.spaces.threads.getThreadReadState`) but has **no update method**, unlike space read state which has both | Thread read marks are local, on `CachedThread`. The server's is read once per unread thread to catch up with the web client, and only ever moves a mark forward — Chat reports a never-opened thread as read at the epoch, which would otherwise resurrect the whole cache as unread |
+| A space-level read mark cannot speak for thread replies: replies never appear in the transcript of a `THREADED_MESSAGES` space, yet marking the space read covers them | Opening a space no longer clears its threads. The unread tally adds the replies hidden behind the space mark rather than double-counting the ones already newer than it |
 | `spaceNotificationSetting` returns values that do not match what this account sees on chat.google.com — muted spaces come back unmuted — so neither `muteSetting` nor `notificationSetting == "OFF"` produced a sidebar that agreed with the web client | Mute is local. Both the endpoint and the `chat.users.spacesettings` scope were dropped |
 
 ## 10. Project-wide gotcha

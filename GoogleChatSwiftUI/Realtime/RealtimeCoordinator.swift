@@ -201,7 +201,9 @@ actor RealtimeCoordinator {
                             // lookup is local and the banner names a person rather
                             // than saying nothing.
                             senderDisplayName: await senderName(of: message),
-                            body: message.displayText
+                            // A banner cannot show styling, so the markup is
+                            // stripped rather than shown as literal asterisks.
+                            body: ChatTextRenderer.plainText(message.displayText)
                         )
                     )
                 }

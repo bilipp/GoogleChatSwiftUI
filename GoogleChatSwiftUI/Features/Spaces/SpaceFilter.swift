@@ -46,7 +46,8 @@ enum SpaceScope: String, CaseIterable, Identifiable, Sendable {
         case .all:
             return true
         case .unread:
-            return space.unreadCount > 0 || space.hasUnread
+            // Threads count: after a space is opened they are the only unread it has.
+            return space.unreadCount > 0 || space.hasUnread || space.unreadThreadCount > 0
         case .recent:
             guard let active = space.lastActiveTime else { return false }
             return now.timeIntervalSince(active) <= Self.recentWindow

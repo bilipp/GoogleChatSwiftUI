@@ -12,18 +12,28 @@ struct MessageListView: View {
     /// fetch names every message that person has ever sent — including ones already
     /// cached before the lookup happened.
     @Query private var users: [CachedUser]
+    /// Thread index rows for this space, carrying the per-thread unread counts the
+    /// space's own read mark cannot express.
+    @Query private var threads: [CachedThread]
 
     private let spaceName: String
     private let spaceTitle: String
     private let isThreaded: Bool
+    /// Threads here with unread replies, for the toolbar badge.
+    private let unreadThreadCount: Int
 
-    init(spaceName: String, spaceTitle: String, isThreaded: Bool) {
+    init(spaceName: String, spaceTitle: String, isThreaded: Bool, unreadThreadCount: Int) {
         self.spaceName = spaceName
         self.spaceTitle = spaceTitle
         self.isThreaded = isThreaded
+        self.unreadThreadCount = unreadThreadCount
         _messages = Query(
             filter: #Predicate<CachedMessage> { $0.space?.name == spaceName },
             sort: [SortDescriptor(\CachedMessage.createTime, order: .forward)]
+        )
+        _threads = Query(
+            filter: #Predicate<CachedThread> { $0.space?.name == spaceName },
+            sort: [SortDescriptor(\CachedThread.lastActivityTime, order: .reverse)]
         )
     }
 
@@ -55,6 +65,12 @@ struct MessageListView: View {
                 .disabled(session.isLoading(spaceName))
                 .help("Fetch older messages")
             }
+            // Only where threads are a place of their own. In grouped and unthreaded
+            // spaces replies are already in the transcript, so a thread index would
+            // just be a second copy of what is on screen.
+            ToolbarItem(placement: .primaryAction) {
+                if isThreaded { threadsButton }
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
@@ -75,6 +91,42 @@ struct MessageListView: View {
                 }
             }
         }
+    }
+
+    /// Opens the thread index, and says how much is waiting in it.
+    ///
+    /// Carries a count rather than a plain icon because the count is the whole point:
+    /// an unread reply is invisible everywhere else in this window once the space has
+    /// been opened, so this is the only thing that can tell the user to look.
+    private var threadsButton: some View {
+        Button {
+            if session.isThreadListOpen {
+                session.closeThreadInspector()
+            } else {
+                session.openThreadList()
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                if unreadThreadCount > 0 {
+                    Text("\(unreadThreadCount)")
+                        .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor, in: .capsule)
+                }
+            }
+        }
+        .help(threadsHelp)
+        .accessibilityLabel(threadsHelp)
+    }
+
+    private var threadsHelp: String {
+        guard unreadThreadCount > 0 else { return "Threads" }
+        let noun = unreadThreadCount == 1 ? "thread" : "threads"
+        return "Threads — \(unreadThreadCount) unread \(noun)"
     }
 
     /// Anchored at the bottom by the scroll view itself rather than by scrolling to
@@ -122,6 +174,7 @@ struct MessageListView: View {
                                 isLastInGroup: entry.isLastInGroup,
                                 spaceName: spaceName,
                                 threadReplyCount: threadReplyCount(for: entry.message),
+                                newReplyCount: newReplyCount(for: entry.message),
                                 onOpenThread: isThreaded ? { openThread(entry.message) } : nil
                             )
                             .id(entry.message.name)
@@ -168,10 +221,16 @@ struct MessageListView: View {
         return replyCounts[thread] ?? 0
     }
 
+    private func newReplyCount(for message: CachedMessage) -> Int {
+        guard isThreaded, let thread = message.threadName else { return 0 }
+        return unreadReplyCounts[thread] ?? 0
+    }
+
     private func openThread(_ message: CachedMessage) {
         // Chat assigns every message a thread, so a root with no replies yet is
         // still a valid target — replying to it starts the thread.
-        session.openThread(message.threadName)
+        guard let threadName = message.threadName else { return }
+        session.openThread(threadName)
     }
 
     // MARK: - Grouping
@@ -204,6 +263,17 @@ struct MessageListView: View {
         for message in messages where message.isThreadReply {
             guard let thread = message.threadName else { continue }
             counts[thread, default: 0] += 1
+        }
+        return counts
+    }
+
+    /// Unread replies per thread, read from the thread rows rather than recomputed:
+    /// the store already maintains them, and the read marks they depend on live there.
+    private var unreadReplyCounts: [String: Int] {
+        guard isThreaded else { return [:] }
+        var counts: [String: Int] = [:]
+        for thread in threads where thread.unreadReplyCount > 0 {
+            counts[thread.name] = thread.unreadReplyCount
         }
         return counts
     }

@@ -112,6 +112,22 @@ nonisolated extension ChatClient {
         )
     }
 
+    /// The signed-in user's read position in one thread.
+    ///
+    /// Read-only, unlike space read state, which has both a get and an update. There
+    /// is no `updateThreadReadState` at any auth level — so this can tell us where the
+    /// web client thinks the user has read to, but a thread opened here can never be
+    /// reported back. Thread read marks are therefore local (`CachedThread`), and this
+    /// call only ever moves one forward.
+    /// - Parameter threadName: e.g. `spaces/AAAA/threads/BBBB`.
+    func threadReadState(threadName: String) async throws -> ThreadReadStateResponse {
+        let path = threadName.replacingOccurrences(of: "spaces/", with: "")
+        return try await get(
+            "users/me/spaces/\(path)/threadReadState",
+            as: ThreadReadStateResponse.self
+        )
+    }
+
     /// Chat requires client-assigned IDs to start with `client-` and contain only
     /// lowercase letters, numbers, and hyphens, up to 63 characters.
     static func newClientMessageID() -> String {
@@ -238,6 +254,11 @@ private nonisolated struct CreateReactionBody: Encodable, Sendable {
 }
 
 nonisolated struct SpaceReadStateResponse: Decodable, Sendable {
+    let name: String?
+    let lastReadTime: Date?
+}
+
+nonisolated struct ThreadReadStateResponse: Decodable, Sendable {
     let name: String?
     let lastReadTime: Date?
 }

@@ -39,23 +39,19 @@ struct SpacesListView: View {
                 MessageListView(
                     spaceName: selected.name,
                     spaceTitle: selected.title,
-                    isThreaded: selected.isThreaded
+                    isThreaded: selected.isThreaded,
+                    unreadThreadCount: selected.unreadThreadCount
                 )
                 // Identity tied to the space so switching conversations builds a fresh
                 // view. Without it SwiftUI reuses the instance and carries the previous
                 // space's scroll offset into the new transcript.
                 .id(selected.name)
                 .inspector(isPresented: threadBinding) {
-                    if let thread = session.selectedThreadName {
-                        ThreadPane(spaceName: selected.name, threadName: thread)
-                            // Likewise per thread, so reopening a different thread does
-                            // not inherit the last one's position.
-                            .id(thread)
-                            // The inspector's default width is sized for property
-                            // panels, not a conversation — bubbles plus an avatar
-                            // need real room or they collapse to a few words a line.
-                            .inspectorColumnWidth(min: 380, ideal: 460, max: 760)
-                    }
+                    inspectorContent(for: selected)
+                        // The inspector's default width is sized for property
+                        // panels, not a conversation — bubbles plus an avatar
+                        // need real room or they collapse to a few words a line.
+                        .inspectorColumnWidth(min: 380, ideal: 460, max: 760)
                 }
             } else {
                 ContentUnavailableView(
@@ -98,6 +94,9 @@ struct SpacesListView: View {
             if case .idle = session.spacesState { await session.refreshSpaces() }
             await session.startRealtime()
             await session.prepareSearchIndex()
+            // Before read states, so the marks those bring back land on threads that
+            // already exist rather than leaving the cache's threads unseeded.
+            await session.prepareThreadIndex()
             await session.loadReadStates()
         }
         // Subsequent clicks, while the app is already running.
@@ -123,6 +122,16 @@ struct SpacesListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .chatFocusSearch)) { _ in
             isSearchFocused = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .chatToggleThreads)) { _ in
+            // Ignored where threads are not a place of their own, matching the
+            // toolbar button rather than opening an index that would list nothing.
+            guard let space = selectedSpace, space.isThreaded else { return }
+            if session.isThreadListOpen {
+                session.closeThreadInspector()
+            } else {
+                session.openThreadList()
+            }
+        }
     }
 
     /// Opens the conversation a clicked notification named.
@@ -143,12 +152,32 @@ struct SpacesListView: View {
         await session.revealSpace(name)
     }
 
-    /// The inspector's own dismiss control clears the selected thread, keeping the
+    /// The thread index and a single thread are two views of the same panel, so they
+    /// share the inspector rather than competing for the same edge of the window.
+    @ViewBuilder
+    private func inspectorContent(for space: CachedSpace) -> some View {
+        switch session.threadInspector {
+        case .closed:
+            EmptyView()
+        case .list:
+            ThreadListPane(spaceName: space.name)
+                // Per space, so the unread filter and scroll position do not carry
+                // across to a different conversation's threads.
+                .id(space.name)
+        case .thread(let thread, _):
+            ThreadPane(spaceName: space.name, threadName: thread)
+                // Likewise per thread, so reopening a different thread does not
+                // inherit the last one's position.
+                .id(thread)
+        }
+    }
+
+    /// The inspector's own dismiss control closes the panel outright, keeping the
     /// model in step with a close the user performed via the window chrome.
     private var threadBinding: Binding<Bool> {
         Binding(
-            get: { session.selectedThreadName != nil },
-            set: { shown in if !shown { session.openThread(nil) } }
+            get: { session.threadInspector != .closed },
+            set: { shown in if !shown { session.closeThreadInspector() } }
         )
     }
 
@@ -553,6 +582,7 @@ private struct SpaceRow: View {
                     .foregroundStyle(.tertiary)
                     .accessibilityLabel("Muted")
             }
+            threadBadge
             unreadBadge
         }
         .padding(.vertical, 2)
@@ -568,7 +598,28 @@ private struct SpaceRow: View {
         .accessibilityValue(isHighlighted ? "Highlighted" : "")
     }
 
-    private var isUnread: Bool { space.unreadCount > 0 || space.hasUnread }
+    private var isUnread: Bool {
+        space.unreadCount > 0 || space.hasUnread || space.unreadThreadCount > 0
+    }
+
+    /// Unread replies waiting inside threads, which the message badge cannot speak
+    /// for: the space's read mark clears the moment it is opened, while the replies
+    /// behind it stay unread and stay off the transcript. Without this the sidebar
+    /// would show a fully-read conversation that still has something to read in it.
+    @ViewBuilder
+    private var threadBadge: some View {
+        if space.unreadThreadCount > 0 {
+            HStack(spacing: 2) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.caption2)
+                Text("\(space.unreadThreadCount)")
+                    .font(.caption2.weight(.semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(Color.accentColor)
+            .accessibilityLabel("\(space.unreadThreadCount) unread threads")
+        }
+    }
 
     /// A count when history is cached deeply enough to produce one, otherwise a dot.
     ///

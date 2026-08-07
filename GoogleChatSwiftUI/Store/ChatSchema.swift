@@ -13,6 +13,7 @@ enum ChatSchemaV1: VersionedSchema {
         [
             CachedSpace.self,
             CachedMessage.self,
+            CachedThread.self,
             CachedUser.self,
             CachedReaction.self,
             CachedAttachment.self,
@@ -93,15 +94,39 @@ final class CachedSpace {
     /// no unread count of its own, only a read timestamp.
     var unreadCount: Int = 0
 
+    /// Threads in this space holding replies the user has not read.
+    ///
+    /// Tracked apart from `unreadCount` because a thread reply never appears in the
+    /// main transcript of a threaded space, so the space-level read mark cannot
+    /// account for it: opening the space marks it read and the reply becomes both
+    /// unbadged and invisible. See `CachedThread.lastReadTime`.
+    var unreadThreadCount: Int = 0
+
+    /// Unread replies the space-level count cannot see — those at or before
+    /// `lastReadTime`, which is every one of them once the space has been opened.
+    ///
+    /// Kept separate so the Dock badge can add the two without double-counting the
+    /// replies that are newer than the read mark and therefore already in
+    /// `unreadCount`.
+    var unreadThreadReplyCount: Int = 0
+
     /// Only claimed when read state is actually known.
     var hasUnread: Bool {
         guard didFetchReadState, let lastReadTime, let lastActiveTime else { return false }
         return lastActiveTime > lastReadTime
     }
 
+    /// What this space contributes to the badge: unread messages plus the unread
+    /// replies hidden behind the read mark.
+    var totalUnread: Int { unreadCount + unreadThreadReplyCount }
+
     /// Cascade: deleting a cached space should not orphan its messages.
     @Relationship(deleteRule: .cascade, inverse: \CachedMessage.space)
     var messages: [CachedMessage] = []
+
+    /// Likewise for its threads, which are index rows over those messages.
+    @Relationship(deleteRule: .cascade, inverse: \CachedThread.space)
+    var threads: [CachedThread] = []
 
     init(name: String) {
         self.name = name
@@ -201,6 +226,11 @@ final class CachedMessage {
 
     var space: CachedSpace?
 
+    /// Set only in fully threaded spaces, where a thread is a place you can navigate
+    /// to. Elsewhere Chat still assigns every message a thread name, but replies are
+    /// rendered inline, so an index row over them would describe nothing.
+    var thread: CachedThread?
+
     @Relationship(deleteRule: .cascade, inverse: \CachedReaction.message)
     var reactions: [CachedReaction] = []
 
@@ -294,6 +324,65 @@ final class CachedMessage {
             }
         }
         mentionedUserIDs = mentions
+    }
+}
+
+/// One thread in a threaded space, with the user's read position in it.
+///
+/// Exists because a thread reply is invisible from the main transcript and the
+/// space-level read mark is the wrong instrument for it: opening the space sets that
+/// mark to now, which would silently declare every unread reply read. A thread
+/// therefore carries its own mark, advanced only by actually opening the thread.
+///
+/// Reads do not travel. Chat's thread read state is readable
+/// (`users.spaces.threads.getThreadReadState`) but has no update method — unlike
+/// space read state, which has both — so the app can learn where the web client
+/// thinks you are but never tell it where you got to here.
+@Model
+final class CachedThread {
+    /// Chat resource name, e.g. `spaces/AAAA/threads/BBBB`.
+    @Attribute(.unique) var name: String
+
+    var space: CachedSpace?
+
+    /// Newest reply, excluding the thread's root message.
+    var lastReplyTime: Date?
+    /// Newest message of any kind, for ordering the thread list.
+    var lastActivityTime: Date?
+    /// Replies, excluding the root and deleted messages.
+    var replyCount: Int = 0
+
+    /// The user's read position in this thread.
+    var lastReadTime: Date?
+    /// Whether `lastReadTime` means anything yet.
+    ///
+    /// A thread cached before its space's read state arrived has nothing to compare
+    /// replies against. Without this flag it would be indistinguishable from a thread
+    /// read at the epoch, and every thread in the cache would light up unread on
+    /// first launch — the same trap `CachedSpace.didFetchReadState` avoids.
+    var didSeedReadState: Bool = false
+    /// Whether the server's own thread read state has been consulted, so the check
+    /// is paid once per thread rather than on every visit to the list.
+    var didCheckServerReadState: Bool = false
+
+    /// Replies newer than `lastReadTime`. Zero until the read mark is seeded.
+    var unreadReplyCount: Int = 0
+
+    /// Nullify, not cascade: this is an index over messages the space owns, and
+    /// dropping a thread row must never take the conversation with it.
+    @Relationship(deleteRule: .nullify, inverse: \CachedMessage.thread)
+    var messages: [CachedMessage] = []
+
+    init(name: String) {
+        self.name = name
+    }
+
+    var hasUnread: Bool { unreadReplyCount > 0 }
+
+    /// The message the thread hangs off — the one shown in the main transcript.
+    var root: CachedMessage? {
+        messages.first { !$0.isThreadReply }
+            ?? messages.min { ($0.createTime ?? .distantPast) < ($1.createTime ?? .distantPast) }
     }
 }
 

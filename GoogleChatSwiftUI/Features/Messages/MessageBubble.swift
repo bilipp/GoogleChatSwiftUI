@@ -20,6 +20,8 @@ struct MessageBubble: View {
     let spaceName: String
     /// Replies beneath this message's thread. Zero in unthreaded spaces.
     var threadReplyCount: Int = 0
+    /// How many of those replies are unread.
+    var newReplyCount: Int = 0
     /// Non-nil only in threaded spaces, where a thread pane makes sense.
     var onOpenThread: (() -> Void)?
     /// Set in the thread inspector, which is far narrower than the main transcript.
@@ -131,15 +133,15 @@ struct MessageBubble: View {
 
     /// Mention highlighting matches on display name, so the sender's own directory
     /// entry is irrelevant here — only the mentioned users' names matter.
-    private var renderedText: AttributedString {
+    private var renderedBlocks: [ChatBlock] {
         guard !message.isDeleted, let raw = message.text, !raw.isEmpty else {
-            return AttributedString(message.displayText)
+            return [.paragraph(AttributedString(message.displayText))]
         }
-        return ChatTextRenderer.attributed(raw, mentionNames: mentionNames, isOwn: isOwn)
+        return ChatTextRenderer.blocks(raw, mentionNames: mentionNames, isOwn: isOwn)
     }
 
     private var bubble: some View {
-        Text(renderedText)
+        FormattedMessageText(blocks: renderedBlocks, isOwn: isOwn)
             .font(.body)
             .italic(message.isDeleted)
             .foregroundStyle(foreground)
@@ -238,13 +240,30 @@ struct MessageBubble: View {
                 Image(systemName: "bubble.left.and.bubble.right.fill")
                     .font(.caption2)
                 Text(threadReplyCount == 1 ? "1 reply" : "\(threadReplyCount) replies")
-                    .font(.caption.weight(.medium))
+                    .font(.caption.weight(newReplyCount > 0 ? .semibold : .medium))
+                // The unread replies are behind this button and nowhere else on
+                // screen, so the count belongs where the way in is.
+                if newReplyCount > 0 {
+                    Text("\(newReplyCount) new")
+                        .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor, in: .capsule)
+                }
             }
         }
         .buttonStyle(.plain)
         .foregroundStyle(Color.accentColor)
         .padding(.top, 1)
-        .accessibilityLabel("Open thread, \(threadReplyCount) replies")
+        .accessibilityLabel(threadButtonDescription)
+    }
+
+    private var threadButtonDescription: String {
+        let replies = "Open thread, \(threadReplyCount) replies"
+        guard newReplyCount > 0 else { return replies }
+        return "\(replies), \(newReplyCount) unread"
     }
 
     private func failureBanner(_ reason: String) -> some View {
@@ -331,6 +350,8 @@ struct MessageBubble: View {
     private var accessibilityDescription: String {
         let who = isOwn ? "You" : senderName
         let time = message.createTime?.formatted(date: .omitted, time: .shortened) ?? ""
-        return "\(who) at \(time): \(message.summaryText)"
+        // Stripped, because VoiceOver reading "asterisk shipped asterisk" aloud is
+        // worse than losing the emphasis.
+        return "\(who) at \(time): \(ChatTextRenderer.plainText(message.summaryText))"
     }
 }

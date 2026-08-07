@@ -21,8 +21,16 @@ struct MenuBarContent: View {
     @Environment(AuthModel.self) private var auth
     /// Muted conversations are left out: the menu-bar peek is a "what needs me?"
     /// list, and a muted space is by definition not that.
-    @Query(filter: #Predicate<CachedSpace> { $0.unreadCount > 0 && !$0.isMuted },
-           sort: [SortDescriptor(\CachedSpace.lastActiveTime, order: .reverse)])
+    ///
+    /// Unread thread replies count too: once a space has been opened they are the
+    /// only unread left in it, and a menu that ignored them would call a conversation
+    /// clear while replies sit unread inside it.
+    @Query(
+        filter: #Predicate<CachedSpace> { space in
+            !space.isMuted && (space.unreadCount > 0 || space.unreadThreadReplyCount > 0)
+        },
+        sort: [SortDescriptor(\CachedSpace.lastActiveTime, order: .reverse)]
+    )
     private var unreadSpaces: [CachedSpace]
 
     /// Pinned first, then by recency. Sorted here rather than in the query because
@@ -41,7 +49,7 @@ struct MenuBarContent: View {
                 // Capped: an unbounded menu of 700 rows is unusable, and the top few
                 // by recency are what anyone actually wants from a menu-bar peek.
                 ForEach(rankedUnread.prefix(10)) { space in
-                    Button("\(space.title) (\(space.unreadCount))") {
+                    Button("\(space.title) (\(space.totalUnread))") {
                         activateApp()
                     }
                 }
@@ -56,7 +64,7 @@ struct MenuBarContent: View {
     }
 
     private var totalUnread: Int {
-        unreadSpaces.reduce(0) { $0 + $1.unreadCount }
+        unreadSpaces.reduce(0) { $0 + $1.totalUnread }
     }
 
     /// Brings the main window forward. Selecting the specific space from here would
