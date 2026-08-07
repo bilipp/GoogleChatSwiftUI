@@ -40,9 +40,12 @@ struct ImageViewer: View {
             Divider()
             bottomBar
         }
+        // Both a minimum and an ideal, because a sheet settles on its size before the
+        // image has loaded: an ideal alone would leave every viewer at the placeholder
+        // size it was born with.
         .frame(
-            minWidth: 560, idealWidth: idealSize.width,
-            minHeight: 420, idealHeight: idealSize.height
+            minWidth: idealSize.width, idealWidth: idealSize.width, maxWidth: .infinity,
+            minHeight: idealSize.height, idealHeight: idealSize.height, maxHeight: .infinity
         )
         .task { await load() }
     }
@@ -128,16 +131,19 @@ struct ImageViewer: View {
         }
     }
 
+    /// Four fifths of the window the viewer was opened over. Sizing to the image was the
+    /// wrong instinct — the canvas fits and centres whatever it is given — and sizing to
+    /// the display made a small app window sprout a near-fullscreen sheet.
+    ///
+    /// A sheet is key but never main, so `mainWindow` is still the window underneath it.
     private var idealSize: CGSize {
-        let bar: CGFloat = 44
-        guard let image, image.size.width > 0, image.size.height > 0 else {
-            return CGSize(width: 760, height: 560)
-        }
-        let bounds = CGSize(width: 1100, height: 720)
-        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height, 1)
+        let host = NSApp.mainWindow?.frame.size
+            ?? NSApp.windows.first { $0.isVisible && $0.sheetParent == nil }?.frame.size
+            ?? NSScreen.main?.visibleFrame.size
+            ?? CGSize(width: 1200, height: 800)
         return CGSize(
-            width: max(560, image.size.width * scale),
-            height: max(420, image.size.height * scale) + bar
+            width: max(480, host.width * 0.8),
+            height: max(360, host.height * 0.8)
         )
     }
 
