@@ -104,8 +104,11 @@ struct EmojiPicker: View {
 }
 
 /// Emoji grouped into categories, built once at first use.
-enum EmojiCatalogue {
-    struct Category: Identifiable {
+///
+/// Nonisolated because ``EmojiShortcodeIndex`` derives the composer's `:shortcode`
+/// table from it, and that is pure text work with no reason to be on the main actor.
+nonisolated enum EmojiCatalogue {
+    struct Category: Identifiable, Sendable {
         let id: String
         let name: String
         let emoji: [String]

@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 /// Uses `TextField` with `.vertical` axis rather than `TextEditor`: it grows with
 /// content, respects the send-on-Return convention, and does not need an
 /// `NSViewRepresentable` wrapper.
+///
+/// Typing `:smile` offers inline emoji completion; see ``EmojiShortcodeTrigger`` for
+/// what that costs while the input is still a `TextField`.
 struct MessageComposer: View {
     let placeholder: String
     let isSending: Bool
@@ -21,6 +24,8 @@ struct MessageComposer: View {
     @State private var attachments: [PendingAttachment] = []
     @State private var isTargetedForDrop = false
     @State private var errorMessage: String?
+    @State private var suggestions: [EmojiShortcode] = []
+    @State private var selectedSuggestion = 0
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -41,6 +46,20 @@ struct MessageComposer: View {
                 }
             }
 
+            // Part of the composer's layout rather than an overlay floating over the
+            // transcript: the composer sits in a bottom `safeAreaInset`, which clips to
+            // its own bounds, so a list drawn above the field was cut off at the top
+            // edge. In the stack it grows the composer upwards instead, and every row
+            // stays on screen.
+            if !suggestions.isEmpty {
+                EmojiSuggestionList(
+                    matches: suggestions,
+                    selection: selectedSuggestion,
+                    onHighlight: { selectedSuggestion = $0 },
+                    onPick: { complete(with: $0) }
+                )
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
                 Button(action: pickFiles) {
                     Image(systemName: "paperclip")
@@ -57,16 +76,25 @@ struct MessageComposer: View {
                     .focused($isFocused)
                     .padding(8)
                     .background(.quaternary, in: .rect(cornerRadius: 8))
-                    .onSubmit(send)
-                    // Escape drops the reply this message was aimed at, which is the
-                    // only way out that does not involve sending it.
+                    .onSubmit(submit)
+                    .onChange(of: text) { refreshSuggestions() }
+                    .onChange(of: isFocused) { if !isFocused { suggestions = [] } }
+                    .onKeyPress(.upArrow) { moveSelection(by: -1) }
+                    .onKeyPress(.downArrow) { moveSelection(by: 1) }
+                    .onKeyPress(.tab) { completeSelection() ? .handled : .ignored }
+                    // Escape unwinds one thing at a time, innermost first: the
+                    // completion list, then the reply this message was aimed at.
                     .onKeyPress(.escape) {
+                        if !suggestions.isEmpty {
+                            suggestions = []
+                            return .handled
+                        }
                         guard replyTarget != nil else { return .ignored }
                         onCancelReply()
                         return .handled
                     }
 
-                Button(action: send) {
+                Button(action: sendNow) {
                     if isSending {
                         ProgressView().controlSize(.small)
                     } else {
@@ -107,7 +135,17 @@ struct MessageComposer: View {
         return (hasText || !attachments.isEmpty) && !isSending
     }
 
-    private func send() {
+    /// Return: takes the highlighted suggestion if the list is open, sends otherwise.
+    ///
+    /// Return is not intercepted through `onKeyPress` like the other completion keys,
+    /// because `onSubmit` would still be reached and the message would go out behind
+    /// the completion. Branching in one place keeps the key doing exactly one thing.
+    private func submit() {
+        guard !completeSelection() else { return }
+        sendNow()
+    }
+
+    private func sendNow() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
 
@@ -116,8 +154,59 @@ struct MessageComposer: View {
         // text in a flagged placeholder if it fails, so nothing is lost.
         text = ""
         attachments = []
+        suggestions = []
         errorMessage = nil
         onSend(trimmed, staged)
+    }
+
+    // MARK: - Emoji completion
+
+    /// Re-reads the trailing `:fragment` after every edit.
+    ///
+    /// A closed `:shortcode:` substitutes outright and shows no list — the user has
+    /// already said which emoji they meant.
+    private func refreshSuggestions() {
+        if let completed = EmojiShortcodeTrigger.completed(in: text) {
+            text.replaceSubrange(completed.range, with: completed.emoji)
+            suggestions = []
+            return
+        }
+
+        guard let pending = EmojiShortcodeTrigger.pending(in: text) else {
+            suggestions = []
+            return
+        }
+        suggestions = EmojiShortcodeIndex.matches(for: pending.query)
+        // The query changed, so any previous highlight refers to a row that is gone.
+        selectedSuggestion = 0
+    }
+
+    /// Accepts the highlighted suggestion. Reports whether there was one to accept, so
+    /// callers can fall through to whatever the key normally does.
+    private func completeSelection() -> Bool {
+        guard suggestions.indices.contains(selectedSuggestion) else { return false }
+        return complete(with: suggestions[selectedSuggestion])
+    }
+
+    @discardableResult
+    private func complete(with match: EmojiShortcode) -> Bool {
+        guard let pending = EmojiShortcodeTrigger.pending(in: text) else {
+            suggestions = []
+            return false
+        }
+        // Trailing space because a completion is nearly always mid-sentence, and
+        // typing one by hand after every emoji is the kind of friction people notice.
+        text.replaceSubrange(pending.range, with: match.emoji + " ")
+        suggestions = []
+        return true
+    }
+
+    private func moveSelection(by offset: Int) -> KeyPress.Result {
+        guard !suggestions.isEmpty else { return .ignored }
+        let count = suggestions.count
+        // Wrapping, so holding one arrow key reaches every row without a dead end.
+        selectedSuggestion = ((selectedSuggestion + offset) % count + count) % count
+        return .handled
     }
 
     private func pickFiles() {
