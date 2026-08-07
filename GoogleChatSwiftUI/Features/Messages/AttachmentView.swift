@@ -16,12 +16,32 @@ struct AttachmentList: View {
     }
 }
 
+/// The Save… panel, shared by the attachment row and the image viewer so a file saved
+/// from either lands with the same name and type.
+@MainActor
+enum AttachmentSavePanel {
+    static func destination(named name: String, contentType: String?) -> URL? {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = name
+        panel.canCreateDirectories = true
+        if let contentType, let type = UTType(mimeType: contentType) {
+            panel.allowedContentTypes = [type]
+        }
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+}
+
 private struct AttachmentChip: View {
     @Environment(ChatSessionModel.self) private var session
 
     let attachment: CachedAttachment
     @State private var preview: NSImage?
+    /// The bytes behind `preview`, kept so the viewer can copy and save the original
+    /// file without downloading it a second time.
+    @State private var previewData: Data?
     @State private var previewFailed = false
+    @State private var isViewerPresented = false
     @State private var isDownloading = false
     @State private var errorMessage: String?
 
@@ -46,12 +66,31 @@ private struct AttachmentChip: View {
     @ViewBuilder
     private var imagePreview: some View {
         if let preview {
-            Image(nsImage: preview)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 320, maxHeight: 240)
-                .clipShape(.rect(cornerRadius: 8))
-                .accessibilityLabel(attachment.displayName)
+            // A Button rather than a tap gesture: the preview is a real control, and
+            // this is what puts it in the keyboard and VoiceOver order for free.
+            Button {
+                isViewerPresented = true
+            } label: {
+                Image(nsImage: preview)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 320, maxHeight: 240)
+                    .clipShape(.rect(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .help("Open \(attachment.displayName)")
+            .accessibilityLabel("Open \(attachment.displayName)")
+            .sheet(isPresented: $isViewerPresented) {
+                ImageViewer(
+                    title: attachment.displayName,
+                    source: .loaded(
+                        preview,
+                        data: previewData,
+                        contentType: attachment.contentType
+                    )
+                )
+            }
         } else if previewFailed {
             // No permanent spinner: a preview that will never arrive should say so.
             RoundedRectangle(cornerRadius: 8)
@@ -86,6 +125,7 @@ private struct AttachmentChip: View {
             let data = try await session.downloadAttachment(resourceName: resource)
             if let image = NSImage(data: data) {
                 preview = image
+                previewData = data
             } else {
                 previewFailed = true
             }
@@ -128,16 +168,12 @@ private struct AttachmentChip: View {
     }
 
     private func save() {
-        guard let resource = attachment.dataResourceName else { return }
-
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = attachment.displayName
-        panel.canCreateDirectories = true
-        if let type = attachment.contentType, let utType = UTType(mimeType: type) {
-            panel.allowedContentTypes = [utType]
-        }
-
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard let resource = attachment.dataResourceName,
+              let destination = AttachmentSavePanel.destination(
+                  named: attachment.displayName,
+                  contentType: attachment.contentType
+              )
+        else { return }
 
         isDownloading = true
         errorMessage = nil

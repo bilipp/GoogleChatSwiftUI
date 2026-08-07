@@ -202,6 +202,8 @@ private struct CardWidgetView: View {
 private struct CardImageView: View {
     let image: CardImage
 
+    @State private var isViewerPresented = false
+
     var body: some View {
         let content = AsyncImage(url: image.imageUrl.flatMap(URL.init(string:))) { phase in
             switch phase {
@@ -217,8 +219,23 @@ private struct CardImageView: View {
         .clipShape(.rect(cornerRadius: 8))
         .accessibilityLabel(image.altText ?? "Image")
 
+        // A card that names its own click target keeps it — that link is the bot's
+        // intent. Everything else opens the picture itself, in the app.
         if let url = image.onClick?.openLink?.url.flatMap(URL.init(string:)) {
             Link(destination: url) { content }
+        } else if let source = image.imageUrl.flatMap(URL.init(string:)) {
+            Button { isViewerPresented = true } label: { content }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help("Open image")
+                .accessibilityLabel("Open \(image.altText ?? "image")")
+                .sheet(isPresented: $isViewerPresented) {
+                    ImageViewer(
+                        title: image.altText ?? "Image",
+                        source: .remote(source),
+                        fileName: source.lastPathComponent
+                    )
+                }
         } else {
             content
         }
