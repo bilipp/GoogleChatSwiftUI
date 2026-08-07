@@ -21,6 +21,17 @@ enum ChatSchemaV1: VersionedSchema {
     }
 }
 
+/// No stages yet, and adding an optional attribute does not need one.
+///
+/// A declared `.lightweight` stage cannot express that change here, and crashes on the
+/// attempt: one set of `@Model` classes serves every `VersionedSchema`, so the moment a
+/// property is added the *old* version describes the new shape too. The stage becomes a
+/// mapping from a schema to itself while the store on disk is still the older one, and
+/// CoreData raises rather than returns — past the `try` that would have rebuilt the
+/// cache. SwiftData's own inference handles the added optional instead.
+///
+/// A stage earns its place when a change needs data moved rather than a column added —
+/// and that is the change that also needs the two schemas spelled out separately.
 enum ChatMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] { [ChatSchemaV1.self] }
     static var stages: [MigrationStage] { [] }
@@ -40,6 +51,15 @@ final class CachedSpace {
     var createTime: Date?
     var lastActiveTime: Date?
     var memberCount: Int?
+
+    /// Google's own web URL for this conversation, from `Space.spaceUri`.
+    ///
+    /// Stored on the chance of getting it rather than in expectation: the field is
+    /// documented and declared in the discovery document, and no `spaces.list` response
+    /// has ever carried it. `ChatDeepLink` builds message links from `spaceType` and
+    /// prefers this whenever it does arrive, so a change of URL scheme at Google's end
+    /// would be picked up rather than needing to be noticed.
+    var spaceUri: String?
 
     /// Peer names for DMs and unnamed group chats, resolved from the members API and
     /// cached because Chat never supplies a `displayName` for them.
@@ -171,6 +191,9 @@ final class CachedSpace {
         spaceTypeRaw = remote.spaceType?.rawValue
         threadingStateRaw = remote.spaceThreadingState
         spaceDescription = remote.spaceDetails?.description
+        // Never cleared by a response that omits it: a stored URI stays useful, and a
+        // nil would take the exact `room`/`dm` answer away again.
+        if let uri = remote.spaceUri, !uri.isEmpty { spaceUri = uri }
         createTime = remote.createTime
         // Never moves backwards. A refresh that races a live message would otherwise
         // undo the bump the event stream just applied, since the server's own space

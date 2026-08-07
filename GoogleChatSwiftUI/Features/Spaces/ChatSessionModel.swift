@@ -159,6 +159,66 @@ final class ChatSessionModel {
         await openSpace(spaceName)
     }
 
+    // MARK: - Links
+
+    /// Why a link could not be followed all the way to what it named. Nil the rest of
+    /// the time, which is nearly always.
+    private(set) var linkNotice: String?
+
+    func dismissLinkNotice() {
+        linkNotice = nil
+    }
+
+    /// Follows a `chat.google.com` link inside the app.
+    ///
+    /// The caller has already established that this account knows the conversation —
+    /// see `SpacesListView.openChatLink`, which hands anything else to the browser.
+    func reveal(_ link: ChatDeepLink) async {
+        await revealSpace(link.spaceName)
+
+        var destination = await resolvedDestination(of: link)
+
+        // A message the cache has not reached yet is worth a few pages of history: a
+        // link is nearly always to something recent, and the alternative is telling
+        // someone to press Load Older themselves for a message the app could have
+        // fetched while they were still looking at the conversation. Bounded, because
+        // walking a years-old space to its beginning is not what one click should cost.
+        var passes = 0
+        while destination == .uncachedMessage, passes < 4 {
+            passes += 1
+            let hasMore = await loadOlderMessages(in: link.spaceName)
+            destination = await resolvedDestination(of: link)
+            if !hasMore { break }
+        }
+
+        // Discarded if the reader has moved on in the meantime — a slow backfill must
+        // not yank a transcript nobody is looking at any more.
+        guard selectedSpaceName == link.spaceName else { return }
+
+        switch destination {
+        case .message(let messageName):
+            scrollTarget = messageName
+        case .thread(let threadName):
+            openThread(threadName)
+        case .uncachedMessage:
+            linkNotice = """
+                That message is older than the history downloaded for this conversation. \
+                Load Older fetches more of it.
+                """
+        case .space, .unknownSpace:
+            break
+        }
+    }
+
+    private func resolvedDestination(of link: ChatDeepLink) async -> ChatLinkDestination {
+        do {
+            return try await sync.destination(of: link)
+        } catch {
+            logger.error("Link resolution failed: \(error.localizedDescription)")
+            return .space
+        }
+    }
+
     /// Recomputes the badge total from the cache.
     func refreshUnread() async {
         do {
@@ -310,6 +370,9 @@ final class ChatSessionModel {
         // looking at any more.
         searchText = ""
         messageError = nil
+        // Belongs to whichever conversation the last link pointed into, so it goes when
+        // that conversation does. `reveal(_:)` sets its own after this returns.
+        linkNotice = nil
         // Any jump left over from an earlier search belongs to a transcript nobody is
         // looking at now. The search flow sets its own target after this returns; every
         // other way into a conversation should open it at the newest message.
@@ -385,16 +448,21 @@ final class ChatSessionModel {
         }
     }
 
-    func loadOlderMessages(in spaceName: String) async {
-        guard !loadingSpaceNames.contains(spaceName) else { return }
+    /// - Returns: whether there is still older history beyond what this fetched, so a
+    ///   caller paging towards something can stop at the beginning of the conversation
+    ///   rather than asking again for a page that does not exist.
+    @discardableResult
+    func loadOlderMessages(in spaceName: String) async -> Bool {
+        guard !loadingSpaceNames.contains(spaceName) else { return false }
         loadingSpaceNames.insert(spaceName)
         defer { loadingSpaceNames.remove(spaceName) }
 
         do {
-            try await sync.loadMoreHistory(for: spaceName)
+            return try await sync.loadMoreHistory(for: spaceName)
         } catch {
             logger.error("Paging failed for \(spaceName): \(error.localizedDescription)")
             messageError = error.localizedDescription
+            return false
         }
     }
 

@@ -362,6 +362,18 @@ struct MessageBubble: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(message.summaryText, forType: .string)
         }
+
+        // Absent rather than disabled for a message still in flight: it has no
+        // server-assigned name yet, so there is no link to copy for a second or two,
+        // and a greyed-out row would be explaining a state that is already over.
+        if let messageLink {
+            Button("Copy Link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(messageLink.absoluteString, forType: .string)
+            }
+            .help("Copy a chat.google.com link to this message")
+        }
+
         // Chat permits editing and deleting only your own messages, so offering
         // these on someone else's would be a guaranteed 403.
         if isOwn && !message.isDeleted && !message.isPending {
@@ -374,6 +386,21 @@ struct MessageBubble: View {
                 Task { await session.delete(messageName: message.name) }
             }
         }
+    }
+
+    /// Chat's own permalink for this message.
+    ///
+    /// Built rather than fetched: no field on the `Message` resource carries it, and
+    /// nothing in the API returns one. The shape is Chat's, though — see
+    /// ``ChatDeepLink`` — so a link copied here opens the message in a colleague's
+    /// browser, and back in this app when it comes home again.
+    private var messageLink: URL? {
+        guard !message.isPending else { return nil }
+        return ChatDeepLink.messageURL(
+            for: message.name,
+            spaceURI: message.space?.spaceUri,
+            spaceType: message.space?.spaceType
+        )
     }
 
     /// Saves the edit, re-encoding whatever the draft still mentions.

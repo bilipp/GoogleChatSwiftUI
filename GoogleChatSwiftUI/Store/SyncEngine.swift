@@ -605,6 +605,16 @@ nonisolated struct SyncEngine: Sendable {
         try await store.discardMessage(named: messageName)
     }
 
+    /// Where a `chat.google.com` link points, as far as the cache can say.
+    ///
+    /// Cache-only, deliberately. `spaces.messages.get` would confirm that a message
+    /// exists, but a message the app has no history around cannot be shown in a
+    /// transcript anyway — one row floating above a gap is worse than saying plainly
+    /// that the history has not been downloaded yet.
+    func destination(of link: ChatDeepLink) async throws -> ChatLinkDestination {
+        try await store.destination(of: link)
+    }
+
     /// Re-fetches the newest page and merges it.
     ///
     /// The event stream is best-effort, not a durable log, so it must never be the

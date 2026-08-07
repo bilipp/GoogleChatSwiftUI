@@ -96,6 +96,12 @@ struct MessageListView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.quaternary)
                 }
+                // A followed link that could not reach the message it named. Stated
+                // rather than silently ignored: the alternative is a click that opens
+                // the right conversation at the wrong place and explains nothing.
+                if let notice = session.linkNotice {
+                    linkNoticeBanner(notice)
+                }
                 MessageComposer(
                     placeholder: replyTarget == nil ? "Message \(spaceTitle)" : "Reply",
                     isSending: session.isSending(spaceName),
@@ -122,6 +128,24 @@ struct MessageListView: View {
         // the first time a conversation is opened rather than anything the sidebar
         // pays for — at 762 spaces, a members lookup each would dwarf the whole app.
         .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
+    }
+
+    /// Information rather than failure, so it is styled as a note and not as the red
+    /// error above it — nothing went wrong, the history simply does not go back that far.
+    private func linkNoticeBanner(_ notice: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "info.circle")
+            Text(notice)
+            Spacer(minLength: 8)
+            Button("Dismiss") { session.dismissLinkNotice() }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary)
     }
 
     /// Opens the thread index, and says how much is waiting in it.

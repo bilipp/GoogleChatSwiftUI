@@ -30,6 +30,7 @@ It is written for one person's Workspace account and distributed as source. Poin
 - Threads get their own index, their own unread marks, and an inspector pane
 - `cardsV2` messages from Chat apps rendered natively; images open in a zoomable in-app viewer
 - Local full-text search over cached history, scoped to one conversation or all of them
+- `chat.google.com` links open in the app, not a browser tab — landing on the message, or in its thread
 
 **Writing**
 
@@ -45,6 +46,7 @@ It is written for one person's Workspace account and distributed as source. Poin
 - Notifications for incoming messages that open the right conversation when clicked
 - `MenuBarExtra` with a live unread count
 - Mark as read, mark as unread — the unread mark is server-side and shows up on chat.google.com too
+- Copy a link to any message, in the form the web client's own "Copy link" produces
 - Sandboxed and hardened; tokens live in the keychain, never on disk in the clear
 
 <br>
@@ -231,8 +233,8 @@ GoogleChatSwiftUI/
     ├── SignIn/     Sign-in screen
     └── Shared/     Commands, notifications, menu bar, avatars
 
-GoogleChatSwiftUITests/   84 Swift Testing cases over rendering,
-                          unread bookkeeping, scrolling, and reply rules
+GoogleChatSwiftUITests/   134 Swift Testing cases over rendering, unread
+                          bookkeeping, scrolling, reply rules, mentions, and links
 docs/
 ├── PLAN.md         Architecture, delivery phases, API findings
 └── SETUP.md        Google Cloud project state and remaining console steps

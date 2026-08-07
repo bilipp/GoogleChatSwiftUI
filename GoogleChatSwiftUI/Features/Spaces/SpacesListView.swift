@@ -75,6 +75,10 @@ struct SpacesListView: View {
                 Text(option.title).tag(option)
             }
         }
+        // Above every message surface, so a link is caught wherever it was rendered:
+        // message text, a smart chip, a card button. `Text`, `Link`, and `CardView` all
+        // route through this action rather than reaching AppKit themselves.
+        .environment(\.openURL, OpenURLAction(handler: openChatLink))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 ProfileMenu(
@@ -139,21 +143,45 @@ struct SpacesListView: View {
     }
 
     /// Opens the conversation a clicked notification named.
-    ///
-    /// Relaxes any filter that would hide it. The filters are a browsing preference,
-    /// not a reason to refuse an explicit request — and without this the transcript
-    /// would open with no matching sidebar row, leaving no sense of where you are.
     private func openFromNotification() async {
         guard let name = NotificationRouter.shared.claimPendingSpace() else { return }
-
-        // The search field needs no handling here: opening a conversation clears it.
-        if let space = allSpaces.first(where: { $0.name == name }) {
-            if !session.kind.matches(space) { session.kind = .all }
-            if !session.scope.matches(space, now: Date()) { session.scope = .all }
-            if space.isMuted { session.showsMuted = true }
-        }
-
+        unhide(name)
         await session.revealSpace(name)
+    }
+
+    /// Follows a `chat.google.com` link inside the app instead of in a browser.
+    ///
+    /// A message link pasted into a conversation points at another conversation this app
+    /// already has open behind it, so handing it to a browser tab — where the reader has
+    /// to sign in, wait for the web client to load, and then read it somewhere else — is
+    /// the one thing a native client should not do with it.
+    ///
+    /// Only links this account can actually follow are claimed. A space nobody here is a
+    /// member of, and every other URL on the web, gets the system action it would have
+    /// had anyway. The check is against the cached space list because the decision has to
+    /// be made now, synchronously, before the click is either handled or passed on.
+    private func openChatLink(_ url: URL) -> OpenURLAction.Result {
+        guard let link = ChatDeepLink(url: url),
+              allSpaces.contains(where: { $0.name == link.spaceName })
+        else { return .systemAction }
+
+        unhide(link.spaceName)
+        Task { await session.reveal(link) }
+        return .handled
+    }
+
+    /// Relaxes any filter that would hide a conversation being opened from outside the
+    /// sidebar.
+    ///
+    /// The filters are a browsing preference, not a reason to refuse an explicit
+    /// request — and without this the transcript opens with no matching sidebar row,
+    /// leaving no sense of where you are. The search field needs no handling: opening a
+    /// conversation clears it.
+    private func unhide(_ spaceName: String) {
+        guard let space = allSpaces.first(where: { $0.name == spaceName }) else { return }
+        if !session.kind.matches(space) { session.kind = .all }
+        if !session.scope.matches(space, now: Date()) { session.scope = .all }
+        if space.isMuted { session.showsMuted = true }
     }
 
     /// The thread index and a single thread are two views of the same panel, so they

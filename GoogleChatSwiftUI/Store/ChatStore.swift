@@ -899,6 +899,32 @@ actor ChatStore {
         try modelContext.save()
     }
 
+    // MARK: - Links
+
+    /// Resolves a `chat.google.com` link against what is actually cached.
+    ///
+    /// Answered here in one hop rather than as three separate questions from the UI,
+    /// because the three are only meaningful together: whether the conversation is
+    /// known, whether the message it names is cached, and whether that message is a
+    /// reply in a threaded space — where the transcript holds no position to scroll to
+    /// and the thread pane is the only way in.
+    func destination(of link: ChatDeepLink) throws -> ChatLinkDestination {
+        guard let space = try space(named: link.spaceName) else { return .unknownSpace }
+
+        guard let messageName = link.messageName else {
+            // A thread is somewhere to go only where threads are a place of their own.
+            // Elsewhere its replies are already in the transcript.
+            if let threadName = link.threadName, space.isThreaded { return .thread(threadName) }
+            return .space
+        }
+
+        guard let message = try message(named: messageName) else { return .uncachedMessage }
+        if space.isThreaded, message.isThreadReply, let threadName = message.threadName {
+            return .thread(threadName)
+        }
+        return .message(messageName)
+    }
+
     // MARK: - Queries
 
     /// Where a message was aimed, for a retry to reproduce.
