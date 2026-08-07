@@ -331,6 +331,40 @@ final class ChatSessionModel {
         }
     }
 
+    /// Marks one conversation read, threads included.
+    ///
+    /// Threads are cleared here where opening the space deliberately leaves them
+    /// alone: this is an explicit instruction about the whole conversation, not the
+    /// side effect of having looked at its transcript.
+    func markRead(_ spaceName: String) async {
+        do {
+            try await sync.markRead(spaceName: spaceName)
+            try await sync.markAllThreadsRead(spaceName: spaceName)
+            await refreshUnread()
+        } catch {
+            logger.error("Mark read failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Marks a conversation unread and steps out of it.
+    ///
+    /// Closing it is the point. Opening a space marks it read, so a conversation left
+    /// on screen would be wearing a badge that the next click erases — and the reason
+    /// to mark something unread is to deal with it later, somewhere else.
+    func markUnread(_ spaceName: String) async {
+        do {
+            guard try await sync.markUnread(spaceName: spaceName) else { return }
+            if selectedSpaceName == spaceName {
+                selectedSpaceName = nil
+                threadInspector = .closed
+            }
+            await refreshUnread()
+        } catch {
+            logger.error("Mark unread failed: \(error.localizedDescription)")
+            messageError = error.localizedDescription
+        }
+    }
+
     /// Marks every space with unread messages as read, threads included.
     ///
     /// Threads are cleared separately because a space read mark deliberately does not

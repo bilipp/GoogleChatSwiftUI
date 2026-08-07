@@ -119,6 +119,10 @@ struct SpacesListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .chatMarkAllRead)) { _ in
             Task { await session.markAllRead() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .chatMarkUnread)) { _ in
+            guard let name = session.selectedSpaceName else { return }
+            Task { await session.markUnread(name) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .chatFocusSearch)) { _ in
             isSearchFocused = true
         }
@@ -435,6 +439,19 @@ struct SpacesListView: View {
 
     @ViewBuilder
     private func rowMenu(for space: CachedSpace) -> some View {
+        // Unlike pin and mute, this one is Chat's own read state rather than local
+        // decoration, so it shows up on chat.google.com too.
+        if space.isUnread {
+            Button("Mark as Read", systemImage: "envelope.open") {
+                Task { await session.markRead(space.name) }
+            }
+        } else {
+            Button("Mark as Unread", systemImage: "envelope.badge") {
+                Task { await session.markUnread(space.name) }
+            }
+        }
+        Divider()
+
         Button(space.isPinned ? "Unpin" : "Pin", systemImage: space.isPinned ? "pin.slash" : "pin") {
             Task { await session.setPinned(!space.isPinned, for: space.name) }
         }
@@ -566,7 +583,7 @@ private struct SpaceRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(space.title)
                     .lineLimit(1)
-                    .fontWeight(isUnread ? .semibold : .regular)
+                    .fontWeight(space.isUnread ? .semibold : .regular)
                 if let active = space.lastActiveTime {
                     Text(active.formatted(.relative(presentation: .named)))
                         .font(.caption)
@@ -596,10 +613,6 @@ private struct SpaceRow: View {
         // Not `.isSelected`: that trait belongs to the open conversation, and this
         // row is only the one Return would open.
         .accessibilityValue(isHighlighted ? "Highlighted" : "")
-    }
-
-    private var isUnread: Bool {
-        space.unreadCount > 0 || space.hasUnread || space.unreadThreadCount > 0
     }
 
     /// Unread replies waiting inside threads, which the message badge cannot speak

@@ -150,7 +150,30 @@ nonisolated extension ChatClient {
     ///
     /// The read-state resource is per-caller: you can set your own and no one else's,
     /// and there is no way to observe whether anyone has read yours.
+    ///
+    /// Chat coerces any time later than the newest message down to that message's
+    /// create time, so passing `Date()` means "read to the end" rather than claiming
+    /// to have read into the future.
     func markSpaceRead(spaceName: String, upTo time: Date = Date()) async throws {
+        try await setSpaceReadTime(spaceName: spaceName, to: time)
+    }
+
+    /// Marks a space unread by moving the read position back before `time`.
+    ///
+    /// The same resource as `markSpaceRead`, used the other way round. Chat has no
+    /// unread flag — read state is only this timestamp, and a space whose
+    /// `lastReadTime` predates its newest message reads as unread. That makes this one
+    /// of the few local-looking gestures that genuinely travels: a conversation marked
+    /// unread here is unread on chat.google.com too, unlike pinning, muting, and
+    /// thread read marks, which have no API to carry them.
+    ///
+    /// - Parameter time: must be strictly before the newest message's create time, or
+    ///   the space stays read. The caller picks it from the newest message it knows of.
+    func markSpaceUnread(spaceName: String, before time: Date) async throws {
+        try await setSpaceReadTime(spaceName: spaceName, to: time)
+    }
+
+    private func setSpaceReadTime(spaceName: String, to time: Date) async throws {
         let spaceID = spaceName.replacingOccurrences(of: "spaces/", with: "")
         let path = "users/me/spaces/\(spaceID)/spaceReadState"
         let stamp = time.formatted(.iso8601)

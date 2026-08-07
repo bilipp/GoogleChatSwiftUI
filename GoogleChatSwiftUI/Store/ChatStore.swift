@@ -313,6 +313,52 @@ actor ChatStore {
         try modelContext.save()
     }
 
+    /// How far back the read mark goes to make a space unread again.
+    ///
+    /// A whole second rather than the smallest representable step because the mark is
+    /// sent to Chat as ISO-8601 with second precision: a sub-second nudge would be
+    /// truncated back onto the message's own timestamp, and a mark equal to the newest
+    /// message is a space that is read.
+    private static let unreadMarkGap: TimeInterval = -1
+
+    /// Where the read mark has to sit for this space to count as unread again.
+    ///
+    /// Anchored on the newest message in the cache, so the space comes back with
+    /// exactly one thing to read — the message the user is coming back for — rather
+    /// than resurrecting history they have already read. A space with nothing cached
+    /// falls back to its last activity, which gives the sidebar a dot instead of a
+    /// count, the same way an unbackfilled space already behaves.
+    ///
+    /// - Returns: nil when the space is unknown or has never had any activity, since
+    ///   there is then nothing to be unread about.
+    func unreadMark(spaceName: String) throws -> Date? {
+        guard let space = try space(named: spaceName) else { return nil }
+        let newest = space.messages
+            // A message still in flight is not something to come back and read.
+            .filter { !$0.isDeleted && !$0.isPending }
+            .compactMap(\.createTime)
+            .max()
+        guard let anchor = newest ?? space.lastActiveTime else { return nil }
+        return anchor.addingTimeInterval(Self.unreadMarkGap)
+    }
+
+    /// Puts the read mark back after the server has accepted it, the mirror of
+    /// `markReadLocally`.
+    ///
+    /// Threads are deliberately untouched, for the same reason opening a space leaves
+    /// them alone: their replies are read on their own marks, and Chat's space read
+    /// state does not speak for them either. The thread tallies are still recomputed,
+    /// because moving the space mark changes which unread replies the space's own count
+    /// already covers — leave them and the badge double-counts.
+    func markUnreadLocally(spaceName: String, at time: Date) throws {
+        guard let space = try space(named: spaceName) else { return }
+        space.lastReadTime = time
+        space.didFetchReadState = true
+        space.unreadCount = Self.countUnread(in: space, after: time)
+        Self.refreshThreadState(in: space)
+        try modelContext.save()
+    }
+
     // MARK: - Thread read state
 
     /// Advances a thread's read mark, which is what opening it means.

@@ -366,6 +366,22 @@ nonisolated struct SyncEngine: Sendable {
         try await store.markReadLocally(spaceName: spaceName, at: now)
     }
 
+    /// Marks a space unread again — the reverse of `markRead`, and one of the few
+    /// gestures in this app that reaches the server.
+    ///
+    /// Server first, like `markRead`: the mark is Chat's own read state, so the cache
+    /// is only updated once Chat has accepted it and the two agree. The mark comes from
+    /// the cache because only the cache knows which message to sit behind.
+    ///
+    /// - Returns: false when the space has nothing that could be unread.
+    @discardableResult
+    func markUnread(spaceName: String) async throws -> Bool {
+        guard let mark = try await store.unreadMark(spaceName: spaceName) else { return false }
+        try await client.markSpaceUnread(spaceName: spaceName, before: mark)
+        try await store.markUnreadLocally(spaceName: spaceName, at: mark)
+        return true
+    }
+
     // MARK: - Read state
 
     static let readStateBatch = 25

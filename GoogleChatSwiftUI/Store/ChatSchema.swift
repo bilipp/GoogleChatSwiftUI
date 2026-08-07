@@ -120,6 +120,14 @@ final class CachedSpace {
     /// replies hidden behind the read mark.
     var totalUnread: Int { unreadCount + unreadThreadReplyCount }
 
+    /// Anything left to read here at all — a counted message, a timestamp-only signal
+    /// from a space with no history cached, or a reply waiting in a thread.
+    ///
+    /// The three are separate counters because they are learned in different ways, but
+    /// "is this row bold" and "does Mark as Read have anything to do" are the same
+    /// question, and it is answered here so they cannot drift apart.
+    var isUnread: Bool { unreadCount > 0 || hasUnread || unreadThreadCount > 0 }
+
     /// Cascade: deleting a cached space should not orphan its messages.
     @Relationship(deleteRule: .cascade, inverse: \CachedMessage.space)
     var messages: [CachedMessage] = []

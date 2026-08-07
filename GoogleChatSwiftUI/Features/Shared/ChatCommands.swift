@@ -17,6 +17,14 @@ struct ChatCommands: Commands {
                 NotificationCenter.default.post(name: .chatMarkAllRead, object: nil)
             }
             .keyboardShortcut("a", modifiers: [.command, .shift])
+
+            // Acts on the open conversation, and closes it — see
+            // `ChatSessionModel.markUnread`. Ignored when nothing is open, like the
+            // thread panel's shortcut in a space that has no threads.
+            Button("Mark as Unread") {
+                NotificationCenter.default.post(name: .chatMarkUnread, object: nil)
+            }
+            .keyboardShortcut("u", modifiers: [.command, .shift])
         }
 
         CommandGroup(after: .sidebar) {
@@ -46,6 +54,7 @@ struct ChatCommands: Commands {
 extension Notification.Name {
     static let chatRefreshSpaces = Notification.Name("chatRefreshSpaces")
     static let chatMarkAllRead = Notification.Name("chatMarkAllRead")
+    static let chatMarkUnread = Notification.Name("chatMarkUnread")
     static let chatFocusSearch = Notification.Name("chatFocusSearch")
     static let chatToggleThreads = Notification.Name("chatToggleThreads")
 }
