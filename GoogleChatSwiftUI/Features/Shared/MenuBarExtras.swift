@@ -57,7 +57,7 @@ struct MenuBarContent: View {
             Divider()
         }
 
-        Button("Open GoogleChatSwiftUI") { activateApp() }
+        Button("Open Google Chat") { activateApp() }
         Divider()
         Button("Quit") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
