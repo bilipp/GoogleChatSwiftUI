@@ -310,6 +310,10 @@ final class ChatSessionModel {
         // looking at any more.
         searchText = ""
         messageError = nil
+        // Any jump left over from an earlier search belongs to a transcript nobody is
+        // looking at now. The search flow sets its own target after this returns; every
+        // other way into a conversation should open it at the newest message.
+        scrollTarget = nil
         guard !loadingSpaceNames.contains(spaceName) else { return }
 
         loadingSpaceNames.insert(spaceName)

@@ -22,6 +22,14 @@ struct MessageListView: View {
     /// Threads here with unread replies, for the toolbar badge.
     private let unreadThreadCount: Int
 
+    /// The message to keep still while older history loads in above it, captured as
+    /// the request is made rather than after — by the time it returns, the row that
+    /// was at the top is no longer the one to hold onto.
+    @State private var historyAnchor: String?
+    /// Bumped on send, which is the one moment the transcript should return to the
+    /// end whether or not the reader was there.
+    @State private var sendCount = 0
+
     init(spaceName: String, spaceTitle: String, isThreaded: Bool, unreadThreadCount: Int) {
         self.spaceName = spaceName
         self.spaceTitle = spaceTitle
@@ -58,6 +66,7 @@ struct MessageListView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    historyAnchor = days.first?.entries.first?.message.name
                     Task { await session.loadOlderMessages(in: spaceName) }
                 } label: {
                     Label("Load Older", systemImage: "arrow.up.circle")
@@ -87,6 +96,7 @@ struct MessageListView: View {
                     placeholder: "Message \(spaceTitle)",
                     isSending: session.isSending(spaceName)
                 ) { text, attachments in
+                    sendCount += 1
                     Task { await session.send(text, to: spaceName, attachments: attachments) }
                 }
             }
@@ -129,67 +139,46 @@ struct MessageListView: View {
         return "Threads — \(unreadThreadCount) unread \(noun)"
     }
 
-    /// Anchored at the bottom by the scroll view itself rather than by scrolling to
-    /// the last message after the fact.
+    /// The conversation, positioned by `TranscriptScrollView`.
     ///
-    /// The previous approach jumped in four separate ways: `onAppear` fired before the
-    /// lazy stack had laid anything out so `scrollTo` was a no-op leaving the view at
-    /// the top; the animated `scrollTo` on the last message changing fired while
-    /// switching spaces; opening the thread inspector changed the width and the lazy
-    /// stack lost its position on relayout; and a spinner inside the scroll content
-    /// shifted every message down and back up as it came and went.
+    /// Every scroll decision lives there rather than being spread across anchors and
+    /// change handlers here: where to open, whether an arriving message should pull the
+    /// view down, and how to stand still while older history is inserted above. The
+    /// grouped days are computed once and handed over, since they are needed both as
+    /// content and as the two identities that tell the scroll view which end moved.
     private var transcript: some View {
-        // A reader is back, but only to serve an explicit jump target set by opening a
-        // search result. It never fires on content or selection changes, which is what
-        // made the old imperative scrolling jump.
-        ScrollViewReader { proxy in
-            scrollContent
-                .onChange(of: session.scrollTarget, initial: true) { _, target in
-                    guard let target, messages.contains(where: { $0.name == target }) else {
-                        return
-                    }
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(target, anchor: .center)
-                    }
-                    // Cleared so returning to this conversation later opens at the
-                    // bottom as usual rather than back at an old search hit.
-                    session.scrollTarget = nil
+        @Bindable var session = session
+        let groups = days
+
+        return TranscriptScrollView(
+            newestID: groups.last?.entries.last?.message.name,
+            oldestID: groups.first?.entries.first?.message.name,
+            horizontalPadding: 16,
+            verticalPadding: 12,
+            jumpTarget: $session.scrollTarget,
+            historyAnchor: $historyAnchor,
+            followTrigger: sendCount
+        ) {
+            ForEach(groups, id: \.day) { group in
+                DayDivider(day: group.day)
+
+                ForEach(group.entries, id: \.message.name) { entry in
+                    MessageBubble(
+                        message: entry.message,
+                        sender: sender(for: entry.message),
+                        mentionNames: mentionNames(in: entry.message),
+                        isOwn: entry.isOwn,
+                        isFirstInGroup: entry.isFirstInGroup,
+                        isLastInGroup: entry.isLastInGroup,
+                        spaceName: spaceName,
+                        threadReplyCount: threadReplyCount(for: entry.message),
+                        newReplyCount: newReplyCount(for: entry.message),
+                        onOpenThread: isThreaded ? { openThread(entry.message) } : nil
+                    )
+                    .id(entry.message.name)
                 }
-        }
-    }
-
-    private var scrollContent: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(days, id: \.day) { group in
-                        DayDivider(day: group.day)
-
-                        ForEach(group.entries, id: \.message.name) { entry in
-                            MessageBubble(
-                                message: entry.message,
-                                sender: sender(for: entry.message),
-                                mentionNames: mentionNames(in: entry.message),
-                                isOwn: entry.isOwn,
-                                isFirstInGroup: entry.isFirstInGroup,
-                                isLastInGroup: entry.isLastInGroup,
-                                spaceName: spaceName,
-                                threadReplyCount: threadReplyCount(for: entry.message),
-                                newReplyCount: newReplyCount(for: entry.message),
-                                onOpenThread: isThreaded ? { openThread(entry.message) } : nil
-                            )
-                            .id(entry.message.name)
-                        }
-                    }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        // Start at the newest message, without a scroll animation to get there.
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        // Hold that anchor through content growth and, critically, through the width
-        // change when the thread inspector opens.
-        .defaultScrollAnchor(.bottom, for: .sizeChanges)
         // Outside the scroll content on purpose: inside, its appearance and removal
         // displaced every message below it.
         .overlay(alignment: .top) {

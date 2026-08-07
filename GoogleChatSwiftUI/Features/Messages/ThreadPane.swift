@@ -14,6 +14,9 @@ struct ThreadPane: View {
     private let spaceName: String
     private let threadName: String
 
+    /// Bumped on reply, so posting into a thread returns to the end of it.
+    @State private var sendCount = 0
+
     init(spaceName: String, threadName: String) {
         self.spaceName = spaceName
         self.threadName = threadName
@@ -42,6 +45,7 @@ struct ThreadPane: View {
                 placeholder: "Reply in thread",
                 isSending: session.isSending(spaceName)
             ) { text, attachments in
+                sendCount += 1
                 Task {
                     await session.send(
                         text,
@@ -97,45 +101,45 @@ struct ThreadPane: View {
         return replies == 1 ? "1 reply" : "\(replies) replies"
     }
 
-    /// Same bottom-anchoring as the main transcript, for the same reason: scrolling to
-    /// the last message after layout produced a visible jump on every open.
+    /// The same positioning as the main transcript, for the same reasons — see
+    /// `TranscriptScrollView`. A thread opens on its newest reply, which is what the
+    /// reader came for.
     private var transcript: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(messages.enumerated()), id: \.element.name) { index, message in
-                    // Marks where the replies the user had not seen begin. Opening
-                    // the thread has already cleared the unread mark by now, so this
-                    // is drawn from the position captured as it was opened.
-                    if message.name == firstUnreadName {
-                        NewRepliesDivider()
-                    }
+        TranscriptScrollView(
+            newestID: messages.last?.name,
+            oldestID: messages.first?.name,
+            horizontalPadding: 12,
+            verticalPadding: 10,
+            followTrigger: sendCount
+        ) {
+            ForEach(Array(messages.enumerated()), id: \.element.name) { index, message in
+                // Marks where the replies the user had not seen begin. Opening
+                // the thread has already cleared the unread mark by now, so this
+                // is drawn from the position captured as it was opened.
+                if message.name == firstUnreadName {
+                    NewRepliesDivider()
+                }
 
-                    // The root gets a separator beneath it so the distinction
-                    // between "the thing being discussed" and the discussion
-                    // stays visible while scrolling.
-                    MessageBubble(
-                        message: message,
-                        sender: sender(for: message),
-                        mentionNames: mentionNames(in: message),
-                        isOwn: session.isOwnMessage(message),
-                        isFirstInGroup: true,
-                        isLastInGroup: true,
-                        spaceName: spaceName,
-                        isCompact: true
-                    )
-                    .id(message.name)
+                // The root gets a separator beneath it so the distinction
+                // between "the thing being discussed" and the discussion
+                // stays visible while scrolling.
+                MessageBubble(
+                    message: message,
+                    sender: sender(for: message),
+                    mentionNames: mentionNames(in: message),
+                    isOwn: session.isOwnMessage(message),
+                    isFirstInGroup: true,
+                    isLastInGroup: true,
+                    spaceName: spaceName,
+                    isCompact: true
+                )
+                .id(message.name)
 
-                    if index == 0 && messages.count > 1 {
-                        Divider().padding(.vertical, 8)
-                    }
+                if index == 0 && messages.count > 1 {
+                    Divider().padding(.vertical, 8)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .defaultScrollAnchor(.bottom, for: .sizeChanges)
     }
 
     /// The first reply that had arrived since the user last read this thread.
