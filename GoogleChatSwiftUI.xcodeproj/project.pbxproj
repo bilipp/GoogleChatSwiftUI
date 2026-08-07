@@ -14,19 +14,11 @@
 			remoteGlobalIDString = C6ACFA053024BB750087A854;
 			remoteInfo = GoogleChatSwiftUI;
 		};
-		C6ACFA203024BB770087A854 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = C6ACF9FE3024BB750087A854 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = C6ACFA053024BB750087A854;
-			remoteInfo = GoogleChatSwiftUI;
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		C6ACFA063024BB750087A854 /* Google Chat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Google Chat.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C6ACFA153024BB770087A854 /* GoogleChatSwiftUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GoogleChatSwiftUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		C6ACFA1F3024BB770087A854 /* GoogleChatSwiftUIUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GoogleChatSwiftUIUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -38,11 +30,6 @@
 		C6ACFA183024BB770087A854 /* GoogleChatSwiftUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = GoogleChatSwiftUITests;
-			sourceTree = "<group>";
-		};
-		C6ACFA223024BB770087A854 /* GoogleChatSwiftUIUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = GoogleChatSwiftUIUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -62,13 +49,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		C6ACFA1C3024BB770087A854 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -77,7 +57,6 @@
 			children = (
 				C6ACFA083024BB750087A854 /* GoogleChatSwiftUI */,
 				C6ACFA183024BB770087A854 /* GoogleChatSwiftUITests */,
-				C6ACFA223024BB770087A854 /* GoogleChatSwiftUIUITests */,
 				C6ACFA073024BB750087A854 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -87,7 +66,6 @@
 			children = (
 				C6ACFA063024BB750087A854 /* Google Chat.app */,
 				C6ACFA153024BB770087A854 /* GoogleChatSwiftUITests.xctest */,
-				C6ACFA1F3024BB770087A854 /* GoogleChatSwiftUIUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -140,29 +118,6 @@
 			productReference = C6ACFA153024BB770087A854 /* GoogleChatSwiftUITests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		C6ACFA1E3024BB770087A854 /* GoogleChatSwiftUIUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = C6ACFA2F3024BB770087A854 /* Build configuration list for PBXNativeTarget "GoogleChatSwiftUIUITests" */;
-			buildPhases = (
-				C6ACFA1B3024BB770087A854 /* Sources */,
-				C6ACFA1C3024BB770087A854 /* Frameworks */,
-				C6ACFA1D3024BB770087A854 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				C6ACFA213024BB770087A854 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				C6ACFA223024BB770087A854 /* GoogleChatSwiftUIUITests */,
-			);
-			name = GoogleChatSwiftUIUITests;
-			packageProductDependencies = (
-			);
-			productName = GoogleChatSwiftUIUITests;
-			productReference = C6ACFA1F3024BB770087A854 /* GoogleChatSwiftUIUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -177,10 +132,6 @@
 						CreatedOnToolsVersion = 26.6;
 					};
 					C6ACFA143024BB770087A854 = {
-						CreatedOnToolsVersion = 26.6;
-						TestTargetID = C6ACFA053024BB750087A854;
-					};
-					C6ACFA1E3024BB770087A854 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = C6ACFA053024BB750087A854;
 					};
@@ -202,7 +153,6 @@
 			targets = (
 				C6ACFA053024BB750087A854 /* GoogleChatSwiftUI */,
 				C6ACFA143024BB770087A854 /* GoogleChatSwiftUITests */,
-				C6ACFA1E3024BB770087A854 /* GoogleChatSwiftUIUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -216,13 +166,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		C6ACFA133024BB770087A854 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		C6ACFA1D3024BB770087A854 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -246,13 +189,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		C6ACFA1B3024BB770087A854 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -260,11 +196,6 @@
 			isa = PBXTargetDependency;
 			target = C6ACFA053024BB750087A854 /* GoogleChatSwiftUI */;
 			targetProxy = C6ACFA163024BB770087A854 /* PBXContainerItemProxy */;
-		};
-		C6ACFA213024BB770087A854 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = C6ACFA053024BB750087A854 /* GoogleChatSwiftUI */;
-			targetProxy = C6ACFA203024BB770087A854 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -501,44 +432,6 @@
 			};
 			name = Release;
 		};
-		C6ACFA303024BB770087A854 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = YOUR_TEAM_ID;
-				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.GoogleChatSwiftUIUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = GoogleChatSwiftUI;
-			};
-			name = Debug;
-		};
-		C6ACFA313024BB770087A854 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = YOUR_TEAM_ID;
-				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.GoogleChatSwiftUIUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 6.0;
-				TEST_TARGET_NAME = GoogleChatSwiftUI;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -565,15 +458,6 @@
 			buildConfigurations = (
 				C6ACFA2D3024BB770087A854 /* Debug */,
 				C6ACFA2E3024BB770087A854 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		C6ACFA2F3024BB770087A854 /* Build configuration list for PBXNativeTarget "GoogleChatSwiftUIUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				C6ACFA303024BB770087A854 /* Debug */,
-				C6ACFA313024BB770087A854 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
