@@ -100,22 +100,28 @@ struct MessageListView: View {
                     placeholder: replyTarget == nil ? "Message \(spaceTitle)" : "Reply",
                     isSending: session.isSending(spaceName),
                     replyTarget: replyTarget,
-                    onCancelReply: { replyTarget = nil }
-                ) { text, attachments in
+                    onCancelReply: { replyTarget = nil },
+                    mentionCandidates: mentionCandidates
+                ) { composed in
                     let target = replyTarget
                     replyTarget = nil
                     sendCount += 1
                     Task {
                         await session.send(
-                            text,
+                            composed.text,
                             to: spaceName,
                             replyingTo: target,
-                            attachments: attachments
+                            attachments: composed.attachments,
+                            mentions: composed.mentions
                         )
                     }
                 }
             }
         }
+        // Members are fetched per space and only once per launch, so this is one call
+        // the first time a conversation is opened rather than anything the sidebar
+        // pays for — at 762 spaces, a members lookup each would dwarf the whole app.
+        .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
     }
 
     /// Opens the thread index, and says how much is waiting in it.
@@ -205,6 +211,7 @@ struct MessageListView: View {
             message: message,
             sender: sender(for: message),
             mentionNames: mentionNames(in: message),
+            mentionCandidates: mentionCandidates,
             isOwn: entry.isOwn,
             isFirstInGroup: entry.isFirstInGroup,
             isLastInGroup: entry.isLastInGroup,
@@ -220,6 +227,14 @@ struct MessageListView: View {
 
     private var usersByID: [String: CachedUser] {
         Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Who the composer's `@` can reach in this conversation.
+    private var mentionCandidates: [MentionCandidate] {
+        MentionCandidate.list(
+            for: session.mentionableUserIDs(in: spaceName),
+            users: usersByID
+        )
     }
 
     /// Everything needed to say what a reply is quoting. Built from the same rows the

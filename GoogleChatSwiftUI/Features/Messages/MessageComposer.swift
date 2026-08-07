@@ -2,14 +2,27 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// What the composer hands over on send.
+///
+/// A value rather than a widening list of closure parameters, because the mentions are
+/// not a property of the text: they are what the send path needs in order to turn the
+/// readable draft into the markup Chat wants, and they travel with it or not at all.
+struct ComposedMessage {
+    let text: String
+    let attachments: [PendingAttachment]
+    /// The people `text` mentions by name. See ``MentionEncoder``.
+    let mentions: [MentionCandidate]
+}
+
 /// Message input with file attachment.
 ///
 /// Uses `TextField` with `.vertical` axis rather than `TextEditor`: it grows with
 /// content, respects the send-on-Return convention — Shift+Return breaks the line
 /// instead — and does not need an `NSViewRepresentable` wrapper.
 ///
-/// Typing `:smile` offers inline emoji completion; see ``EmojiShortcodeTrigger`` for
-/// what that costs while the input is still a `TextField`.
+/// Typing `:smile` offers inline emoji completion and `@ada` offers the people in the
+/// room; see ``EmojiShortcodeTrigger`` and ``MentionTrigger`` for what both cost while
+/// the input is still a `TextField`.
 struct MessageComposer: View {
     let placeholder: String
     let isSending: Bool
@@ -18,14 +31,24 @@ struct MessageComposer: View {
     /// composer only has to display it and offer a way out.
     var replyTarget: ReplyTarget?
     var onCancelReply: () -> Void = {}
-    let onSend: (String, [PendingAttachment]) -> Void
+    /// Who `@` can reach here. Empty until the space's members have been resolved,
+    /// which simply means the list stays shut rather than offering half a room.
+    var mentionCandidates: [MentionCandidate] = []
+    let onSend: (ComposedMessage) -> Void
 
     @State private var text: String = ""
     @State private var attachments: [PendingAttachment] = []
     @State private var isTargetedForDrop = false
     @State private var errorMessage: String?
-    @State private var suggestions: [EmojiShortcode] = []
+    @State private var suggestions: [CompletionSuggestion] = []
     @State private var selectedSuggestion = 0
+    /// Mentions this draft has picked up, in the form they were written into the text.
+    ///
+    /// Kept beside the string rather than encoded into it, because the user has to be
+    /// able to read and edit what they are about to send — `<users/123>` in the field
+    /// would be neither. Deleting the name from the text is what un-mentions someone:
+    /// the encoder only rewrites names it still finds.
+    @State private var resolvedMentions: [MentionCandidate] = []
     /// Whether the Return being handled right now is a line break rather than a send.
     /// See ``submit()`` for why the two paths cannot be told apart any later than this.
     @State private var returnIsLineBreak = false
@@ -54,14 +77,7 @@ struct MessageComposer: View {
             // its own bounds, so a list drawn above the field was cut off at the top
             // edge. In the stack it grows the composer upwards instead, and every row
             // stays on screen.
-            if !suggestions.isEmpty {
-                EmojiSuggestionList(
-                    matches: suggestions,
-                    selection: selectedSuggestion,
-                    onHighlight: { selectedSuggestion = $0 },
-                    onPick: { complete(with: $0) }
-                )
-            }
+            completionList
 
             HStack(alignment: .bottom, spacing: 8) {
                 Button(action: pickFiles) {
@@ -109,6 +125,33 @@ struct MessageComposer: View {
         // Choosing "Reply" happens in the transcript, several rows away from here, so
         // the caret has to come to the composer rather than the user hunting for it.
         .onChange(of: replyTarget) { if replyTarget != nil { isFocused = true } }
+    }
+
+    /// Whichever list the trailing fragment opened, or nothing.
+    ///
+    /// `suggestions` only ever holds one kind at a time — the fragment is a
+    /// `:shortcode` or an `@name`, never both — so one of these two is always empty,
+    /// and the selection index means the same thing whichever is drawn.
+    @ViewBuilder
+    private var completionList: some View {
+        let people = suggestions.compactMap(\.mention)
+        let emoji = suggestions.compactMap(\.emoji)
+
+        if !people.isEmpty {
+            MentionSuggestionList(
+                matches: people,
+                selection: selectedSuggestion,
+                onHighlight: { selectedSuggestion = $0 },
+                onPick: { complete(withMention: $0) }
+            )
+        } else if !emoji.isEmpty {
+            EmojiSuggestionList(
+                matches: emoji,
+                selection: selectedSuggestion,
+                onHighlight: { selectedSuggestion = $0 },
+                onPick: { complete(withEmoji: $0) }
+            )
+        }
     }
 
     /// The keys the composer answers to, layered onto ``textField``.
@@ -195,21 +238,25 @@ struct MessageComposer: View {
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
 
         let staged = attachments
+        let mentions = resolvedMentions
         // Cleared optimistically to match the local echo; the send path preserves the
         // text in a flagged placeholder if it fails, so nothing is lost.
         text = ""
         attachments = []
         suggestions = []
+        resolvedMentions = []
         errorMessage = nil
-        onSend(trimmed, staged)
+        onSend(ComposedMessage(text: trimmed, attachments: staged, mentions: mentions))
     }
 
-    // MARK: - Emoji completion
+    // MARK: - Completion
 
-    /// Re-reads the trailing `:fragment` after every edit.
+    /// Re-reads the trailing fragment after every edit.
     ///
     /// A closed `:shortcode:` substitutes outright and shows no list — the user has
-    /// already said which emoji they meant.
+    /// already said which emoji they meant. Otherwise whichever trigger the fragment
+    /// belongs to fills the list; they cannot both match, since one scans back to a
+    /// colon and the other to an at-sign.
     private func refreshSuggestions() {
         if let completed = EmojiShortcodeTrigger.completed(in: text) {
             text.replaceSubrange(completed.range, with: completed.emoji)
@@ -217,24 +264,44 @@ struct MessageComposer: View {
             return
         }
 
+        if let pending = MentionTrigger.pending(in: text) {
+            suggestions = mentionMatches(for: pending.query).map(CompletionSuggestion.mention)
+            // The query changed, so any previous highlight refers to a row that is gone.
+            selectedSuggestion = 0
+            return
+        }
+
         guard let pending = EmojiShortcodeTrigger.pending(in: text) else {
             suggestions = []
             return
         }
-        suggestions = EmojiShortcodeIndex.matches(for: pending.query)
-        // The query changed, so any previous highlight refers to a row that is gone.
+        suggestions = EmojiShortcodeIndex.matches(for: pending.query).map(CompletionSuggestion.emoji)
         selectedSuggestion = 0
+    }
+
+    /// People matching what has been typed after the `@`.
+    ///
+    /// A name that is already a mention in this draft offers nothing: completing one
+    /// leaves the full name sitting at the caret, which the trigger would read as a
+    /// fragment and immediately offer the same person again.
+    private func mentionMatches(for query: String) -> [MentionCandidate] {
+        let typed = query.trimmingCharacters(in: .whitespaces)
+        guard !resolvedMentions.contains(where: { $0.displayName == typed }) else { return [] }
+        return MentionDirectory.matches(for: typed, in: mentionCandidates)
     }
 
     /// Accepts the highlighted suggestion. Reports whether there was one to accept, so
     /// callers can fall through to whatever the key normally does.
     private func completeSelection() -> Bool {
         guard suggestions.indices.contains(selectedSuggestion) else { return false }
-        return complete(with: suggestions[selectedSuggestion])
+        switch suggestions[selectedSuggestion] {
+        case .emoji(let match): return complete(withEmoji: match)
+        case .mention(let candidate): return complete(withMention: candidate)
+        }
     }
 
     @discardableResult
-    private func complete(with match: EmojiShortcode) -> Bool {
+    private func complete(withEmoji match: EmojiShortcode) -> Bool {
         guard let pending = EmojiShortcodeTrigger.pending(in: text) else {
             suggestions = []
             return false
@@ -242,6 +309,19 @@ struct MessageComposer: View {
         // Trailing space because a completion is nearly always mid-sentence, and
         // typing one by hand after every emoji is the kind of friction people notice.
         text.replaceSubrange(pending.range, with: match.emoji + " ")
+        suggestions = []
+        return true
+    }
+
+    /// Writes a person's name into the draft and remembers who it stands for.
+    @discardableResult
+    private func complete(withMention candidate: MentionCandidate) -> Bool {
+        guard let pending = MentionTrigger.pending(in: text) else {
+            suggestions = []
+            return false
+        }
+        text.replaceSubrange(pending.range, with: "@\(candidate.displayName) ")
+        if !resolvedMentions.contains(candidate) { resolvedMentions.append(candidate) }
         suggestions = []
         return true
     }
@@ -387,7 +467,7 @@ private struct AttachmentTray: View {
 }
 
 #Preview {
-    MessageComposer(placeholder: "Message Engineering", isSending: false) { _, _ in }
+    MessageComposer(placeholder: "Message Engineering", isSending: false) { _ in }
         .frame(width: 600)
 }
 
@@ -401,6 +481,19 @@ private struct AttachmentTray: View {
             authorName: "Ada Lovelace",
             preview: "Can we ship the parser today, or does it need another review pass?"
         )
-    ) { _, _ in }
+    ) { _ in }
+    .frame(width: 600)
+}
+
+#Preview("Mentioning") {
+    MessageComposer(
+        placeholder: "Message Engineering",
+        isSending: false,
+        mentionCandidates: [
+            MentionCandidate(userName: "users/1", displayName: "Ada Lovelace", photoURL: nil),
+            MentionCandidate(userName: "users/2", displayName: "Grace Hopper", photoURL: nil),
+            .everyone,
+        ]
+    ) { _ in }
     .frame(width: 600)
 }

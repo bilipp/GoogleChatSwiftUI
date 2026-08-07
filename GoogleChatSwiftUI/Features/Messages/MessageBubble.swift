@@ -14,6 +14,10 @@ struct MessageBubble: View {
     let sender: CachedUser?
     /// Display names of users mentioned in this message, for highlighting.
     let mentionNames: [String]
+    /// Who can be mentioned in this conversation, so an edit can re-encode the names
+    /// in the draft. Without it, correcting a typo in a message that mentions someone
+    /// posts their name back as prose and quietly un-mentions them.
+    var mentionCandidates: [MentionCandidate] = []
     let isOwn: Bool
     let isFirstInGroup: Bool
     let isLastInGroup: Bool
@@ -358,7 +362,6 @@ struct MessageBubble: View {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(message.summaryText, forType: .string)
         }
-
         // Chat permits editing and deleting only your own messages, so offering
         // these on someone else's would be a guaranteed 403.
         if isOwn && !message.isDeleted && !message.isPending {
@@ -373,11 +376,28 @@ struct MessageBubble: View {
         }
     }
 
+    /// Saves the edit, re-encoding whatever the draft still mentions.
+    ///
+    /// Chat renders a mention back into `text` as the plain name, so an edited message
+    /// arrives here as "@Ada Lovelace" with the markup gone. Sending that back as-is
+    /// would post it as prose, and the mention would disappear from a message that had
+    /// one — visible to nobody, least of all the person who stopped being notified.
+    /// The names are therefore encoded again on the way out, by the same rule the
+    /// composer uses.
+    ///
+    /// The edit field itself offers no completion, so a *new* mention has to be typed
+    /// out in full to be recognised.
     private func saveEdit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         isEditing = false
         guard !text.isEmpty, text != message.text else { return }
-        Task { await session.edit(messageName: message.name, newText: text) }
+        Task {
+            await session.edit(
+                messageName: message.name,
+                newText: text,
+                mentions: mentionCandidates
+            )
+        }
     }
 
     private var accessibilityDescription: String {

@@ -6,8 +6,9 @@ import Foundation
 /// position, so the end of the string is the one place the caret is known to be — and
 /// it is where it sits for the case this exists to serve, typing a shortcode as part
 /// of writing a message. Editing a shortcode back in the middle of a finished sentence
-/// gets no suggestions. When the composer moves to the `NSTextView` that @-mentions
-/// will need, this becomes a caret offset and the rest of the type is unchanged.
+/// gets no suggestions. ``MentionTrigger`` accepts the same limit for the same reason;
+/// should the composer ever move to an `NSTextView`, both become a caret offset and
+/// nothing else about either type changes.
 nonisolated enum EmojiShortcodeTrigger {
     /// A fragment being typed, and where it sits in the text.
     struct Match: Equatable {

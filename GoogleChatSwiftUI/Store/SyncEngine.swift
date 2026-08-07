@@ -198,6 +198,42 @@ nonisolated struct SyncEngine: Sendable {
             .filter { $0 != selfChatName }
     }
 
+    // MARK: - Mentions
+
+    /// The people the composer's `@` can reach in a space, with their profiles cached.
+    ///
+    /// The whole room rather than the first page `peerIDs` settles for, and resolved
+    /// through People for the usual reason: Chat hands back memberships with an empty
+    /// `displayName`, and a mention is written as a name. Profiles land in `CachedUser`
+    /// so the views read them the same way they read message senders — one lookup
+    /// names this person everywhere in the app, not just in the completion list.
+    ///
+    /// Bots are left out. The People API cannot name them, so they would arrive as
+    /// unnameable rows the composer has nothing to write into the text.
+    ///
+    /// - Returns: member resource names, the caller's own excluded.
+    func mentionableMembers(in spaceName: String, excluding selfChatName: String?) async throws -> [String] {
+        let members = try await client.allMembers(in: spaceName)
+        // Written as a loop for the same reason as `CachedMessage.apply`: the
+        // equivalent filter/compactMap chain over these nested optionals exceeds the
+        // type checker's budget.
+        var ids: [String] = []
+        for membership in members where membership.isJoined {
+            guard let member = membership.member, member.type != .bot else { continue }
+            guard let name = member.name, name != selfChatName else { continue }
+            ids.append(name)
+        }
+
+        let unknown = (try? await store.unknownUserIDs(ids)) ?? []
+        if !unknown.isEmpty {
+            let directory = (try? await directoryService.people(forChatUserNames: unknown)) ?? [:]
+            if !directory.isEmpty { try? await store.upsertPeople(Array(directory.values)) }
+        }
+
+        logger.info("Resolved \(ids.count) mentionable member(s) in \(spaceName)")
+        return ids
+    }
+
     // MARK: - Writes
 
     /// Sends a message, showing it locally before the round-trip completes.
@@ -207,11 +243,44 @@ nonisolated struct SyncEngine: Sendable {
     /// - Parameter quotedMessageName: the message this one is an inline reply to. Chat
     ///   will not let a quote cross threads, so `threadName` has to be the quoted
     ///   message's own thread — see `ReplyTarget`.
+    /// - Parameter mentions: the people `text` names. Chat carries mentions as markup
+    ///   inside the message body rather than in a field of their own, so this is where
+    ///   the readable draft becomes the wire form.
     func send(
         text: String,
         to spaceName: String,
         threadName: String? = nil,
         quotedMessageName: String? = nil,
+        attachments: [PendingAttachment] = [],
+        mentions: [MentionCandidate] = [],
+        senderName: String?,
+        senderDisplayName: String?
+    ) async throws {
+        // The echo shows what was typed — `@Ada Lovelace` — while the request carries
+        // `<users/123>`. The two only differ for as long as the send is in flight: the
+        // server's own copy replaces the placeholder on confirm, and it renders the
+        // annotation back as the name anyway.
+        try await send(
+            text: text,
+            wireText: MentionEncoder.encode(text, mentions: mentions),
+            to: spaceName,
+            threadName: threadName,
+            quotedMessageName: quotedMessageName,
+            attachments: attachments,
+            senderName: senderName,
+            senderDisplayName: senderDisplayName
+        )
+    }
+
+    /// - Parameter wireText: `text` with its mentions already in Chat's markup. Split
+    ///   out so a retry can re-post the encoding the first attempt made, rather than
+    ///   re-deriving it from a candidate list that no longer exists by then.
+    private func send(
+        text: String,
+        wireText: String,
+        to spaceName: String,
+        threadName: String?,
+        quotedMessageName: String?,
         attachments: [PendingAttachment] = [],
         senderName: String?,
         senderDisplayName: String?
@@ -225,7 +294,10 @@ nonisolated struct SyncEngine: Sendable {
             senderName: senderName,
             senderDisplayName: senderDisplayName,
             threadName: threadName,
-            quotedMessageName: quotedMessageName
+            quotedMessageName: quotedMessageName,
+            // Kept on the placeholder so a retry posts the mentions rather than the
+            // names as prose — by then the candidate list that produced them is gone.
+            wireText: wireText == text ? nil : wireText
         )
 
         do {
@@ -253,7 +325,7 @@ nonisolated struct SyncEngine: Sendable {
 
             let created = try await client.createMessage(
                 in: spaceName,
-                text: text,
+                text: wireText,
                 threadName: threadName,
                 quoting: quoted,
                 attachments: refs,
@@ -278,8 +350,9 @@ nonisolated struct SyncEngine: Sendable {
     /// Retries a failed send by discarding the flagged placeholder and sending afresh.
     ///
     /// The placeholder is the only record of where the message was headed, so its
-    /// thread and quote are read off before it goes: a retry that dropped either would
-    /// post the text somewhere the user never chose.
+    /// thread, its quote, and the mention markup it was encoded with are read off
+    /// before it goes: a retry that dropped any of them would post the text somewhere
+    /// — or to someone — the user never chose.
     func retrySend(
         messageName: String,
         text: String,
@@ -291,6 +364,8 @@ nonisolated struct SyncEngine: Sendable {
         try await store.discardMessage(named: messageName)
         try await send(
             text: text,
+            // Absent for a message that mentioned nobody, where the two are the same.
+            wireText: context?.wireText ?? text,
             to: spaceName,
             threadName: context?.threadName,
             quotedMessageName: context?.quotedMessageName,
@@ -301,8 +376,18 @@ nonisolated struct SyncEngine: Sendable {
 
     /// Edits a message. The local cache updates only after the server accepts, so a
     /// rejected edit never leaves the UI showing text that does not exist server-side.
-    func edit(messageName: String, newText: String) async throws {
-        let updated = try await client.updateMessage(name: messageName, text: newText)
+    ///
+    /// - Parameter mentions: who `newText` may name. An edit is a whole new body as far
+    ///   as Chat is concerned, so a mention the message already had has to be encoded
+    ///   again or it is dropped — see `MessageBubble.saveEdit`.
+    func edit(messageName: String, newText: String, mentions: [MentionCandidate] = []) async throws {
+        let updated = try await client.updateMessage(
+            name: messageName,
+            text: MentionEncoder.encode(newText, mentions: mentions)
+        )
+        // The server's own copy renders mentions back as names, so the cache stores the
+        // readable form. `newText` is the fallback for the same reason: it is what the
+        // user typed, never the markup.
         try await store.applyEdit(to: messageName, text: updated.text ?? newText)
     }
 

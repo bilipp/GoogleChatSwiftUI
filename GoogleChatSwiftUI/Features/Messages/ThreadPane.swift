@@ -47,23 +47,28 @@ struct ThreadPane: View {
                 placeholder: "Reply in thread",
                 isSending: session.isSending(spaceName),
                 replyTarget: replyTarget,
-                onCancelReply: { replyTarget = nil }
-            ) { text, attachments in
+                onCancelReply: { replyTarget = nil },
+                mentionCandidates: mentionCandidates
+            ) { composed in
                 let target = replyTarget
                 replyTarget = nil
                 sendCount += 1
                 Task {
                     await session.send(
-                        text,
+                        composed.text,
                         to: spaceName,
                         threadName: threadName,
                         replyingTo: target,
-                        attachments: attachments
+                        attachments: composed.attachments,
+                        mentions: composed.mentions
                     )
                 }
             }
         }
         .frame(minWidth: 380)
+        // The transcript behind this pane has usually asked for the same members
+        // already; the request is claimed per space, so the second ask is free.
+        .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
     }
 
     private var header: some View {
@@ -134,6 +139,7 @@ struct ThreadPane: View {
                     message: message,
                     sender: sender(for: message),
                     mentionNames: mentionNames(in: message),
+                    mentionCandidates: mentionCandidates,
                     isOwn: session.isOwnMessage(message),
                     isFirstInGroup: true,
                     isLastInGroup: true,
@@ -169,6 +175,16 @@ struct ThreadPane: View {
 
     private var usersByID: [String: CachedUser] {
         Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The same people the main transcript offers: a thread reply goes to the space,
+    /// so its `@` reaches everyone in the space rather than only those who have posted
+    /// in this thread.
+    private var mentionCandidates: [MentionCandidate] {
+        MentionCandidate.list(
+            for: session.mentionableUserIDs(in: spaceName),
+            users: usersByID
+        )
     }
 
     /// Resolves quotes against this thread's own messages, which is all a reply here

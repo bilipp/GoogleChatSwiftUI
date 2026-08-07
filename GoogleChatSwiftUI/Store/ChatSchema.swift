@@ -208,6 +208,19 @@ final class CachedMessage {
     /// Non-nil when a send failed and the row is offering a retry.
     var sendFailureReason: String?
 
+    /// What was actually posted, when that differs from `text`.
+    ///
+    /// A message with mentions is two strings: the readable one the user typed and
+    /// sees echoed, and the same text with each name rewritten as `<users/123>` — the
+    /// only form in which Chat will register a mention. The wire form is kept here
+    /// because a retry happens long after the composer that produced it has been
+    /// cleared, and re-deriving it is impossible: nothing left in the app knows which
+    /// `@Ada Lovelace` was a mention and which was prose.
+    ///
+    /// Nil for the overwhelming majority of messages, which mention nobody, and
+    /// meaningless once the server's own copy replaces the placeholder.
+    var wireText: String?
+
     /// Chat user IDs mentioned in this message, from its annotations.
     var mentionedUserIDs: [String] = []
 

@@ -797,12 +797,15 @@ actor ChatStore {
         senderName: String?,
         senderDisplayName: String?,
         threadName: String?,
-        quotedMessageName: String? = nil
+        quotedMessageName: String? = nil,
+        wireText: String? = nil
     ) throws {
         guard let space = try space(named: spaceName) else { return }
 
         let placeholder = CachedMessage(name: "\(spaceName)/messages/\(clientID)")
         placeholder.text = text
+        // Only when it differs — see `CachedMessage.wireText`.
+        placeholder.wireText = wireText
         placeholder.createTime = Date()
         placeholder.senderName = senderName
         placeholder.senderDisplayName = senderDisplayName
@@ -906,7 +909,8 @@ actor ChatStore {
         guard let message = try message(named: messageName) else { return nil }
         return SendContext(
             threadName: message.threadName,
-            quotedMessageName: message.quotedMessageName
+            quotedMessageName: message.quotedMessageName,
+            wireText: message.wireText
         )
     }
 
@@ -933,9 +937,11 @@ actor ChatStore {
     }
 }
 
-/// Everything about a send that is not its text: the thread it belongs to and the
-/// message it quotes.
+/// Everything a retry needs that the text alone does not carry: the thread the message
+/// belongs to, the message it quotes, and the mention markup it was posted with.
 nonisolated struct SendContext: Sendable, Equatable {
     var threadName: String?
     var quotedMessageName: String?
+    /// See `CachedMessage.wireText`. Nil when the message mentions nobody.
+    var wireText: String?
 }

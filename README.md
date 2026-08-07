@@ -36,6 +36,7 @@ It is written for one person's Workspace account and distributed as source. Poin
 - Send, edit, and delete, with optimistic local echo and rollback on failure
 - Reply in a thread, or reply inline to a single message using Chat's native quoted-message metadata
 - Reactions, including a full emoji picker, recent-emoji suggestions, and `:shortcode` completion while typing
+- `@mention` completion over the space's members — and `@all` — posted as real mentions that notify, not as plain text
 - Attachments by file picker, drag-and-drop, or paste
 
 **Around the app**
@@ -245,4 +246,12 @@ docs/
 
 > [!WARNING]
 > This only sometimes produces a compile error. `async` calls cross actors silently, so the usual symptom is JSON decoding quietly running on the main thread rather than a diagnostic.
+
+<br>
+
+## Disclaimer
+
+This is an unofficial, independent project. It is not affiliated with, authorised, endorsed, or sponsored by Google LLC in any way. It is a third-party client that talks to the public Google Workspace REST APIs with your own credentials.
+
+"Google", "Google Chat", and "Google Workspace" are trademarks of Google LLC, used here only to describe what the app connects to.
 

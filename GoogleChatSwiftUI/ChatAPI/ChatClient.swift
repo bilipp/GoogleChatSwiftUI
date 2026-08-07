@@ -92,12 +92,35 @@ nonisolated extension ChatClient {
     /// This is the only way to name a DM: `spaces.list` returns no `displayName` for
     /// direct messages or unnamed group chats, so the peer's name has to come from
     /// their membership.
-    func listMembers(in space: String, pageSize: Int = 20) async throws -> ListMembersResponse {
-        try await get(
-            "\(space)/members",
-            query: [URLQueryItem(name: "pageSize", value: String(pageSize))],
-            as: ListMembersResponse.self
-        )
+    func listMembers(
+        in space: String,
+        pageSize: Int = 20,
+        pageToken: String? = nil
+    ) async throws -> ListMembersResponse {
+        var query = [URLQueryItem(name: "pageSize", value: String(pageSize))]
+        if let pageToken { query.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+        return try await get("\(space)/members", query: query, as: ListMembersResponse.self)
+    }
+
+    /// Every member of a space, following pagination.
+    ///
+    /// Separate from `listMembers` because the two want different things. Naming a DM
+    /// needs the first handful and no more, so it pays for one call; offering someone
+    /// to mention has to cover the room, or the colleague you were reaching for is
+    /// simply missing with no sign that anything was left out.
+    ///
+    /// - Parameter limit: a ceiling on how far to page. Chat spaces can hold thousands
+    ///   of people, and a list that long is not something anyone scrolls — past this
+    ///   the completion is doing more harm than the extra names are worth.
+    func allMembers(in space: String, limit: Int = 500) async throws -> [ChatMembership] {
+        var collected: [ChatMembership] = []
+        var token: String?
+        repeat {
+            let page = try await listMembers(in: space, pageSize: 100, pageToken: token)
+            collected.append(contentsOf: page.memberships ?? [])
+            token = page.nextPageToken
+        } while !(token ?? "").isEmpty && collected.count < limit
+        return collected
     }
 
     /// Messages in a space, newest first.

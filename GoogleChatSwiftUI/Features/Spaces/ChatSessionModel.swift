@@ -487,12 +487,14 @@ final class ChatSessionModel {
     /// - Parameter replyingTo: the message this one answers inline, if any. Its own
     ///   thread wins over `threadName`, because Chat refuses a quote that crosses
     ///   threads — see `ReplyTarget`.
+    /// - Parameter mentions: the people `text` names, from the composer's completion.
     func send(
         _ text: String,
         to spaceName: String,
         threadName: String? = nil,
         replyingTo target: ReplyTarget? = nil,
-        attachments: [PendingAttachment] = []
+        attachments: [PendingAttachment] = [],
+        mentions: [MentionCandidate] = []
     ) async {
         messageError = nil
         sendingSpaceNames.insert(spaceName)
@@ -505,6 +507,7 @@ final class ChatSessionModel {
                 threadName: target?.threadName ?? threadName,
                 quotedMessageName: target?.messageName,
                 attachments: attachments,
+                mentions: mentions,
                 senderName: profile?.chatUserName,
                 senderDisplayName: profile?.displayName
             )
@@ -534,10 +537,12 @@ final class ChatSessionModel {
         }
     }
 
-    func edit(messageName: String, newText: String) async {
+    /// - Parameter mentions: who the edited text may name. See `MessageBubble.saveEdit`
+    ///   for why an edit has to re-encode them rather than posting the text verbatim.
+    func edit(messageName: String, newText: String, mentions: [MentionCandidate] = []) async {
         messageError = nil
         do {
-            try await sync.edit(messageName: messageName, newText: newText)
+            try await sync.edit(messageName: messageName, newText: newText, mentions: mentions)
         } catch {
             logger.error("Edit failed: \(error.localizedDescription)")
             messageError = error.localizedDescription
@@ -577,6 +582,47 @@ final class ChatSessionModel {
 
     func downloadAttachment(resourceName: String) async throws -> Data {
         try await sync.downloadAttachment(resourceName: resourceName)
+    }
+
+    // MARK: - Mentions
+
+    /// Members offered for `@` completion, by space.
+    ///
+    /// In memory rather than in the cache, and deliberately. Membership changes without
+    /// telling this app — there is no event for it that we subscribe to — so a list
+    /// rebuilt once per launch is fresher than a persisted one would be, and it saves
+    /// a schema field for something that can always be fetched again.
+    private var mentionableIDs: [String: [String]] = [:]
+
+    /// Fetches the people who can be mentioned in a space, at most once per launch.
+    ///
+    /// On demand rather than with the space list: at 762 spaces a members call each
+    /// would dwarf everything else the app does, and most spaces are never opened. The
+    /// cost is one call the first time a conversation is looked at.
+    func loadMentionableMembers(of spaceName: String) async {
+        guard mentionableIDs[spaceName] == nil else { return }
+        // Claimed before the await, so opening the transcript and its thread pane in
+        // the same breath does not start the same fetch twice.
+        mentionableIDs[spaceName] = []
+
+        do {
+            mentionableIDs[spaceName] = try await sync.mentionableMembers(
+                in: spaceName,
+                excluding: profile?.chatUserName
+            )
+        } catch {
+            // Released rather than left empty: a space whose members could not be
+            // fetched should try again the next time it is opened, not lose mentions
+            // for the rest of the session over one failed request.
+            mentionableIDs[spaceName] = nil
+            logger.error("Member lookup failed for \(spaceName): \(error.localizedDescription)")
+        }
+    }
+
+    /// Empty until ``loadMentionableMembers(of:)`` has returned, which just means the
+    /// completion list stays shut rather than offering half a room.
+    func mentionableUserIDs(in spaceName: String) -> [String] {
+        mentionableIDs[spaceName] ?? []
     }
 
     /// Whether the signed-in user authored this message — the gate for edit/delete,
