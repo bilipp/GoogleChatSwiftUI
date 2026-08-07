@@ -170,11 +170,30 @@ nonisolated struct SyncEngine: Sendable {
     /// every bubble reads "Unknown". Names are *not* copied onto the messages: the
     /// transcript looks senders up in `CachedUser` instead, so one profile fetch
     /// fixes every message that person has ever sent, including already-cached ones.
+    ///
+    /// App senders — Chat apps and incoming webhooks — take the other branch. People has
+    /// no entry for an app, so they are recorded as apps rather than looked up: the call
+    /// could only 404, and it would do so on every pass for as long as the space has
+    /// webhook messages in it. What the recording buys is the transcript being able to
+    /// say "an app posted this" instead of "Unknown".
     func resolveSenders(from messages: [ChatMessage]) async {
-        let ids = Array(Set(messages.compactMap { $0.sender?.name }))
-        guard !ids.isEmpty else { return }
+        var people: Set<String> = []
+        var apps: Set<String> = []
+        for message in messages {
+            guard let sender = message.sender, let id = sender.name else { continue }
+            if sender.type == .bot {
+                apps.insert(id)
+            } else {
+                people.insert(id)
+            }
+        }
 
-        let unknown = (try? await store.unknownUserIDs(ids)) ?? []
+        if !apps.isEmpty {
+            try? await store.markAppUsers(Array(apps))
+        }
+
+        guard !people.isEmpty else { return }
+        let unknown = (try? await store.unknownUserIDs(Array(people))) ?? []
         guard !unknown.isEmpty else { return }
 
         let directory = (try? await directoryService.people(forChatUserNames: unknown)) ?? [:]
@@ -182,6 +201,16 @@ nonisolated struct SyncEngine: Sendable {
 
         try? await store.upsertPeople(Array(directory.values))
         logger.info("Resolved \(directory.count) sender profile(s)")
+    }
+
+    /// Names an app sender by hand.
+    ///
+    /// The counterpart to ``resolveSenders(from:)`` for the case it cannot serve: Chat
+    /// tells this app what an app's *type* is but never what it is called, and the
+    /// People API has nothing to say about one either. So the name comes from the person
+    /// reading the messages, and is stored exactly where a resolved one would be.
+    func setLocalName(_ displayName: String?, for userID: String) async throws {
+        try await store.setLocalName(displayName, for: userID)
     }
 
     /// The other humans in a space.

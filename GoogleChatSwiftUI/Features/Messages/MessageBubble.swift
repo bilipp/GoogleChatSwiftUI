@@ -41,6 +41,8 @@ struct MessageBubble: View {
     @State private var isEditing = false
     @State private var isEmojiPickerPresented = false
     @State private var draft = ""
+    @State private var isNamingApp = false
+    @State private var appNameDraft = ""
 
     /// The opposite-side gutter that keeps own and other messages visibly aligned to
     /// their sides. In a narrow pane a fixed 48pt gutter eats the text instead.
@@ -61,10 +63,7 @@ struct MessageBubble: View {
 
             VStack(alignment: isOwn ? .trailing : .leading, spacing: 2) {
                 if isFirstInGroup && !isOwn {
-                    Text(senderName)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 4)
+                    senderLine
                 }
 
                 if isEditing {
@@ -123,20 +122,63 @@ struct MessageBubble: View {
         // Text with a single synthetic element and drag-selection stops working.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
+        .alert("Name this app", isPresented: $isNamingApp) {
+            TextField("App name", text: $appNameDraft)
+            Button("Save", action: saveAppName)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                """
+                Google Chat gives out no names for apps and webhooks, so this one has \
+                to come from you. It will be used everywhere this sender appears.
+                """
+            )
+        }
     }
 
     // MARK: - Pieces
 
-    /// Falls back to the name stamped on the message, which is set for locally
-    /// composed messages before any directory lookup has happened.
-    private var senderName: String {
-        sender?.displayName ?? message.senderDisplayName ?? "Unknown"
+    /// Who posted, by the rules in ``SenderIdentity`` — which are not obvious, and have
+    /// to match the thread list, search and quotes.
+    private var identity: SenderIdentity {
+        SenderIdentity(message: message, sender: sender)
+    }
+
+    /// The name above the first bubble of a block, tagged when an app posted.
+    ///
+    /// The tag is what the web client shows too, and it earns its space: these messages
+    /// are notifications from a system, and reading one as something a colleague said
+    /// changes what it means.
+    private var senderLine: some View {
+        HStack(spacing: 4) {
+            Text(identity.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if identity.isApp {
+                Text("APP")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .stroke(.tertiary, lineWidth: 0.5)
+                    }
+            }
+        }
+        .padding(.leading, 4)
     }
 
     @ViewBuilder
     private var avatarSlot: some View {
         if isFirstInGroup {
-            Avatar(name: senderName, photoURL: sender?.photoURL)
+            // The resolved name rather than `identity.name`: an avatar showing "A" for
+            // "App" would be inventing an initial for a sender that has no name.
+            Avatar(
+                name: identity.resolvedName,
+                photoURL: identity.photoURL,
+                isApp: identity.isApp
+            )
         } else {
             Color.clear.frame(width: 28, height: 1)
         }
@@ -374,6 +416,18 @@ struct MessageBubble: View {
             .help("Copy a chat.google.com link to this message")
         }
 
+        // Offered only for apps, because only apps need it: a colleague's name arrives
+        // from the directory, while Chat will not say what an app is called under user
+        // authentication and the People API has no entry for one. Without this the
+        // sender of every webhook notification is permanently anonymous.
+        if identity.isApp, message.senderName != nil {
+            Divider()
+            Button(identity.resolvedName == nil ? "Name This App…" : "Rename This App…") {
+                appNameDraft = identity.resolvedName ?? ""
+                isNamingApp = true
+            }
+        }
+
         // Chat permits editing and deleting only your own messages, so offering
         // these on someone else's would be a guaranteed 403.
         if isOwn && !message.isDeleted && !message.isPending {
@@ -427,8 +481,23 @@ struct MessageBubble: View {
         }
     }
 
+    /// Stores the typed name against the sender rather than the message, so it names
+    /// every message that app has posted and every one it posts next.
+    ///
+    /// An emptied field clears the name again, which is the only way back to the
+    /// placeholder once one has been set.
+    private func saveAppName() {
+        guard let senderID = message.senderName else { return }
+        let typed = appNameDraft
+        Task { await session.setAppName(typed, for: senderID) }
+    }
+
     private var accessibilityDescription: String {
-        let who = isOwn ? "You" : senderName
+        // Apps are called out, since the tag next to the name is not read aloud and
+        // "Service said" is a different claim from "Service, app, posted".
+        let who = isOwn
+            ? "You"
+            : (identity.isApp ? "\(identity.name), app" : identity.name)
         let time = message.createTime?.formatted(date: .omitted, time: .shortened) ?? ""
         // Stripped, because VoiceOver reading "asterisk shipped asterisk" aloud is
         // worse than losing the emphasis.

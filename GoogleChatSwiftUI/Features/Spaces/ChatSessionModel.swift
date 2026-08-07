@@ -652,6 +652,24 @@ final class ChatSessionModel {
         try await sync.downloadAttachment(resourceName: resourceName)
     }
 
+    /// Names an app sender — a Chat app or an incoming webhook.
+    ///
+    /// Local, and not for want of trying: Chat returns a sender's ID and type but never
+    /// its `displayName` under user authentication, and the People API has no record of
+    /// an app to fall back on. So the name is the user's, stored in the same row a
+    /// resolved profile would occupy, which is what makes it show up in the transcript,
+    /// the thread list, search and notification banners alike.
+    /// - Parameter displayName: blank clears the name again.
+    func setAppName(_ displayName: String?, for userID: String) async {
+        messageError = nil
+        do {
+            try await sync.setLocalName(displayName, for: userID)
+        } catch {
+            logger.error("Naming app \(userID) failed: \(error.localizedDescription)")
+            messageError = error.localizedDescription
+        }
+    }
+
     // MARK: - Mentions
 
     /// Members offered for `@` completion, by space.

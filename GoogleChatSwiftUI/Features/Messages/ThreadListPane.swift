@@ -128,7 +128,7 @@ struct ThreadListPane: View {
                 ForEach(visibleThreads) { thread in
                     ThreadSummaryRow(
                         thread: thread,
-                        rootSender: rootSender(of: thread),
+                        starter: starter(of: thread),
                         lastReplierName: lastReplierName(in: thread)
                     ) {
                         session.openThread(thread.name, fromList: true)
@@ -159,9 +159,10 @@ struct ThreadListPane: View {
         Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    private func rootSender(of thread: CachedThread) -> CachedUser? {
-        guard let id = thread.root?.senderName else { return nil }
-        return usersByID[id]
+    /// Who started the thread. Nil only for a thread whose root has not been cached.
+    private func starter(of thread: CachedThread) -> SenderIdentity? {
+        guard let root = thread.root else { return nil }
+        return SenderIdentity(message: root, sender: root.senderName.flatMap { usersByID[$0] })
     }
 
     /// Who spoke last, which is usually why the thread is worth opening.
@@ -171,15 +172,22 @@ struct ThreadListPane: View {
             (lhs.createTime ?? .distantPast) < (rhs.createTime ?? .distantPast)
         }
         guard let newest else { return nil }
-        guard let id = newest.senderName else { return newest.senderDisplayName }
-        return usersByID[id]?.displayName ?? newest.senderDisplayName
+        let identity = SenderIdentity(
+            message: newest,
+            sender: newest.senderName.flatMap { usersByID[$0] }
+        )
+        // Nil rather than a placeholder for a person the directory has not named: the
+        // row already says who started the thread, and "· Unknown" reads worse than no
+        // line at all. An app is named, because "App" is not standing in for an answer
+        // that is on its way.
+        return identity.resolvedName ?? (identity.isApp ? SenderIdentity.unnamedApp : nil)
     }
 }
 
 /// One thread as a row: who started it, what it says, and how far behind you are.
 private struct ThreadSummaryRow: View {
     let thread: CachedThread
-    let rootSender: CachedUser?
+    let starter: SenderIdentity?
     let lastReplierName: String?
     let open: () -> Void
 
@@ -188,7 +196,12 @@ private struct ThreadSummaryRow: View {
     var body: some View {
         Button(action: open) {
             HStack(alignment: .top, spacing: 10) {
-                Avatar(name: starterName, photoURL: rootSender?.photoURL, size: 28)
+                Avatar(
+                    name: starter?.resolvedName,
+                    photoURL: starter?.photoURL,
+                    size: 28,
+                    isApp: starter?.isApp == true
+                )
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
@@ -239,7 +252,7 @@ private struct ThreadSummaryRow: View {
     }
 
     private var starterName: String {
-        rootSender?.displayName ?? thread.root?.senderDisplayName ?? "Unknown"
+        starter?.name ?? SenderIdentity.unnamedPerson
     }
 
     private var snippet: String {

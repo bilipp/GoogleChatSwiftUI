@@ -137,14 +137,15 @@ private struct MessageSearchRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(
-                name: sender?.displayName ?? message.senderDisplayName,
-                photoURL: sender?.photoURL,
-                size: 26
+                name: identity.resolvedName,
+                photoURL: identity.photoURL,
+                size: 26,
+                isApp: identity.isApp
             )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(sender?.displayName ?? message.senderDisplayName ?? "Unknown")
+                    Text(identity.name)
                         .font(.caption.weight(.semibold))
                     Text(spaceTitle)
                         .font(.caption2)
@@ -165,6 +166,10 @@ private struct MessageSearchRow: View {
         }
         .padding(.vertical, 3)
         .contentShape(.rect)
+    }
+
+    private var identity: SenderIdentity {
+        SenderIdentity(message: message, sender: sender)
     }
 
     private var spaceTitle: String {

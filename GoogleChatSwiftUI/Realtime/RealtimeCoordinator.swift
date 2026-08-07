@@ -242,10 +242,16 @@ actor RealtimeCoordinator {
     }
 
     /// Cached display name for a message's sender, or nil if the directory has not
-    /// caught up with them yet.
+    /// caught up with them yet — in which case the banner simply carries no subtitle.
+    ///
+    /// An app that nobody has named is labelled rather than left blank: the directory is
+    /// not behind on it, it is never going to name it, and "App" is the same thing the
+    /// transcript says.
     private func senderName(of message: ChatMessage) async -> String? {
         guard let id = message.sender?.name else { return nil }
-        return try? await store.displayNames(for: [id])[id]
+        let cached = try? await store.displayNames(for: [id])[id]
+        if let cached { return cached }
+        return message.sender?.type == .bot ? SenderIdentity.unnamedApp : nil
     }
 
     // MARK: - Renewal

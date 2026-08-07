@@ -85,17 +85,19 @@ struct QuotedMessageResolver {
         // Not in the cache: the snapshot the server sent with the reply is all there is.
         return QuotedMessagePreview(
             messageName: quotedName,
-            authorName: displayName(for: message.quotedMessageSender) ?? "Unknown",
+            authorName: displayName(for: message.quotedMessageSender)
+                ?? SenderIdentity.unnamedPerson,
             text: message.quotedMessageText.map(ChatTextRenderer.plainText) ?? "Quoted message"
         )
     }
 
-    /// Who wrote a message, by the same rule the bubble names its sender: the directory
-    /// first, then the name stamped on the message for one composed locally.
+    /// Who wrote a message, by the same rules the bubble names its sender by — including
+    /// an app posting, which is named "App" rather than "Unknown".
     func authorName(of message: CachedMessage) -> String {
-        message.senderName.flatMap { usersByID[$0]?.displayName }
-            ?? message.senderDisplayName
-            ?? "Unknown"
+        SenderIdentity(
+            message: message,
+            sender: message.senderName.flatMap { usersByID[$0] }
+        ).name
     }
 
     /// The snapshot's author field is documented only as an "author name", without

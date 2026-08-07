@@ -220,6 +220,14 @@ final class CachedMessage {
     var deleteTime: Date?
     var senderName: String?
     var senderDisplayName: String?
+    /// `HUMAN` or `BOT`, as Chat reported it.
+    ///
+    /// Worth storing because it is the *only* thing the API says about a sender beyond
+    /// the ID: under user authentication `displayName` never arrives, for people or for
+    /// apps. So this is what separates an app — a Chat app or an incoming webhook — from
+    /// a colleague the People lookup has not answered for yet, and the two need telling
+    /// apart because only one of them will ever be named by a request.
+    var senderTypeRaw: String?
     var threadName: String?
     var isThreadReply: Bool = false
     var attachmentCount: Int = 0
@@ -302,6 +310,13 @@ final class CachedMessage {
 
     var isDeleted: Bool { deleteTime != nil }
 
+    /// Whether an app posted this rather than a person.
+    ///
+    /// Nil for rows cached before the type was stored, which reads as false — see
+    /// ``SenderIdentity``, which also consults the sender's own row so one typed
+    /// message identifies that sender's whole back catalogue.
+    var isAppSender: Bool { senderTypeRaw == ChatUser.UserType.bot.rawValue }
+
     /// Decoded lazily and not cached: cards are rendered by SwiftUI, which already
     /// re-evaluates only when the underlying row changes.
     var cards: [ChatCard] {
@@ -371,6 +386,10 @@ final class CachedMessage {
         deleteTime = remote.deleteTime
         senderName = remote.sender?.name
         senderDisplayName = remote.sender?.displayName
+        // Never cleared by a response that omits it, for the same reason as a space's
+        // URI: knowing a sender is an app is not something to lose to a payload that
+        // happened not to say.
+        if let type = remote.sender?.type?.rawValue { senderTypeRaw = type }
         threadName = remote.thread?.name
         isThreadReply = remote.threadReply ?? false
         attachmentCount = remote.attachment?.count ?? 0
@@ -511,6 +530,23 @@ final class CachedUser {
     var displayName: String?
     /// From the People API — Chat itself never supplies avatars.
     var photoURL: String?
+
+    /// A Chat app or an incoming webhook rather than a person.
+    ///
+    /// Recorded from `Message.sender.type` rather than from a lookup, because there is
+    /// no lookup: the People API has no entry for an app, so a row for one exists only
+    /// because a message named it. Kept here rather than only on the message so that a
+    /// single message carrying the type identifies every message that sender has ever
+    /// posted, including history cached before the app stored types at all.
+    var isApp: Bool = false
+
+    /// Whether ``displayName`` was typed by the user rather than resolved.
+    ///
+    /// The only way an app gets a name in this app: Chat will not say what an app is
+    /// called under user authentication, and People cannot be asked. Flagged so a
+    /// directory pass can never quietly overwrite the one name a person went to the
+    /// trouble of supplying.
+    var isLocallyNamed: Bool = false
 
     init(name: String) {
         self.name = name

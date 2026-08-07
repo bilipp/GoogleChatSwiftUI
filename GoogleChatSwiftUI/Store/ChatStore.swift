@@ -86,13 +86,73 @@ actor ChatStore {
                 byName[person.chatUserName] = created
                 target = created
             }
-            target.displayName = person.displayName
+            // A hand-typed name is never overwritten: it exists because nothing the app
+            // can ask would produce one, so a directory answer is not an improvement.
+            if !target.isLocallyNamed { target.displayName = person.displayName }
             target.photoURL = person.photoURL
         }
         try modelContext.save()
     }
 
+    /// Records that these senders are apps — Chat apps or incoming webhooks.
+    ///
+    /// Written from message sender types because that is the only place the information
+    /// appears. Nothing else about the row is touched: an app's name can only have come
+    /// from the user, and this runs on every sync pass.
+    func markAppUsers(_ ids: [String]) throws {
+        guard !ids.isEmpty else { return }
+        let wanted = Set(ids)
+        let existing = try modelContext.fetch(
+            FetchDescriptor<CachedUser>(predicate: #Predicate { wanted.contains($0.name) })
+        )
+        let byName = Dictionary(uniqueKeysWithValues: existing.map { ($0.name, $0) })
+
+        var added = 0
+        for id in wanted {
+            if let found = byName[id] {
+                guard !found.isApp else { continue }
+                found.isApp = true
+            } else {
+                let created = CachedUser(name: id)
+                created.isApp = true
+                modelContext.insert(created)
+            }
+            added += 1
+        }
+        guard added > 0 else { return }
+        try modelContext.save()
+        logger.info("Marked \(added) sender(s) as apps")
+    }
+
+    /// Names a sender by hand — the only way an app is ever named here.
+    ///
+    /// Lands in the same row the directory writes to, so one name reaches the transcript,
+    /// the thread list, search and notifications at once.
+    /// - Parameter displayName: nil or blank clears the name again.
+    func setLocalName(_ displayName: String?, for userID: String) throws {
+        let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = try modelContext.fetch(
+            FetchDescriptor<CachedUser>(predicate: #Predicate { $0.name == userID })
+        ).first ?? {
+            let created = CachedUser(name: userID)
+            modelContext.insert(created)
+            return created
+        }()
+
+        if let trimmed, !trimmed.isEmpty {
+            target.displayName = trimmed
+            target.isLocallyNamed = true
+        } else {
+            target.displayName = nil
+            target.isLocallyNamed = false
+        }
+        try modelContext.save()
+    }
+
     /// Which of these Chat user IDs have no cached directory profile yet.
+    ///
+    /// Apps are reported as known however unnamed they are: People has no entry for one,
+    /// so asking again on every pass would buy a 404 per app per space opened.
     func unknownUserIDs(_ ids: [String]) throws -> [String] {
         guard !ids.isEmpty else { return [] }
         let wanted = Set(ids)
@@ -100,7 +160,7 @@ actor ChatStore {
             FetchDescriptor<CachedUser>(predicate: #Predicate { wanted.contains($0.name) })
         )
         var alreadyNamed: Set<String> = []
-        for user in known where user.displayName != nil {
+        for user in known where user.displayName != nil || user.isApp {
             alreadyNamed.insert(user.name)
         }
         return Array(wanted.subtracting(alreadyNamed))
