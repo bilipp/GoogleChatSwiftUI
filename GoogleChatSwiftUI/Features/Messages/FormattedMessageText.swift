@@ -37,10 +37,13 @@ struct FormattedMessageText: View {
     /// `fixedSize` vertically on every text block: inside a `VStack` that is itself
     /// width-capped by the bubble, SwiftUI will otherwise settle on a single
     /// truncated line for the longer blocks.
+    ///
+    /// No `maxWidth: .infinity` on any block, here or below. The enclosing `VStack`
+    /// already aligns them to the leading edge, and stretching each one to the cap is
+    /// what made a two-word message sit in a bubble as wide as the transcript.
     private func paragraph(_ text: AttributedString) -> some View {
         Text(text)
             .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func bulletList(_ items: [AttributedString]) -> some View {
@@ -53,7 +56,6 @@ struct FormattedMessageText: View {
                         .font(.body)
                     Text(item)
                         .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -72,7 +74,6 @@ struct FormattedMessageText: View {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -85,7 +86,6 @@ struct FormattedMessageText: View {
         Text(body)
             .font(.system(.body, design: .monospaced))
             .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             // Matches the wash on inline code so the two read as one idea.

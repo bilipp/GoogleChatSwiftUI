@@ -215,7 +215,11 @@ private struct CardImageView: View {
                 placeholder(systemImage: "photo")
             }
         }
-        .frame(maxWidth: 420, maxHeight: 280)
+        // Leading, because the frame is as wide as the cap allows while the picture
+        // inside it rarely is: without this the image drifts to the middle of a card
+        // whose every other row starts at the left edge. The size is unknowable until
+        // the download lands, so a fitted frame is not an option here.
+        .frame(maxWidth: 420, maxHeight: 280, alignment: .leading)
         .clipShape(.rect(cornerRadius: 8))
         .accessibilityLabel(image.altText ?? "Image")
 

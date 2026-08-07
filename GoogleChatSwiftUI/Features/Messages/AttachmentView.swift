@@ -10,7 +10,7 @@ struct AttachmentList: View {
     var body: some View {
         VStack(alignment: isOwn ? .trailing : .leading, spacing: 4) {
             ForEach(attachments, id: \.name) { attachment in
-                AttachmentChip(attachment: attachment)
+                AttachmentChip(attachment: attachment, isOwn: isOwn)
             }
         }
     }
@@ -36,6 +36,9 @@ private struct AttachmentChip: View {
     @Environment(ChatSessionModel.self) private var session
 
     let attachment: CachedAttachment
+    /// Decides which edge the preview and the file row hang from, so an attachment
+    /// lines up with the bubble above it instead of drifting into the transcript.
+    let isOwn: Bool
     @State private var preview: NSImage?
     /// The bytes behind `preview`, kept so the viewer can copy and save the original
     /// file without downloading it a second time.
@@ -46,7 +49,7 @@ private struct AttachmentChip: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: isOwn ? .trailing : .leading, spacing: 4) {
             if attachment.isImage {
                 imagePreview
             }
@@ -66,6 +69,7 @@ private struct AttachmentChip: View {
     @ViewBuilder
     private var imagePreview: some View {
         if let preview {
+            let size = previewSize(of: preview)
             // A Button rather than a tap gesture: the preview is a real control, and
             // this is what puts it in the keyboard and VoiceOver order for free.
             Button {
@@ -74,7 +78,7 @@ private struct AttachmentChip: View {
                 Image(nsImage: preview)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: 320, maxHeight: 240)
+                    .frame(width: size.width, height: size.height)
                     .clipShape(.rect(cornerRadius: 8))
             }
             .buttonStyle(.plain)
@@ -107,6 +111,20 @@ private struct AttachmentChip: View {
                 .frame(width: 180, height: 90)
                 .overlay { ProgressView().controlSize(.small) }
         }
+    }
+
+    /// The picture's own size, scaled down to fit the preview cap.
+    ///
+    /// A flexible `maxWidth` frame would instead claim the full 320pt and centre the
+    /// picture inside it, which left a portrait image floating in the middle of the
+    /// transcript rather than sitting against its sender's edge.
+    private func previewSize(of image: NSImage) -> CGSize {
+        let limit = CGSize(width: 320, height: 240)
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return limit }
+        // Capped at 1: blowing a small image up to the limit only makes it blurry.
+        let scale = min(limit.width / size.width, limit.height / size.height, 1)
+        return CGSize(width: size.width * scale, height: size.height * scale)
     }
 
     /// Fetches image bytes through the authenticated media endpoint.
