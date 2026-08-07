@@ -32,7 +32,9 @@ struct TranscriptScrollView<Content: View>: View {
     /// Drives the scroll view's own position commands — the ones that address the end
     /// of the content rather than a particular row.
     @State private var position = ScrollPosition(idType: String.self)
-    /// Whether new messages should pull the view down with them.
+    /// Whether new messages should pull the view down with them — true while the end of
+    /// the transcript is what the reader is looking at. Kept in step with the scroll
+    /// geometry below.
     @State private var isFollowing = true
     /// False until the opening position is real rather than estimated. The content is
     /// invisible until then, which is the whole point: a jump nobody sees is not a jump.
@@ -44,13 +46,15 @@ struct TranscriptScrollView<Content: View>: View {
     /// not also be read as "the end moved" — in a conversation short enough to fit on
     /// screen both are true at once, and holding is the one the reader asked for.
     @State private var isHolding = false
+    /// True while the reader has hold of the scroll view: a drag, a wheel, or the glide
+    /// that follows one.
+    @State private var isReaderScrolling = false
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     content
-                    endMarker
                 }
                 .padding(.horizontal, horizontalPadding)
                 .padding(.vertical, verticalPadding)
@@ -63,10 +67,10 @@ struct TranscriptScrollView<Content: View>: View {
             .onChange(of: jumpTarget.wrappedValue, initial: true) { _, target in
                 guard let target else { return }
                 jumpTarget.wrappedValue = nil
-                // Following is not switched off here. Landing away from the end takes
-                // the end marker off screen, which switches it off by itself — and a
-                // target that turns out not to be in the loaded window leaves the
-                // reader at the end, still following, which is where they should be.
+                // Following is not switched off here. Landing away from the end is a
+                // move away from it, which switches it off by itself — and a target
+                // that turns out not to be in the loaded window leaves the reader at
+                // the end, still following, which is where they should be.
                 if hasSettled {
                     withAnimation(.easeOut(duration: 0.25)) {
                         proxy.scrollTo(target, anchor: .center)
@@ -90,27 +94,35 @@ struct TranscriptScrollView<Content: View>: View {
                 historyAnchor.wrappedValue = nil
                 Task { await hold(anchor, in: proxy) }
             }
-            // Rows grow after they are first laid out — an image attachment finishes
-            // loading, a link preview resolves. Without this the view keeps its offset
+            // Where the reader is, and whether the ground moved under them. Rows grow
+            // after they are first laid out — an image attachment finishes loading, a
+            // link preview resolves — and without a correction the view keeps its offset
             // and quietly drifts off the end it was sitting on.
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { old, new in
-                guard hasSettled, isFollowing, !isHolding, new != old else { return }
+            //
+            // Both answers come from the same reading of the scroll geometry, so they
+            // cannot disagree. Asking a marker view at the end of the stack whether it
+            // is on screen looks equivalent and is not: its answer arrives a beat after
+            // the offset it describes, and the beat is long enough for a correction to
+            // undo the scroll the reader just made.
+            .onScrollGeometryChange(for: TranscriptScrollMetrics.self) {
+                TranscriptScrollMetrics($0)
+            } action: { old, new in
+                isFollowing = new.isAtEnd
+                guard hasSettled, !isHolding, !isReaderScrolling else { return }
+                guard TranscriptScrollMetrics.shouldReturnToEnd(from: old, to: new) else { return }
                 position.scrollTo(edge: .bottom)
             }
-        }
-    }
-
-    /// The end of the transcript, and the definition of "the reader is at the bottom":
-    /// whether the end is on screen. That is a question about what is visible, so it
-    /// stays correct no matter what the composer or an error banner does to the insets
-    /// — which offset arithmetic against a changing safe area does not.
-    private var endMarker: some View {
-        Color.clear
-            .frame(height: 1)
-            .onScrollVisibilityChange(threshold: 0.01) { visible in
-                isFollowing = visible
+            // Nothing repositions the transcript while the reader is moving it
+            // themselves. Scrolling up builds the rows above as it goes, and every one
+            // that lands changes the content height — mistaking that for the transcript
+            // growing beneath someone sitting at the end is what makes a short thread
+            // impossible to scroll up through at all.
+            .onScrollPhaseChange { _, phase in
+                isReaderScrolling = phase == .tracking
+                    || phase == .interacting
+                    || phase == .decelerating
             }
-            .accessibilityHidden(true)
+        }
     }
 
     /// Converges on the opening position, then reveals the transcript.
@@ -177,5 +189,55 @@ struct TranscriptScrollView<Content: View>: View {
             try? await Task.sleep(for: .milliseconds(16))
         }
         isHolding = false
+    }
+}
+
+/// What a scroll view looked like at one moment, reduced to the three facts that decide
+/// whether the transcript should be pulled back to its end.
+///
+/// `nonisolated` because it is pure arithmetic: the target defaults to `@MainActor`,
+/// which would otherwise put it out of reach of the test suite.
+nonisolated struct TranscriptScrollMetrics: Equatable {
+    /// Height of everything in the scroll view.
+    var contentHeight: CGFloat
+    /// How far the end of the content sits below what the reader can see. Zero when they
+    /// are looking at the end, and growing as they scroll away from it. Derived from the
+    /// visible rect rather than the raw offset, so it stays honest whatever the composer
+    /// or an error banner does to the insets.
+    var distanceFromEnd: CGFloat
+    /// How far down the content the reader is. Only the direction it moves is used.
+    var offset: CGFloat
+
+    /// Sub-pixel layout means "at the end" is never exactly zero, and a reader a couple
+    /// of points off the end is still reading the end.
+    static let endTolerance: CGFloat = 8
+
+    var isAtEnd: Bool { distanceFromEnd <= Self.endTolerance }
+
+    init(contentHeight: CGFloat, distanceFromEnd: CGFloat, offset: CGFloat) {
+        self.contentHeight = contentHeight
+        self.distanceFromEnd = distanceFromEnd
+        self.offset = offset
+    }
+
+    init(_ geometry: ScrollGeometry) {
+        self.init(
+            contentHeight: geometry.contentSize.height,
+            distanceFromEnd: geometry.contentSize.height - geometry.visibleRect.maxY,
+            offset: geometry.contentOffset.y
+        )
+    }
+
+    /// Whether the change between two moments is the transcript growing under a reader
+    /// who was sitting at its end — the one case that should carry them along with it.
+    ///
+    /// Judged from where the reader *was*. Reading the new position instead answers the
+    /// wrong question: growth pushes the end away from whoever is watching it, so at that
+    /// point everybody looks like they have scrolled off. And growth that the reader
+    /// moved up into is not growth they should be dragged back down through, however the
+    /// two arrived in the same reading.
+    static func shouldReturnToEnd(from old: Self, to new: Self) -> Bool {
+        guard old.contentHeight != new.contentHeight, old.isAtEnd else { return false }
+        return new.offset >= old.offset
     }
 }
