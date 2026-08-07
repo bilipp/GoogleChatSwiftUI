@@ -271,6 +271,12 @@ final class ChatSessionModel {
     func openSpace(_ spaceName: String) async {
         if selectedSpaceName != spaceName { selectedThreadName = nil }
         selectedSpaceName = spaceName
+        // The query was the means of finding this conversation, and it has served its
+        // purpose the moment the conversation is open. Left applied it would hold the
+        // sidebar down to a handful of rows — so the next glance at the list shows a
+        // near-empty sidebar, with the reason for it sitting in a field nobody is
+        // looking at any more.
+        searchText = ""
         messageError = nil
         guard !loadingSpaceNames.contains(spaceName) else { return }
 

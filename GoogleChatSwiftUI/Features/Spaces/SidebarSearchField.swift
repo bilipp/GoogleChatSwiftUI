@@ -12,6 +12,12 @@ struct SidebarSearchField: View {
     @Binding var text: String
     let placeholder: String
     @FocusState.Binding var isFocused: Bool
+    /// Steps the highlight through the results by ±1.
+    var onMoveHighlight: (Int) -> Void = { _ in }
+    /// Return: open whatever is highlighted.
+    var onOpenHighlighted: () -> Void = {}
+    /// Escape: clear the query, or give up focus if there is nothing to clear.
+    var onCancel: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 6) {
@@ -22,7 +28,15 @@ struct SidebarSearchField: View {
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain)
                 .focused($isFocused)
-                .onSubmit { isFocused = false }
+                // The arrows drive the result list, not the insertion point. A
+                // one-line query field has little use for caret keys, and reaching
+                // for the mouse to pick a result would undo the point of a
+                // keyboard-summoned search. `.handled` is what stops the field
+                // from also moving the caret.
+                .onKeyPress(.upArrow) { onMoveHighlight(-1); return .handled }
+                .onKeyPress(.downArrow) { onMoveHighlight(1); return .handled }
+                .onKeyPress(.escape) { onCancel(); return .handled }
+                .onSubmit { onOpenHighlighted() }
 
             if !text.isEmpty {
                 Button {

@@ -11,6 +11,10 @@ struct SpacesListView: View {
     /// Directory profiles, for DM avatars. Chat supplies no images of its own.
     @Query private var users: [CachedUser]
     @FocusState private var isSearchFocused: Bool
+    /// The row the arrow keys are pointing at while the search field has focus.
+    /// Deliberately not the list's selection: moving through results must not open
+    /// each conversation it passes over, only the one you press Return on.
+    @State private var highlightedSpaceName: String?
 
     var body: some View {
         @Bindable var session = session
@@ -129,14 +133,11 @@ struct SpacesListView: View {
     private func openFromNotification() async {
         guard let name = NotificationRouter.shared.claimPendingSpace() else { return }
 
+        // The search field needs no handling here: opening a conversation clears it.
         if let space = allSpaces.first(where: { $0.name == name }) {
             if !session.kind.matches(space) { session.kind = .all }
             if !session.scope.matches(space, now: Date()) { session.scope = .all }
             if space.isMuted { session.showsMuted = true }
-            let query = session.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !query.isEmpty, !space.title.localizedCaseInsensitiveContains(query) {
-                session.searchText = ""
-            }
         }
 
         await session.revealSpace(name)
@@ -164,54 +165,129 @@ struct SpacesListView: View {
     private var sidebar: some View {
         @Bindable var session = session
 
-        return List(selection: Binding(
-            get: { session.selectedSpaceName },
-            set: { name in
-                guard let name else { return }
-                Task { await session.openSpace(name) }
-            }
-        )) {
-            ForEach(groupedSpaces, id: \.title) { group in
-                Section(group.title) {
-                    ForEach(group.spaces) { space in
-                        SpaceRow(space: space, peer: peer(for: space))
+        return ScrollViewReader { proxy in
+            List(selection: Binding(
+                get: { session.selectedSpaceName },
+                set: { name in
+                    guard let name else { return }
+                    Task { await session.openSpace(name) }
+                }
+            )) {
+                ForEach(groupedSpaces, id: \.title) { group in
+                    Section(group.title) {
+                        // Identified by name so `scrollTo` below can name a row. The
+                        // model's own identifier would work for the list but is not
+                        // something the highlight has in hand.
+                        ForEach(group.spaces, id: \.name) { space in
+                            SpaceRow(
+                                space: space,
+                                peer: peer(for: space),
+                                isHighlighted: space.name == highlightedSpaceName
+                            )
                             .tag(space.name)
                             .contextMenu { rowMenu(for: space) }
+                        }
+                        .onMove(perform: moveHandler(for: group))
                     }
-                    .onMove(perform: moveHandler(for: group))
                 }
             }
-        }
-        // Dissolves rows into the header instead of letting them slide under it.
-        .scrollEdgeEffectStyle(.hard, for: .top)
-        .overlay { emptyOverlay }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 6) {
-                SidebarSearchField(
-                    text: $session.searchText,
-                    placeholder: "Search conversations",
-                    isFocused: $isSearchFocused
-                )
-                SidebarFilterBar(
-                    scope: $session.scope,
-                    kind: $session.kind,
-                    showsMuted: $session.showsMuted,
-                    scopeCounts: scopeCounts,
-                    kindCounts: kindCounts,
-                    mutedCount: mutedCount,
-                    visibleCount: visibleSpaces.count
-                )
+            // Dissolves rows into the header instead of letting them slide under it.
+            .scrollEdgeEffectStyle(.hard, for: .top)
+            .overlay { emptyOverlay }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 6) {
+                    SidebarSearchField(
+                        text: $session.searchText,
+                        placeholder: "Search conversations",
+                        isFocused: $isSearchFocused,
+                        onMoveHighlight: moveHighlight,
+                        onOpenHighlighted: openHighlighted,
+                        onCancel: cancelSearch
+                    )
+                    SidebarFilterBar(
+                        scope: $session.scope,
+                        kind: $session.kind,
+                        showsMuted: $session.showsMuted,
+                        scopeCounts: scopeCounts,
+                        kindCounts: kindCounts,
+                        mutedCount: mutedCount,
+                        visibleCount: visibleSpaces.count
+                    )
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            RealtimeStatusBar(
-                status: session.realtimeStatus,
-                isRefreshing: session.isRefreshingSpaces
-            ) {
-                Task { await session.refreshSpaces() }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                RealtimeStatusBar(
+                    status: session.realtimeStatus,
+                    isRefreshing: session.isRefreshingSpaces
+                ) {
+                    Task { await session.refreshSpaces() }
+                }
             }
+            // The highlight is useless off screen, and with hundreds of rows behind
+            // the filter it leaves the viewport within a few presses.
+            .onChange(of: highlightedSpaceName) { _, name in
+                guard let name else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    proxy.scrollTo(name, anchor: .center)
+                }
+            }
+            // A new query means new results: point at the top hit so Return has a
+            // visible target without an arrow press first.
+            .onChange(of: session.searchText) { _, _ in
+                highlightedSpaceName = defaultHighlight
+            }
+            // Once focus leaves the field the arrows belong to the list itself, and
+            // a highlight left behind would claim a target they no longer move.
+            .onChange(of: isSearchFocused) { _, focused in
+                highlightedSpaceName = focused ? defaultHighlight : nil
+            }
+        }
+    }
+
+    /// Every visible row in the order the sidebar draws it, groups included — so the
+    /// arrows walk the list as it looks rather than as it was assembled.
+    private var orderedSpaceNames: [String] {
+        groupedSpaces.flatMap { $0.spaces.map(\.name) }
+    }
+
+    /// Where the highlight sits before any arrow press: on the top hit once there is
+    /// a query, and nowhere at all while the field is empty — a highlight on row one
+    /// of an unfiltered list of 762 would be pointing at nothing in particular.
+    private var defaultHighlight: String? {
+        session.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil
+            : orderedSpaceNames.first
+    }
+
+    private func moveHighlight(by delta: Int) {
+        highlightedSpaceName = SidebarHighlight.moved(
+            from: highlightedSpaceName,
+            by: delta,
+            in: orderedSpaceNames
+        )
+    }
+
+    /// Return opens the highlighted conversation and hands focus back to the
+    /// transcript. Emptying the field is `openSpace`'s job, so that a row reached by
+    /// Return and one reached by a click leave the sidebar in the same state.
+    private func openHighlighted() {
+        guard let name = highlightedSpaceName else {
+            isSearchFocused = false
+            return
+        }
+        isSearchFocused = false
+        Task { await session.openSpace(name) }
+    }
+
+    /// Escape clears the query first and only gives up focus on a second press, so
+    /// it never dismisses the field while there is still a filter left applied.
+    private func cancelSearch() {
+        if session.searchText.isEmpty {
+            isSearchFocused = false
+        } else {
+            session.searchText = ""
         }
     }
 
@@ -450,6 +526,10 @@ struct SpacesListView: View {
 private struct SpaceRow: View {
     let space: CachedSpace
     let peer: CachedUser?
+    /// Where the search field's arrow keys are pointing. Drawn as a ring rather than
+    /// a fill so it cannot be mistaken for the selected row — the two are frequently
+    /// different rows, and the whole point is that this one is not open yet.
+    var isHighlighted = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -476,8 +556,16 @@ private struct SpaceRow: View {
             unreadBadge
         }
         .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(isHighlighted ? Color.accentColor : .clear, lineWidth: 1.5)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(kind): \(space.title)")
+        // Not `.isSelected`: that trait belongs to the open conversation, and this
+        // row is only the one Return would open.
+        .accessibilityValue(isHighlighted ? "Highlighted" : "")
     }
 
     private var isUnread: Bool { space.unreadCount > 0 || space.hasUnread }

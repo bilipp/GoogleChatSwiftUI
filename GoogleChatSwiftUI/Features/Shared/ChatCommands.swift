@@ -22,10 +22,14 @@ struct ChatCommands: Commands {
         CommandGroup(after: .textEditing) {
             // No "Search Messages" item: `.searchable` installs its own Find entry
             // with ⌘F, and a second one here would shadow it.
+            //
+            // ⌘⇧K rather than a second Find-flavoured shortcut: this is the
+            // jump-to-conversation gesture other chat clients use, and it reads as
+            // navigation — which is what it does — instead of as text search.
             Button("Search Conversations") {
                 NotificationCenter.default.post(name: .chatFocusSearch, object: nil)
             }
-            .keyboardShortcut("f", modifiers: [.command, .option])
+            .keyboardShortcut("k", modifiers: [.command, .shift])
         }
     }
 }

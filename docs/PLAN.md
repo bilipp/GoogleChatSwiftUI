@@ -110,7 +110,8 @@ Swift 6 language mode, strict concurrency, no third-party dependencies. Layers a
 - Composer backed by `NSViewRepresentable` over `NSTextView` — needed for @-mention autocomplete, paste-to-attach, and correct multiline behaviour that `TextEditor` can't deliver
 - `MenuBarExtra` with unread count
 - `UNUserNotificationCenter` notifications for mentions and DMs
-- Full `Commands` menu: ⌘N new message, ⌘F search, ⌘⇧A mark all read, ⌘1…9 jump to space
+- Full `Commands` menu: ⌘N new message, ⌘F search messages, ⌘⇧K search conversations, ⌘⇧A mark all read, ⌘1…9 jump to space
+- **Conversation search is keyboard-complete**: ⌘⇧K focuses it, ↑/↓ walk the filtered rows without opening them, Return opens the highlighted one, Escape clears then dismisses. The highlight is separate from the list selection precisely so arrowing past a row doesn't open it.
 - Liquid Glass treatment per macOS 26 HIG
 
 ---
