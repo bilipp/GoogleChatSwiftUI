@@ -10,6 +10,11 @@ import UniformTypeIdentifiers
 struct MessageComposer: View {
     let placeholder: String
     let isSending: Bool
+    /// The message being answered inline, shown above the field until it is sent or
+    /// dropped. The owner of this state is also what `onSend` posts against, so the
+    /// composer only has to display it and offer a way out.
+    var replyTarget: ReplyTarget?
+    var onCancelReply: () -> Void = {}
     let onSend: (String, [PendingAttachment]) -> Void
 
     @State private var text: String = ""
@@ -24,6 +29,10 @@ struct MessageComposer: View {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
+            }
+
+            if let replyTarget {
+                ReplyBanner(target: replyTarget, onCancel: onCancelReply)
             }
 
             if !attachments.isEmpty {
@@ -49,6 +58,13 @@ struct MessageComposer: View {
                     .padding(8)
                     .background(.quaternary, in: .rect(cornerRadius: 8))
                     .onSubmit(send)
+                    // Escape drops the reply this message was aimed at, which is the
+                    // only way out that does not involve sending it.
+                    .onKeyPress(.escape) {
+                        guard replyTarget != nil else { return .ignored }
+                        onCancelReply()
+                        return .handled
+                    }
 
                 Button(action: send) {
                     if isSending {
@@ -81,6 +97,9 @@ struct MessageComposer: View {
             return true
         }
         .onAppear { isFocused = true }
+        // Choosing "Reply" happens in the transcript, several rows away from here, so
+        // the caret has to come to the composer rather than the user hunting for it.
+        .onChange(of: replyTarget) { if replyTarget != nil { isFocused = true } }
     }
 
     private var canSend: Bool {
@@ -145,6 +164,52 @@ struct MessageComposer: View {
     }
 }
 
+/// What this message is answering, above the input.
+///
+/// Always visible while a reply is being composed rather than folded away: a quote is
+/// the one thing about a message that cannot be inferred from the text being typed,
+/// and sending one by accident is not undoable.
+private struct ReplyBanner: View {
+    let target: ReplyTarget
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(Color.accentColor)
+                .frame(width: 3)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Replying to \(target.authorName)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text(target.preview)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: onCancel) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Stop replying (esc)")
+            .accessibilityLabel("Stop replying to \(target.authorName)")
+        }
+        // The rule is a shape, and a shape takes every point of height it is offered —
+        // here that is the whole detail pane. This holds the banner to the two lines
+        // of text it actually contains.
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.quaternary, in: .rect(cornerRadius: 6))
+        .accessibilityElement(children: .contain)
+    }
+}
+
 /// Staged files above the input, each removable before sending.
 private struct AttachmentTray: View {
     let attachments: [PendingAttachment]
@@ -190,4 +255,18 @@ private struct AttachmentTray: View {
 #Preview {
     MessageComposer(placeholder: "Message Engineering", isSending: false) { _, _ in }
         .frame(width: 600)
+}
+
+#Preview("Replying") {
+    MessageComposer(
+        placeholder: "Message Engineering",
+        isSending: false,
+        replyTarget: ReplyTarget(
+            messageName: "spaces/A/messages/1",
+            threadName: nil,
+            authorName: "Ada Lovelace",
+            preview: "Can we ship the parser today, or does it need another review pass?"
+        )
+    ) { _, _ in }
+    .frame(width: 600)
 }

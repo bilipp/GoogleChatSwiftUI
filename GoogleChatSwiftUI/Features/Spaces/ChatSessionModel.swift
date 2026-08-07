@@ -450,10 +450,14 @@ final class ChatSessionModel {
         }
     }
 
+    /// - Parameter replyingTo: the message this one answers inline, if any. Its own
+    ///   thread wins over `threadName`, because Chat refuses a quote that crosses
+    ///   threads — see `ReplyTarget`.
     func send(
         _ text: String,
         to spaceName: String,
         threadName: String? = nil,
+        replyingTo target: ReplyTarget? = nil,
         attachments: [PendingAttachment] = []
     ) async {
         messageError = nil
@@ -464,7 +468,8 @@ final class ChatSessionModel {
             try await sync.send(
                 text: text,
                 to: spaceName,
-                threadName: threadName,
+                threadName: target?.threadName ?? threadName,
+                quotedMessageName: target?.messageName,
                 attachments: attachments,
                 senderName: profile?.chatUserName,
                 senderDisplayName: profile?.displayName

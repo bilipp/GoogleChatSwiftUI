@@ -16,6 +16,8 @@ struct ThreadPane: View {
 
     /// Bumped on reply, so posting into a thread returns to the end of it.
     @State private var sendCount = 0
+    /// The message in this thread the next reply will quote, if the reader picked one.
+    @State private var replyTarget: ReplyTarget?
 
     init(spaceName: String, threadName: String) {
         self.spaceName = spaceName
@@ -43,14 +45,19 @@ struct ThreadPane: View {
 
             MessageComposer(
                 placeholder: "Reply in thread",
-                isSending: session.isSending(spaceName)
+                isSending: session.isSending(spaceName),
+                replyTarget: replyTarget,
+                onCancelReply: { replyTarget = nil }
             ) { text, attachments in
+                let target = replyTarget
+                replyTarget = nil
                 sendCount += 1
                 Task {
                     await session.send(
                         text,
                         to: spaceName,
                         threadName: threadName,
+                        replyingTo: target,
                         attachments: attachments
                     )
                 }
@@ -131,6 +138,10 @@ struct ThreadPane: View {
                     isFirstInGroup: true,
                     isLastInGroup: true,
                     spaceName: spaceName,
+                    quotedPreview: quoted.preview(for: message),
+                    onReply: { startReply(to: message) },
+                    // No jump to the quoted message: everything a reply here can
+                    // quote is in this thread, already on screen.
                     isCompact: true
                 )
                 .id(message.name)
@@ -158,6 +169,28 @@ struct ThreadPane: View {
 
     private var usersByID: [String: CachedUser] {
         Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Resolves quotes against this thread's own messages, which is all a reply here
+    /// can be quoting: Chat does not allow a quote to reach out of its thread.
+    private var quoted: QuotedMessageResolver {
+        QuotedMessageResolver(
+            messagesByName: Dictionary(
+                messages.map { ($0.name, $0) },
+                uniquingKeysWith: { first, _ in first }
+            ),
+            usersByID: usersByID
+        )
+    }
+
+    /// The reply is posted into this thread whatever was quoted, root included —
+    /// unlike the transcript, where quoting a root starts a new thread.
+    private func startReply(to message: CachedMessage) {
+        replyTarget = ReplyTarget(
+            message: message,
+            authorName: quoted.authorName(of: message),
+            in: threadName
+        )
     }
 
     private func sender(for message: CachedMessage) -> CachedUser? {

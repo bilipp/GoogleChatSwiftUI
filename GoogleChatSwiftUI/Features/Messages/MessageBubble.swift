@@ -22,8 +22,15 @@ struct MessageBubble: View {
     var threadReplyCount: Int = 0
     /// How many of those replies are unread.
     var newReplyCount: Int = 0
+    /// The message this one quotes, resolved by the caller. Nil unless it is a reply.
+    var quotedPreview: QuotedMessagePreview?
     /// Non-nil only in threaded spaces, where a thread pane makes sense.
     var onOpenThread: (() -> Void)?
+    /// Starts an inline reply to this message. Nil where the surface has no composer
+    /// to aim one at.
+    var onReply: (() -> Void)?
+    /// Jumps to the quoted message. Nil where it is not reachable from here.
+    var onOpenQuoted: (() -> Void)?
     /// Set in the thread inspector, which is far narrower than the main transcript.
     var isCompact: Bool = false
 
@@ -58,7 +65,7 @@ struct MessageBubble: View {
 
                 if isEditing {
                     editor
-                } else if !message.displayText.isEmpty {
+                } else if !message.displayText.isEmpty || quotedPreview != nil {
                     bubble
                 }
 
@@ -141,29 +148,44 @@ struct MessageBubble: View {
     }
 
     private var bubble: some View {
-        FormattedMessageText(blocks: renderedBlocks, isOwn: isOwn)
-            .font(.body)
-            .italic(message.isDeleted)
-            .foregroundStyle(foreground)
-            // Selectable text claims right-click for the system's own text menu, so
-            // our menu is reachable from the padding around it rather than the glyphs.
-            // The two cannot coexist on one view; selection wins here because reading
-            // and quoting part of a message matters more than menu reach.
-            .textSelection(.enabled)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(background, in: shape)
-            // Without an explicit hit shape the padding is not hit-testable, and
-            // right-clicks fall straight through the bubble.
-            .contentShape(shape)
-            .contextMenu { contextMenu }
-            .opacity(message.isPending ? 0.55 : 1)
-            .popover(isPresented: $isEmojiPickerPresented, arrowEdge: .bottom) {
-                EmojiPicker { emoji in
-                    isEmojiPickerPresented = false
-                    Task { await session.toggleReaction(emoji, on: message.name) }
-                }
+        VStack(alignment: .leading, spacing: 6) {
+            // Above the reply's own text, as in the web client: the quote is what the
+            // message is answering, so it has to be read first.
+            if let quotedPreview {
+                QuotedMessageChip(
+                    preview: quotedPreview,
+                    isOwn: isOwn,
+                    onOpen: onOpenQuoted
+                )
             }
+
+            if !message.displayText.isEmpty {
+                FormattedMessageText(blocks: renderedBlocks, isOwn: isOwn)
+                    .font(.body)
+                    .italic(message.isDeleted)
+                    .foregroundStyle(foreground)
+                    // Selectable text claims right-click for the system's own text menu,
+                    // so our menu is reachable from the padding around it rather than
+                    // the glyphs. The two cannot coexist on one view; selection wins
+                    // here because reading and quoting part of a message matters more
+                    // than menu reach.
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(background, in: shape)
+        // Without an explicit hit shape the padding is not hit-testable, and
+        // right-clicks fall straight through the bubble.
+        .contentShape(shape)
+        .contextMenu { contextMenu }
+        .opacity(message.isPending ? 0.55 : 1)
+        .popover(isPresented: $isEmojiPickerPresented, arrowEdge: .bottom) {
+            EmojiPicker { emoji in
+                isEmojiPickerPresented = false
+                Task { await session.toggleReaction(emoji, on: message.name) }
+            }
+        }
     }
 
     /// Square off the inner corner on the sender's side so a run of messages reads
@@ -309,10 +331,21 @@ struct MessageBubble: View {
                 Button("More…") { isEmojiPickerPresented = true }
             }
 
+            // Two kinds of reply, listed in the order they cost the reader: quoting
+            // answers one message in the conversation everyone is already reading,
+            // while a thread moves the discussion somewhere they have to go and find.
+            //
+            // Both are inside the gate above for the same reason reactions are: a
+            // quote has to name the message it answers, and a message still in flight
+            // has no server-assigned name to give.
+            if let onReply {
+                Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
+            }
+
             if let onOpenThread {
                 Button(
                     threadReplyCount > 0 ? "Open Thread" : "Reply in Thread",
-                    systemImage: "arrowshape.turn.up.left"
+                    systemImage: "bubble.left.and.bubble.right"
                 ) {
                     onOpenThread()
                 }

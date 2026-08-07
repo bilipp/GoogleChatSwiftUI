@@ -204,10 +204,14 @@ nonisolated struct SyncEngine: Sendable {
     ///
     /// On failure the placeholder is kept and flagged rather than discarded, so the
     /// user's typed text is never silently lost — they can retry or copy it out.
+    /// - Parameter quotedMessageName: the message this one is an inline reply to. Chat
+    ///   will not let a quote cross threads, so `threadName` has to be the quoted
+    ///   message's own thread — see `ReplyTarget`.
     func send(
         text: String,
         to spaceName: String,
         threadName: String? = nil,
+        quotedMessageName: String? = nil,
         attachments: [PendingAttachment] = [],
         senderName: String?,
         senderDisplayName: String?
@@ -220,7 +224,8 @@ nonisolated struct SyncEngine: Sendable {
             spaceName: spaceName,
             senderName: senderName,
             senderDisplayName: senderDisplayName,
-            threadName: threadName
+            threadName: threadName,
+            quotedMessageName: quotedMessageName
         )
 
         do {
@@ -238,10 +243,19 @@ nonisolated struct SyncEngine: Sendable {
                 )
             }
 
+            // Read back rather than taken from the cache: a quote carries the quoted
+            // message's `lastUpdateTime` as a version check, and the copy on hand may
+            // predate an edit made since.
+            var quoted: QuotedMessageRef?
+            if let quotedMessageName {
+                quoted = try await client.quotedMessageRef(for: quotedMessageName)
+            }
+
             let created = try await client.createMessage(
                 in: spaceName,
                 text: text,
                 threadName: threadName,
+                quoting: quoted,
                 attachments: refs,
                 clientMessageID: clientID
             )
@@ -262,6 +276,10 @@ nonisolated struct SyncEngine: Sendable {
     }
 
     /// Retries a failed send by discarding the flagged placeholder and sending afresh.
+    ///
+    /// The placeholder is the only record of where the message was headed, so its
+    /// thread and quote are read off before it goes: a retry that dropped either would
+    /// post the text somewhere the user never chose.
     func retrySend(
         messageName: String,
         text: String,
@@ -269,10 +287,13 @@ nonisolated struct SyncEngine: Sendable {
         senderName: String?,
         senderDisplayName: String?
     ) async throws {
+        let context = try await store.sendContext(for: messageName)
         try await store.discardMessage(named: messageName)
         try await send(
             text: text,
             to: spaceName,
+            threadName: context?.threadName,
+            quotedMessageName: context?.quotedMessageName,
             senderName: senderName,
             senderDisplayName: senderDisplayName
         )

@@ -29,6 +29,10 @@ struct MessageListView: View {
     /// Bumped on send, which is the one moment the transcript should return to the
     /// end whether or not the reader was there.
     @State private var sendCount = 0
+    /// The message the next send will quote, when the reader has chosen to reply to
+    /// one. Held here rather than in the composer because the choice is made in the
+    /// transcript and the send is aimed from here.
+    @State private var replyTarget: ReplyTarget?
 
     init(spaceName: String, spaceTitle: String, isThreaded: Bool, unreadThreadCount: Int) {
         self.spaceName = spaceName
@@ -93,11 +97,22 @@ struct MessageListView: View {
                         .background(.quaternary)
                 }
                 MessageComposer(
-                    placeholder: "Message \(spaceTitle)",
-                    isSending: session.isSending(spaceName)
+                    placeholder: replyTarget == nil ? "Message \(spaceTitle)" : "Reply",
+                    isSending: session.isSending(spaceName),
+                    replyTarget: replyTarget,
+                    onCancelReply: { replyTarget = nil }
                 ) { text, attachments in
+                    let target = replyTarget
+                    replyTarget = nil
                     sendCount += 1
-                    Task { await session.send(text, to: spaceName, attachments: attachments) }
+                    Task {
+                        await session.send(
+                            text,
+                            to: spaceName,
+                            replyingTo: target,
+                            attachments: attachments
+                        )
+                    }
                 }
             }
         }
@@ -163,19 +178,8 @@ struct MessageListView: View {
                 DayDivider(day: group.day)
 
                 ForEach(group.entries, id: \.message.name) { entry in
-                    MessageBubble(
-                        message: entry.message,
-                        sender: sender(for: entry.message),
-                        mentionNames: mentionNames(in: entry.message),
-                        isOwn: entry.isOwn,
-                        isFirstInGroup: entry.isFirstInGroup,
-                        isLastInGroup: entry.isLastInGroup,
-                        spaceName: spaceName,
-                        threadReplyCount: threadReplyCount(for: entry.message),
-                        newReplyCount: newReplyCount(for: entry.message),
-                        onOpenThread: isThreaded ? { openThread(entry.message) } : nil
-                    )
-                    .id(entry.message.name)
+                    row(for: entry)
+                        .id(entry.message.name)
                 }
             }
         }
@@ -192,8 +196,60 @@ struct MessageListView: View {
         }
     }
 
+    /// One message, with everything the bubble cannot work out for itself.
+    private func row(for entry: Entry) -> some View {
+        let message = entry.message
+        let quotedPreview = quoted.preview(for: message)
+
+        return MessageBubble(
+            message: message,
+            sender: sender(for: message),
+            mentionNames: mentionNames(in: message),
+            isOwn: entry.isOwn,
+            isFirstInGroup: entry.isFirstInGroup,
+            isLastInGroup: entry.isLastInGroup,
+            spaceName: spaceName,
+            threadReplyCount: threadReplyCount(for: message),
+            newReplyCount: newReplyCount(for: message),
+            quotedPreview: quotedPreview,
+            onOpenThread: isThreaded ? { openThread(message) } : nil,
+            onReply: { startReply(to: message) },
+            onOpenQuoted: quotedPreview.map { preview in { openQuoted(preview) } }
+        )
+    }
+
     private var usersByID: [String: CachedUser] {
         Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Everything needed to say what a reply is quoting. Built from the same rows the
+    /// transcript is already showing, so a quote of a cached message reads as it stands
+    /// now rather than as the snapshot taken when it was quoted.
+    private var quoted: QuotedMessageResolver {
+        QuotedMessageResolver(messagesByName: messagesByName, usersByID: usersByID)
+    }
+
+    /// Every cached message in this space, replies included — a quote can point at one
+    /// even in a threaded space, where replies are not in the transcript.
+    private var messagesByName: [String: CachedMessage] {
+        Dictionary(messages.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private func startReply(to message: CachedMessage) {
+        replyTarget = ReplyTarget(message: message, authorName: quoted.authorName(of: message))
+    }
+
+    /// Goes to the message a reply is quoting.
+    ///
+    /// In a threaded space a quoted reply is not in the transcript at all, so the way
+    /// to it is its thread rather than a scroll position that does not exist.
+    private func openQuoted(_ preview: QuotedMessagePreview) {
+        let original = messagesByName[preview.messageName]
+        if isThreaded, original?.isThreadReply == true, let threadName = original?.threadName {
+            session.openThread(threadName)
+        } else {
+            session.scrollTarget = preview.messageName
+        }
     }
 
     private func sender(for message: CachedMessage) -> CachedUser? {

@@ -7,6 +7,8 @@ nonisolated struct CreateMessageBody: Encodable, Sendable {
     var thread: ThreadRef?
     /// Uploaded files, referenced by the token `media.upload` returned.
     var attachment: [AttachmentRef]?
+    /// The message this one quotes, for an inline reply.
+    var quotedMessageMetadata: QuotedMessageRef?
 
     nonisolated struct ThreadRef: Encodable, Sendable {
         var name: String
@@ -15,6 +17,31 @@ nonisolated struct CreateMessageBody: Encodable, Sendable {
     nonisolated struct AttachmentRef: Encodable, Sendable {
         var attachmentDataRef: ChatAttachment.DataRef
     }
+}
+
+/// The pair a quoted reply has to carry: which message, and which version of it.
+///
+/// `lastUpdateTime` is sent as the string the server itself produced rather than a
+/// `Date`, because it is a version check — Chat compares it against the message's
+/// current stamp — and re-formatting a parsed date is a good way to lose the
+/// fractional seconds that make the two equal.
+nonisolated struct QuotedMessageRef: Encodable, Sendable, Hashable {
+    /// Resource name, e.g. `spaces/AAAA/messages/BBBB`.
+    var name: String
+    var lastUpdateTime: String
+}
+
+/// A message's timestamps, verbatim.
+///
+/// Decoded as strings on purpose: this exists to hand a quote's `lastUpdateTime`
+/// straight back to the server, and a round-trip through `Date` would rewrite it.
+nonisolated struct MessageTimestamps: Decodable, Sendable {
+    let createTime: String?
+    let lastUpdateTime: String?
+
+    /// The stamp a quote should carry: the last edit, or the creation of a message
+    /// that has never been edited.
+    var quotable: String? { lastUpdateTime ?? createTime }
 }
 
 nonisolated struct UpdateMessageBody: Encodable, Sendable {
@@ -36,10 +63,14 @@ nonisolated extension ChatClient {
     ///   and without a client-assigned ID a retry whose original actually succeeded
     ///   would post the message twice. Chat rejects the duplicate with ALREADY_EXISTS
     ///   instead, which we resolve by fetching the message that did land.
+    /// - Parameter quoting: the message this one is an inline reply to. Chat refuses a
+    ///   quote that reaches across threads, so the caller has to have aimed
+    ///   `threadName` at the quoted message's own thread.
     func createMessage(
         in space: String,
         text: String,
         threadName: String? = nil,
+        quoting: QuotedMessageRef? = nil,
         attachments: [ChatAttachment.DataRef] = [],
         clientMessageID: String = ChatClient.newClientMessageID()
     ) async throws -> ChatMessage {
@@ -58,7 +89,8 @@ nonisolated extension ChatClient {
             thread: threadName.map { CreateMessageBody.ThreadRef(name: $0) },
             attachment: attachments.isEmpty
                 ? nil
-                : attachments.map { CreateMessageBody.AttachmentRef(attachmentDataRef: $0) }
+                : attachments.map { CreateMessageBody.AttachmentRef(attachmentDataRef: $0) },
+            quotedMessageMetadata: quoting
         )
 
         do {
@@ -71,6 +103,24 @@ nonisolated extension ChatClient {
 
     func getMessage(name: String) async throws -> ChatMessage {
         try await get(name, as: ChatMessage.self)
+    }
+
+    /// Reads the timestamp a quote of this message has to carry.
+    ///
+    /// Paid as an extra round-trip on every inline reply rather than taken from the
+    /// cache, because a cached stamp can be out of date — the message may have been
+    /// edited since it was stored, and Chat rejects a quote whose `lastUpdateTime`
+    /// does not match the message's current one.
+    func quotedMessageRef(for messageName: String) async throws -> QuotedMessageRef {
+        let stamps = try await get(messageName, as: MessageTimestamps.self)
+        guard let stamp = stamps.quotable else {
+            throw ChatAPIError(
+                status: 200,
+                googleStatus: "MALFORMED_RESPONSE",
+                message: "The quoted message has no timestamp to quote it by."
+            )
+        }
+        return QuotedMessageRef(name: messageName, lastUpdateTime: stamp)
     }
 
     /// Edits a message's text. Only the sender may edit their own messages.

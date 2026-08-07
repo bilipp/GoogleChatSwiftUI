@@ -203,6 +203,21 @@ final class CachedMessage {
     /// Chat user IDs mentioned in this message, from its annotations.
     var mentionedUserIDs: [String] = []
 
+    /// The message this one is an inline reply to, when it is one.
+    ///
+    /// A pointer rather than a copy, so a quote shows the current text of what it
+    /// quotes — including an edit or a deletion that landed afterwards, which is what
+    /// the web client does too.
+    var quotedMessageName: String?
+
+    /// The server's snapshot of the quoted message's author and text.
+    ///
+    /// The fallback for when `quotedMessageName` points at something not in the cache:
+    /// a reply can quote a message older than the history backfilled for this space,
+    /// and without the snapshot the quote would be an empty box.
+    var quotedMessageSender: String?
+    var quotedMessageText: String?
+
     /// Lowercased message text, kept non-optional purely so it can be queried.
     ///
     /// SwiftData cannot reliably translate a predicate over an optional String —
@@ -315,6 +330,9 @@ final class CachedMessage {
         threadName = remote.thread?.name
         isThreadReply = remote.threadReply ?? false
         attachmentCount = remote.attachment?.count ?? 0
+        quotedMessageName = remote.quotedMessageMetadata?.name
+        quotedMessageSender = remote.quotedMessageMetadata?.quotedMessageSnapshot?.sender
+        quotedMessageText = remote.quotedMessageMetadata?.quotedMessageSnapshot?.text
         // Written as a loop: the equivalent filter/compactMap chain over an optional
         // array of nested optionals exceeds the type checker's budget.
         var mentions: [String] = []

@@ -750,7 +750,8 @@ actor ChatStore {
         spaceName: String,
         senderName: String?,
         senderDisplayName: String?,
-        threadName: String?
+        threadName: String?,
+        quotedMessageName: String? = nil
     ) throws {
         guard let space = try space(named: spaceName) else { return }
 
@@ -763,6 +764,9 @@ actor ChatStore {
         placeholder.isThreadReply = threadName != nil
         placeholder.isPending = true
         placeholder.space = space
+        // Carried on the local echo so the reply renders with its quote immediately,
+        // and so a failed send still knows what it was answering when it is retried.
+        placeholder.quotedMessageName = quotedMessageName
 
         modelContext.insert(placeholder)
 
@@ -848,6 +852,18 @@ actor ChatStore {
 
     // MARK: - Queries
 
+    /// Where a message was aimed, for a retry to reproduce.
+    ///
+    /// A plain value rather than the row itself: `CachedMessage` belongs to this
+    /// actor's context and cannot cross back to the caller.
+    func sendContext(for messageName: String) throws -> SendContext? {
+        guard let message = try message(named: messageName) else { return nil }
+        return SendContext(
+            threadName: message.threadName,
+            quotedMessageName: message.quotedMessageName
+        )
+    }
+
     func message(named name: String) throws -> CachedMessage? {
         var descriptor = FetchDescriptor<CachedMessage>(
             predicate: #Predicate { $0.name == name }
@@ -869,4 +885,11 @@ actor ChatStore {
         guard let space = try space(named: spaceName) else { return (nil, false, false) }
         return (space.backfillPageToken, space.backfillComplete, !space.messages.isEmpty)
     }
+}
+
+/// Everything about a send that is not its text: the thread it belongs to and the
+/// message it quotes.
+nonisolated struct SendContext: Sendable, Equatable {
+    var threadName: String?
+    var quotedMessageName: String?
 }

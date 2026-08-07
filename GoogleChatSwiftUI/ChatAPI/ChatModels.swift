@@ -178,6 +178,31 @@ nonisolated struct RichLinkMetadata: Codable, Sendable, Hashable {
     let meetSpaceLinkData: MeetSpaceLinkData?
 }
 
+/// The message another message quotes — Chat's inline reply.
+///
+/// This is the same field the web client sets when you answer one message in the main
+/// conversation rather than opening a thread. `name` and `lastUpdateTime` are the pair
+/// a create request has to carry; the snapshot is the server's own copy of what was
+/// quoted, and is filled in on read only.
+nonisolated struct QuotedMessageMetadata: Decodable, Sendable, Hashable {
+    /// What the quoted message said when it was quoted.
+    ///
+    /// Worth keeping even though the app caches messages of its own: a reply can quote
+    /// something older than the history that has been backfilled, and then this is the
+    /// only description of it available.
+    nonisolated struct Snapshot: Decodable, Sendable, Hashable {
+        /// The quoted message's author. Documented as an author *name*, without saying
+        /// whether that means a display name or a `users/123` resource name — so
+        /// callers have to be ready for either.
+        let sender: String?
+        let text: String?
+    }
+
+    let name: String?
+    let lastUpdateTime: Date?
+    let quotedMessageSnapshot: Snapshot?
+}
+
 nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
     /// Resource name, e.g. `spaces/AAAA/messages/BBBB`.
     let name: String
@@ -195,6 +220,8 @@ nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
     let emojiReactionSummaries: [EmojiReactionSummary]?
     let annotations: [ChatAnnotation]?
     let cardsV2: [ChatCardWithID]?
+    /// Set when this message is an inline reply to another one.
+    let quotedMessageMetadata: QuotedMessageMetadata?
 
     var id: String { name }
     var isDeleted: Bool { deleteTime != nil }
