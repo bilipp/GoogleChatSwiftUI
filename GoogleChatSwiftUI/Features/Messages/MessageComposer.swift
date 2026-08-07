@@ -5,8 +5,8 @@ import UniformTypeIdentifiers
 /// Message input with file attachment.
 ///
 /// Uses `TextField` with `.vertical` axis rather than `TextEditor`: it grows with
-/// content, respects the send-on-Return convention, and does not need an
-/// `NSViewRepresentable` wrapper.
+/// content, respects the send-on-Return convention — Shift+Return breaks the line
+/// instead — and does not need an `NSViewRepresentable` wrapper.
 ///
 /// Typing `:smile` offers inline emoji completion; see ``EmojiShortcodeTrigger`` for
 /// what that costs while the input is still a `TextField`.
@@ -26,6 +26,9 @@ struct MessageComposer: View {
     @State private var errorMessage: String?
     @State private var suggestions: [EmojiShortcode] = []
     @State private var selectedSuggestion = 0
+    /// Whether the Return being handled right now is a line break rather than a send.
+    /// See ``submit()`` for why the two paths cannot be told apart any later than this.
+    @State private var returnIsLineBreak = false
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -70,29 +73,7 @@ struct MessageComposer: View {
                 .help("Attach files")
                 .accessibilityLabel("Attach files")
 
-                TextField(placeholder, text: $text, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...12)
-                    .focused($isFocused)
-                    .padding(8)
-                    .background(.quaternary, in: .rect(cornerRadius: 8))
-                    .onSubmit(submit)
-                    .onChange(of: text) { refreshSuggestions() }
-                    .onChange(of: isFocused) { if !isFocused { suggestions = [] } }
-                    .onKeyPress(.upArrow) { moveSelection(by: -1) }
-                    .onKeyPress(.downArrow) { moveSelection(by: 1) }
-                    .onKeyPress(.tab) { completeSelection() ? .handled : .ignored }
-                    // Escape unwinds one thing at a time, innermost first: the
-                    // completion list, then the reply this message was aimed at.
-                    .onKeyPress(.escape) {
-                        if !suggestions.isEmpty {
-                            suggestions = []
-                            return .handled
-                        }
-                        guard replyTarget != nil else { return .ignored }
-                        onCancelReply()
-                        return .handled
-                    }
+                input
 
                 Button(action: sendNow) {
                     if isSending {
@@ -130,6 +111,51 @@ struct MessageComposer: View {
         .onChange(of: replyTarget) { if replyTarget != nil { isFocused = true } }
     }
 
+    /// The keys the composer answers to, layered onto ``textField``.
+    ///
+    /// Split from the field itself only because one chain holding both the styling and
+    /// every key handler took the type checker past its budget.
+    private var input: some View {
+        textField
+            // Shift+Return breaks the line instead of sending, the convention every
+            // other chat client shares. Matched through `keys:` rather than as a single
+            // key because that is the overload reporting which modifiers came with it.
+            .onKeyPress(keys: [.return]) { press in
+                // Recorded on every Return, including the plain one, so a line break
+                // can never leave the flag standing for the send that follows it.
+                returnIsLineBreak = press.modifiers.contains(.shift)
+                guard returnIsLineBreak else { return .ignored }
+                insertLineBreak()
+                return .handled
+            }
+            .onKeyPress(.upArrow) { moveSelection(by: -1) }
+            .onKeyPress(.downArrow) { moveSelection(by: 1) }
+            .onKeyPress(.tab) { completeSelection() ? .handled : .ignored }
+            // Escape unwinds one thing at a time, innermost first: the completion
+            // list, then the reply this message was aimed at.
+            .onKeyPress(.escape) {
+                if !suggestions.isEmpty {
+                    suggestions = []
+                    return .handled
+                }
+                guard replyTarget != nil else { return .ignored }
+                onCancelReply()
+                return .handled
+            }
+    }
+
+    private var textField: some View {
+        TextField(placeholder, text: $text, axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...12)
+            .focused($isFocused)
+            .padding(8)
+            .background(.quaternary, in: .rect(cornerRadius: 8))
+            .onSubmit(submit)
+            .onChange(of: text) { refreshSuggestions() }
+            .onChange(of: isFocused) { if !isFocused { suggestions = [] } }
+    }
+
     private var canSend: Bool {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return (hasText || !attachments.isEmpty) && !isSending
@@ -140,9 +166,28 @@ struct MessageComposer: View {
     /// Return is not intercepted through `onKeyPress` like the other completion keys,
     /// because `onSubmit` would still be reached and the message would go out behind
     /// the completion. Branching in one place keeps the key doing exactly one thing.
+    /// A Shift+Return is turned away here for the same reason. Whether reporting that
+    /// key `.handled` is enough on its own to keep `onSubmit` away has gone both ways
+    /// in this file, and a message sent by accident cannot be recalled, so the line
+    /// break says so outright instead of trusting the event to have been consumed.
     private func submit() {
+        guard !returnIsLineBreak else { return }
         guard !completeSelection() else { return }
         sendNow()
+    }
+
+    /// Types a line break into the field by hand.
+    ///
+    /// Nothing inserts one for us: to a text field Return means "end editing", which is
+    /// the very thing `onSubmit` reports. Going through the field editor puts the break
+    /// at the caret — a plain `TextField` publishes no selection, so the fallback for an
+    /// unexpected responder can only add the break at the end.
+    private func insertLineBreak() {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else {
+            text.append("\n")
+            return
+        }
+        editor.insertText("\n", replacementRange: editor.selectedRange())
     }
 
     private func sendNow() {
