@@ -461,6 +461,117 @@ default:
     fatalError("unknown variant \(variant) — expected dialogue, fan or hero")
 }
 
+// MARK: - Icon Composer export
+//
+// The same geometry, handed to the system instead of shaded here: each bubble
+// becomes a flat white SVG layer and macOS 26 supplies the dome, the specular
+// pass, the shadows and the appearance variants.
+//
+// Three things about the .icon format were established by experiment, since none
+// of it is in the format's favour:
+//
+//  * Groups are ordered front to back, so the list below is reversed. Getting
+//    this wrong hides the artwork behind whatever is nominally "first".
+//  * The system scales layer artwork by 824/1024 about the centre — the same
+//    inset as the icon grid — so geometry drawn for the baked icon needs
+//    position.scale of 1024/824 to land in the same place.
+//  * A background fill takes exactly two colours. A third makes actool throw
+//    "attempt to insert nil object", and its `orientation` is ignored, so the
+//    four-stop weighting of the baked ramp cannot be expressed here. Faking it
+//    with a full-bleed gradient layer would cost the appearance variants, which
+//    are the reason to use this format at all, so the ramp stays linear.
+//
+// Likewise `glass` and `translucency` only drive the Clear appearance; in the
+// default one every layer is opaque, so the back bubble's translucency is the
+// layer `opacity` instead.
+
+/// A CGPath as SVG path data, back in 1024-space.
+func svgPath(_ path: CGPath) -> String {
+    var d = ""
+    let k = 1.0 / Double(SCALE)
+    path.applyWithBlock { e in
+        let p = e.pointee.points
+        func at(_ i: Int) -> String {
+            String(format: "%.2f %.2f", Double(p[i].x) * k, Double(p[i].y) * k)
+        }
+        switch e.pointee.type {
+        case .moveToPoint:       d += "M \(at(0)) "
+        case .addLineToPoint:    d += "L \(at(0)) "
+        case .addQuadCurveToPoint: d += "Q \(at(0)) \(at(1)) "
+        case .addCurveToPoint:   d += "C \(at(0)) \(at(1)) \(at(2)) "
+        case .closeSubpath:      d += "Z "
+        @unknown default:        break
+        }
+    }
+    return d.trimmingCharacters(in: .whitespaces)
+}
+
+func writeIconDocument(_ dir: String) throws {
+    let assets = dir + "/Assets"
+    try? FileManager.default.removeItem(atPath: dir)
+    try FileManager.default.createDirectory(atPath: assets,
+                                            withIntermediateDirectories: true)
+
+    func svg(_ body: String) -> String {
+        """
+        <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" \
+        viewBox="0 0 1024 1024">
+        \(body)
+        </svg>
+
+        """
+    }
+
+    // One white silhouette per bubble. The glass one keeps its translucency as
+    // layer opacity; everything else is the system's job.
+    let inset = 1024.0 / (1024.0 - 2 * CARD_INSET)
+    var groups: [[String: Any]] = []
+    for (i, spec) in specs.enumerated() {
+        let name = i == specs.count - 1 ? "Front" : "Back\(i + 1)"
+        let d = svgPath(bubblePath(spec.x0, spec.y0, spec.x1, spec.y1, spec.r,
+                                  n: spec.n, tail: spec.tail))
+        try svg("  <path d=\"\(d)\" fill=\"#FFFFFF\"/>")
+            .write(toFile: "\(assets)/\(name).svg", atomically: true, encoding: .utf8)
+
+        var layer: [String: Any] = [
+            "blend-mode": "normal",
+            "glass": false,
+            "hidden": false,
+            "image-name": "\(name).svg",
+            "name": name,
+            "position": ["scale": inset, "translation-in-points": [0, 0]],
+        ]
+        if spec.glass { layer["opacity"] = 0.45 }
+        groups.append([
+            "layers": [layer],
+            "lighting": "individual",
+            "shadow": ["kind": "neutral", "opacity": 0.5],
+            "specular": true,
+            "translucency": ["enabled": true, "value": 0.5],
+        ])
+    }
+
+    let doc: [String: Any] = [
+        "fill": ["linear-gradient": [srgbString(stops[0].1),
+                                     srgbString(stops[stops.count - 1].1)]],
+        "groups": Array(groups.reversed()),   // the format lists front to back
+        "supported-platforms": ["circles": ["watchOS"], "squares": "shared"],
+    ]
+    let json = try JSONSerialization.data(withJSONObject: doc,
+                                          options: [.prettyPrinted, .sortedKeys])
+    try json.write(to: URL(fileURLWithPath: dir + "/icon.json"))
+    print("wrote \(dir)")
+}
+
+func srgbString(_ c: (Float, Float, Float)) -> String {
+    String(format: "extended-srgb:%.5f,%.5f,%.5f,1.00000", c.0, c.1, c.2)
+}
+
+if CommandLine.arguments.contains("--icon") {
+    try writeIconDocument(out + "/AppIcon.icon")
+    exit(0)
+}
+
 for spec in specs {
     let path = bubblePath(spec.x0, spec.y0, spec.x1, spec.y1, spec.r,
                           n: spec.n, tail: spec.tail)

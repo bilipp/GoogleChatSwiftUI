@@ -24,3 +24,6 @@ Packages/
 # Playgrounds
 timeline.xctimeline
 playground.xcworkspace
+
+# Generated icon renders, not what ships — see Design/AppIcon/README.md
+Design/AppIcon/baked/

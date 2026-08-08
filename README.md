@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="GoogleChatSwiftUI/Assets.xcassets/AppIcon.appiconset/AppIcon-256.png" width="120" alt="App icon">
+<img src="Design/AppIcon/preview.png" width="120" alt="App icon">
 
 # Google Chat for macOS
 
