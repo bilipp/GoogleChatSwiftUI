@@ -10,6 +10,7 @@
 ![Swift](https://img.shields.io/badge/Swift-6%20language%20mode-orange)
 ![UI](https://img.shields.io/badge/UI-SwiftUI%20%2B%20SwiftData-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
 
@@ -147,7 +148,7 @@ gcloud pubsub subscriptions add-iam-policy-binding chat-events-mac \
 
 Neither step has a `gcloud` equivalent.
 
-**Consent screen** ([Google Auth Platform](https://console.cloud.google.com/auth/overview)) — user type **Internal**, then add the scopes listed in [`docs/SETUP.md`](docs/SETUP.md) plus `directory.readonly`.
+**Consent screen** ([Google Auth Platform](https://console.cloud.google.com/auth/overview)) — user type **Internal**, then add the ten scopes listed in [`docs/SETUP.md §3.1`](docs/SETUP.md).
 
 **Client** ([Clients](https://console.cloud.google.com/auth/clients)) — application type **iOS**, which is also correct for macOS: it issues no client secret and supports the reverse-DNS redirect that `ASWebAuthenticationSession` handles natively. Use your app's bundle identifier.
 
@@ -164,7 +165,7 @@ static let gcpProjectID = "YOUR_PROJECT_ID"
 Then set `PRODUCT_BUNDLE_IDENTIFIER` in Xcode to the bundle ID you registered with the OAuth client.
 
 > [!NOTE]
-> The client ID checked into this repository is intentional, not a leak. Installed-app OAuth clients are issued without a secret precisely because the binary is distributable — security comes from PKCE and the redirect URI being bound to the bundle ID. See [RFC 8252 §8](https://datatracker.ietf.org/doc/html/rfc8252#section-8).
+> There is no client secret to fill in, and none is missing. Installed-app OAuth clients are issued without one precisely because the binary is distributable and cannot keep a secret — security comes from PKCE and the redirect URI being bound to the bundle ID. See [RFC 8252 §8](https://datatracker.ietf.org/doc/html/rfc8252#section-8).
 
 ### 5. Build and run
 
@@ -233,11 +234,11 @@ GoogleChatSwiftUI/
     ├── SignIn/     Sign-in screen
     └── Shared/     Commands, notifications, menu bar, avatars
 
-GoogleChatSwiftUITests/   134 Swift Testing cases over rendering, unread
+GoogleChatSwiftUITests/   167 Swift Testing cases over rendering, unread
                           bookkeeping, scrolling, reply rules, mentions, and links
 docs/
-├── PLAN.md         Architecture, delivery phases, API findings
-└── SETUP.md        Google Cloud project state and remaining console steps
+├── PLAN.md         Architecture, design rationale, API findings
+└── SETUP.md        Google Cloud setup, end to end
 ```
 
 <br>
@@ -248,6 +249,12 @@ docs/
 
 > [!WARNING]
 > This only sometimes produces a compile error. `async` calls cross actors silently, so the usual symptom is JSON decoding quietly running on the main thread rather than a diagnostic.
+
+<br>
+
+## License
+
+[MIT](LICENSE).
 
 <br>
 

@@ -1,6 +1,9 @@
-# GoogleChatSwiftUI — Implementation Plan
+# GoogleChatSwiftUI — Design notes
 
-A native macOS Google Chat client built with SwiftUI and the official Google Workspace REST APIs.
+The plan this app was built to, kept as the record of *why* it is shaped the way it is.
+Sections 1 and 9 are the durable parts: what the Chat API can and cannot do, and the
+findings that each cost a wrong assumption first. Section 5 is history rather than a
+roadmap.
 
 **Decisions locked in:**
 
@@ -9,8 +12,8 @@ A native macOS Google Chat client built with SwiftUI and the official Google Wor
 | Platform | macOS only, 26.5+ (no iOS/iPadOS/visionOS) |
 | Scope | Full client — read *and* write |
 | Realtime | Workspace Events API → Cloud Pub/Sub → in-app pull |
-| OAuth consent | **Internal** (your-domain.com org, super-admin available) |
-| Distribution | Local only, run from Xcode |
+| OAuth consent | **Internal** — requires an org-parented Cloud project |
+| Distribution | Source only, built and run from Xcode |
 
 ---
 
@@ -120,9 +123,9 @@ Swift 6 language mode, strict concurrency, no third-party dependencies. Layers a
 
 ## 3. Google Cloud setup
 
-Project: **GoogleChatSwiftUI** — project ID `YOUR_PROJECT_ID`, number `YOUR_NUMBER`, parented to the your-domain.com organisation (`YOUR_ORG_ID`), billing enabled.
-
-Current status and the remaining manual steps live in [`SETUP.md`](SETUP.md).
+The project must be parented to a Google Workspace organisation, with billing enabled.
+Step-by-step commands and console values live in [`SETUP.md`](SETUP.md); what follows is
+only the reasoning behind them.
 
 ### 3.1 Enable APIs
 
@@ -136,7 +139,7 @@ Current status and the remaining manual steps live in [`SETUP.md`](SETUP.md).
 
 ### 3.2 OAuth consent screen — Internal
 
-Because the project sits in the your-domain.com org and you're super-admin, the consent screen is set to **Internal**. This is worth a lot:
+Because the project is org-parented, the consent screen can be set to **Internal**. This is worth a lot:
 
 - No Google verification review, even for sensitive scopes
 - No 100-test-user cap
@@ -144,7 +147,7 @@ Because the project sits in the your-domain.com org and you're super-admin, the 
 
 ### 3.3 OAuth client — console-only step
 
-There is no `gcloud` command that creates an installed-app OAuth client. This one is manual; I'll walk you through it with exact values. Client type **iOS**, bundle ID `com.example.GoogleChatSwiftUI`.
+There is no `gcloud` command that creates an installed-app OAuth client, so this step is manual. Client type **iOS**, with the bundle ID the app is built under.
 
 ### 3.4 Scopes requested
 
@@ -167,11 +170,11 @@ https://www.googleapis.com/auth/userinfo.profile
 - Topic `chat-events`
 - Pull subscription `chat-events-mac` (ack deadline 60 s, 24 h retention)
 - Grant `roles/pubsub.publisher` on the topic to `chat-api-push@system.gserviceaccount.com` — this is the principal Google Chat publishes as
-- Grant `roles/pubsub.subscriber` on the subscription to `you@your-domain.com`
+- Grant `roles/pubsub.subscriber` on the subscription to your own Google account
 
 ### 3.6 Chat API app configuration
 
-The Chat API console page has an app-configuration tab (name, avatar, description). Whether it's mandatory for pure user-auth calls is ambiguous in the docs — I'll verify empirically with a live API call and configure it only if the API rejects us without it.
+The Chat API console page has an app-configuration tab (name, avatar, description). The docs are ambiguous about whether it is mandatory for pure user-auth calls; it is not, established with a live call — see [`SETUP.md`](SETUP.md).
 
 ---
 
@@ -220,7 +223,7 @@ links, Chat's text formatting, and the thread index with per-thread unread — a
 | Chat API per-user quota throttling during initial backfill | Serialise backfill, respect `Retry-After`, backfill lazily per-space on first open rather than all spaces up front |
 | `cardsV2` rendering is a deep well | Render a faithful subset (text, images, buttons, decorated text); fall back to a readable summary card for anything unsupported |
 | Sandbox blocks OAuth or Pub/Sub in ways only visible at runtime | Entitlements land in Phase 0, exercised end-to-end in Phase 1 before any UI is built on top |
-| Google Workspace admin policy blocks the Chat app for the org | You're super-admin — resolvable, but worth testing early rather than at Phase 6 |
+| Google Workspace admin policy blocks the Chat app for the org | Resolvable with org admin access, but worth testing early rather than at Phase 6 |
 
 ---
 
