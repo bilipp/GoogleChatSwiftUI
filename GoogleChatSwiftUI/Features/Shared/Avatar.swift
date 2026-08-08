@@ -166,7 +166,7 @@ enum AvatarPalette {
 
 #Preview {
     HStack(spacing: 12) {
-        Avatar(name: "Philipp Bischoff", photoURL: nil, size: 40)
+        Avatar(name: "Ada Lovelace", photoURL: nil, size: 40)
         InitialsCircle(name: "Ana Silva", size: 40)
         Avatar(name: "Service", photoURL: nil, size: 40, isApp: true)
         Avatar(name: nil, photoURL: nil, size: 40, isApp: true)

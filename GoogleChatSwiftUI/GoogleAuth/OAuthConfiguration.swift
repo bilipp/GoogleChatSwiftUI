@@ -2,10 +2,13 @@ import Foundation
 
 /// Static OAuth parameters for the GoogleChatSwiftUI installed app.
 ///
-/// The client ID is deliberately checked in. Installed-app OAuth clients (Google's
-/// "iOS" type) are issued without a client secret precisely because the binary is
-/// distributable and cannot keep one — security comes from PKCE plus the fact that
-/// the redirect URI is bound to this app's bundle ID. See RFC 8252 §8.
+/// These three values are placeholders — point them at your own Google Cloud project
+/// before the app will sign in. `docs/SETUP.md` walks through creating it.
+///
+/// There is no client secret to fill in, and none is missing. Installed-app OAuth
+/// clients (Google's "iOS" type) are issued without one precisely because the binary
+/// is distributable and cannot keep a secret — security comes from PKCE plus the fact
+/// that the redirect URI is bound to this app's bundle ID. See RFC 8252 §8.
 nonisolated enum OAuthConfiguration {
     static let clientID = "YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com"
 
