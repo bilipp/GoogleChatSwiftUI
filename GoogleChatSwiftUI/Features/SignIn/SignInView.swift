@@ -5,6 +5,11 @@ struct SignInView: View {
     let errorMessage: String?
     let onSignIn: () -> Void
 
+    /// A checkout with no `Config/Secrets.xcconfig` still builds and runs, so the
+    /// first thing it can do wrong is send placeholder credentials to Google and come
+    /// back with `invalid_client`. Saying so here costs one line and saves the search.
+    var isConfigured: Bool = OAuthConfiguration.isConfigured
+
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "bubble.left.and.bubble.right.fill")
@@ -36,7 +41,16 @@ struct SignInView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(isSigningIn)
+            .disabled(isSigningIn || !isConfigured)
+
+            if !isConfigured {
+                Text("No Google Cloud project is configured. Copy `Config/Secrets.example.xcconfig` to `Config/Secrets.xcconfig`, fill in your own client ID and project, and rebuild — see `docs/SETUP.md`.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+                    .textSelection(.enabled)
+            }
 
             if let errorMessage {
                 Text(errorMessage)
@@ -53,7 +67,12 @@ struct SignInView: View {
 }
 
 #Preview("Idle") {
-    SignInView(isSigningIn: false, errorMessage: nil, onSignIn: {})
+    SignInView(isSigningIn: false, errorMessage: nil, onSignIn: {}, isConfigured: true)
+        .frame(width: 640, height: 480)
+}
+
+#Preview("Unconfigured") {
+    SignInView(isSigningIn: false, errorMessage: nil, onSignIn: {}, isConfigured: false)
         .frame(width: 640, height: 480)
 }
 
@@ -61,7 +80,8 @@ struct SignInView: View {
     SignInView(
         isSigningIn: false,
         errorMessage: "Google rejected the token request (400): invalid_grant",
-        onSignIn: {}
+        onSignIn: {},
+        isConfigured: true
     )
     .frame(width: 640, height: 480)
 }
