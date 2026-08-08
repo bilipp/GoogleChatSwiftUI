@@ -10,7 +10,7 @@ import OSLog
 actor TokenProvider {
     private let storage: KeychainTokenStorage
     private let urlSession: URLSession
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "auth")
+    private let logger = AppLog.logger("auth")
 
     private var tokens: OAuthTokens?
     private var refreshTask: Task<OAuthTokens, Error>?

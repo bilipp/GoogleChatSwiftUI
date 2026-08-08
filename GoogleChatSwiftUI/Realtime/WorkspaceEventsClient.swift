@@ -43,7 +43,7 @@ private nonisolated struct RenewSubscriptionBody: Encodable, Sendable {
 /// our Pub/Sub topic.
 nonisolated struct WorkspaceEventsClient: Sendable {
     private let transport: GoogleTransport
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "events")
+    private let logger = AppLog.logger("events")
 
     private static let baseURL = URL(string: "https://workspaceevents.googleapis.com/v1/")!
 

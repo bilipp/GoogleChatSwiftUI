@@ -19,7 +19,7 @@ actor RealtimeCoordinator {
     private let sync: SyncEngine
     private let store: ChatStore
     private let decoder = ChatEventDecoder()
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "realtime")
+    private let logger = AppLog.logger("realtime")
 
     private var runTask: Task<Void, Never>?
     private var renewTask: Task<Void, Never>?

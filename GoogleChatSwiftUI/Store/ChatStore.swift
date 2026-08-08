@@ -9,7 +9,7 @@ import SwiftData
 /// context instead of going through this actor.
 @ModelActor
 actor ChatStore {
-    private var logger: Logger { Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "store") }
+    private var logger: Logger { AppLog.logger("store") }
 
     // MARK: - Spaces
 

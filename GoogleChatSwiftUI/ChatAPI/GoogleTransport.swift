@@ -9,7 +9,7 @@ import OSLog
 nonisolated struct GoogleTransport: Sendable {
     private let tokenProvider: TokenProvider
     private let urlSession: URLSession
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "transport")
+    private let logger = AppLog.logger("transport")
 
     init(tokenProvider: TokenProvider, urlSession: URLSession = .shared) {
         self.tokenProvider = tokenProvider

@@ -38,7 +38,7 @@ nonisolated enum ChatEvent: Sendable {
 /// an unrecognised event is logged and skipped rather than throwing, because one
 /// malformed payload must not stall the whole event stream.
 nonisolated struct ChatEventDecoder: Sendable {
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "events")
+    private let logger = AppLog.logger("events")
 
     /// Envelope emitted by Workspace Events. Which field is populated depends on the
     /// event type; with `includeResource: true` the full object is inline.

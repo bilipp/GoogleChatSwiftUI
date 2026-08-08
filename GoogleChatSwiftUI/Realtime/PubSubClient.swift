@@ -48,7 +48,7 @@ private nonisolated struct AcknowledgeRequest: Encodable, Sendable {
 /// user holds `roles/pubsub.subscriber` on the subscription directly.
 nonisolated struct PubSubClient: Sendable {
     private let transport: GoogleTransport
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "pubsub")
+    private let logger = AppLog.logger("pubsub")
 
     private static let baseURL = URL(string: "https://pubsub.googleapis.com/v1/")!
 

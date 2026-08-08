@@ -15,7 +15,7 @@ struct GoogleChatSwiftUIApp: App {
         do {
             return try ModelContainer(for: schema, migrationPlan: ChatMigrationPlan.self)
         } catch {
-            let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "store")
+            let logger = AppLog.logger("store")
             logger.error("Migration failed, rebuilding cache: \(error.localizedDescription)")
 
             let url = URL.applicationSupportDirectory.appending(path: "default.store")

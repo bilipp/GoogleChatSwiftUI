@@ -11,7 +11,7 @@ import OSLog
 final class GoogleAuthService: NSObject {
     private let tokenProvider: TokenProvider
     private let urlSession: URLSession
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "auth")
+    private let logger = AppLog.logger("auth")
 
     /// Held for the lifetime of the flow; releasing it cancels the session.
     private var activeSession: ASWebAuthenticationSession?

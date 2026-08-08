@@ -16,7 +16,7 @@ nonisolated struct DirectoryPerson: Sendable, Equatable {
 /// which is what makes the mapping possible at all.
 nonisolated struct DirectoryService: Sendable {
     private let transport: GoogleTransport
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "directory")
+    private let logger = AppLog.logger("directory")
 
     /// The API caps `batchGet` at 200 resource names. Kept lower because they travel
     /// as repeated query parameters and long URLs are their own failure mode.

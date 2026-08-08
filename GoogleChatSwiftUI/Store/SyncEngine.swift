@@ -11,7 +11,7 @@ nonisolated struct SyncEngine: Sendable {
     private let client: ChatClient
     private let store: ChatStore
     private let directoryService: DirectoryService
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "sync")
+    private let logger = AppLog.logger("sync")
 
     /// One screenful plus margin. Small enough to render fast, large enough that
     /// most conversations need no second call.

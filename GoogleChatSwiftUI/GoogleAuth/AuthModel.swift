@@ -19,7 +19,7 @@ final class AuthModel {
     let tokenProvider: TokenProvider
     private let authService: GoogleAuthService
     private let profileService: GoogleProfileService
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "auth")
+    private let logger = AppLog.logger("auth")
 
     init() {
         let provider = TokenProvider()

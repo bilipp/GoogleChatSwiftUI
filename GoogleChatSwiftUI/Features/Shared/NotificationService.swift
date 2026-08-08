@@ -10,7 +10,7 @@ import UserNotifications
 /// would require a server the rest of this design avoids.
 @MainActor
 final class NotificationService {
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "notifications")
+    private let logger = AppLog.logger("notifications")
     private var isAuthorized = false
 
     /// Asked once at startup. A refusal is remembered by the system, so this does not

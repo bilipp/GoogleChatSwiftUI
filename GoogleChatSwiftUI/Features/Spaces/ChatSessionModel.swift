@@ -90,7 +90,7 @@ final class ChatSessionModel {
     private let sync: SyncEngine
     private let realtime: RealtimeCoordinator
     private let profile: GoogleUserProfile?
-    private let logger = Logger(subsystem: "com.example.GoogleChatSwiftUI", category: "session")
+    private let logger = AppLog.logger("session")
 
     init(tokenProvider: TokenProvider, container: ModelContainer, profile: GoogleUserProfile?) {
         let client = ChatClient(tokenProvider: tokenProvider)
