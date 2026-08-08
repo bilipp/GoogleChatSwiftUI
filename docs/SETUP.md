@@ -146,19 +146,42 @@ browser can hand an authorization code to the app.
 
 ## 4. Point the app at the project
 
-Fill in the three placeholders in
-[`GoogleChatSwiftUI/GoogleAuth/OAuthConfiguration.swift`](../GoogleChatSwiftUI/GoogleAuth/OAuthConfiguration.swift):
+Everything that differs per person lives in one gitignored file:
 
-```swift
-static let clientID = "YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com"
-static let redirectScheme = "com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFIX"
-static let gcpProjectID = "YOUR_PROJECT_ID"
+```bash
+cp Config/Secrets.example.xcconfig Config/Secrets.xcconfig
 ```
 
-Then set `PRODUCT_BUNDLE_IDENTIFIER` in Xcode to the bundle ID you registered above.
+```
+APP_BUNDLE_ID = com.yourname.GoogleChatSwiftUI
+DEVELOPMENT_TEAM = YOURTEAMID
 
-There is no client secret to fill in and none is missing — installed-app clients are
+GOOGLE_OAUTH_CLIENT_ID = YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com
+GOOGLE_OAUTH_REDIRECT_SCHEME = com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFIX
+GCP_PROJECT_ID = YOUR_PROJECT_ID
+```
+
+`APP_BUNDLE_ID` must match the bundle ID registered with the OAuth client in §3.2 —
+the redirect URI is bound to it, so a mismatch fails the authorization round-trip. The
+tests target appends `Tests`. `DEVELOPMENT_TEAM` may be left empty, which signs to run
+locally.
+
+### How it reaches the binary
+
+| File | Role |
+|---|---|
+| `Config/Base.xcconfig` | Placeholder defaults, then `#include? "Secrets.xcconfig"` — the `?` is what lets a checkout without one still build |
+| `Config/Secrets.xcconfig` | Yours, gitignored, overrides the defaults |
+| `Config/Info.plist` | `$(VAR)` references that Xcode substitutes at build time, merged into the generated Info.plist |
+| `OAuthConfiguration` | Reads the three keys back out of `Bundle.main` |
+
+An unconfigured build is a working build: it runs, and the sign-in screen explains what
+is missing instead of sending placeholders to Google and returning `invalid_client`.
+
+Despite the file's name, none of these values is a secret — installed-app clients are
 issued without one on purpose. See [RFC 8252 §8](https://datatracker.ietf.org/doc/html/rfc8252#section-8).
+It is gitignored so the repository stays free of one person's project, not because
+publishing the values would be a leak.
 
 ---
 

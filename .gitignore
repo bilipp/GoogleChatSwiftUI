@@ -1,3 +1,6 @@
+# Local configuration — see Config/Secrets.example.xcconfig
+Config/Secrets.xcconfig
+
 # macOS
 .DS_Store
 

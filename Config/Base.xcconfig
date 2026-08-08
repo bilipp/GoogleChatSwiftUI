@@ -1,0 +1,28 @@
+// Build settings that differ per person.
+//
+// The defaults below are placeholders and will not sign in. To point the app at
+// your own Google Cloud project, copy Secrets.example.xcconfig to Secrets.xcconfig
+// and fill it in — that file is gitignored, and the optional include at the bottom
+// of this one overrides everything above it.
+//
+// Note: `//` starts a comment in xcconfig, so values may not contain it.
+
+// Bundle identifier the OAuth client is registered against. The tests target
+// appends "Tests" to whatever this is.
+APP_BUNDLE_ID = com.example.GoogleChatSwiftUI
+
+// Apple Developer Team ID. Left empty so a fresh clone falls back to
+// "Sign to Run Locally" instead of failing to sign.
+DEVELOPMENT_TEAM =
+
+// From the OAuth client you created in the Google Cloud console.
+GOOGLE_OAUTH_CLIENT_ID = YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com
+
+// Reverse-DNS form of the client ID above. Deliberately not registered in
+// CFBundleURLTypes, so no outside browser can hand this app an auth code.
+GOOGLE_OAUTH_REDIRECT_SCHEME = com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFIX
+
+// The Cloud project holding the Pub/Sub topic and subscription.
+GCP_PROJECT_ID = YOUR_PROJECT_ID
+
+#include? "Secrets.xcconfig"

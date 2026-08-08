@@ -2,18 +2,20 @@ import Foundation
 
 /// Static OAuth parameters for the GoogleChatSwiftUI installed app.
 ///
-/// These three values are placeholders — point them at your own Google Cloud project
-/// before the app will sign in. `docs/SETUP.md` walks through creating it.
+/// The three per-person values come from `Config/Base.xcconfig`, which an optional,
+/// gitignored `Config/Secrets.xcconfig` overrides — see `docs/SETUP.md`. They reach
+/// the binary through `Config/Info.plist`, so a checkout with no `Secrets.xcconfig`
+/// still builds; it just carries placeholders and reports ``isConfigured`` as `false`.
 ///
-/// There is no client secret to fill in, and none is missing. Installed-app OAuth
+/// There is no client secret among them, and none is missing. Installed-app OAuth
 /// clients (Google's "iOS" type) are issued without one precisely because the binary
 /// is distributable and cannot keep a secret — security comes from PKCE plus the fact
 /// that the redirect URI is bound to this app's bundle ID. See RFC 8252 §8.
 nonisolated enum OAuthConfiguration {
-    static let clientID = "YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com"
+    static let clientID = infoValue("GoogleOAuthClientID")
 
     /// Reverse-DNS form of the client ID, used as the redirect URL scheme.
-    static let redirectScheme = "com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFIX"
+    static let redirectScheme = infoValue("GoogleOAuthRedirectScheme")
 
     static let redirectURI = "\(redirectScheme):/oauth2redirect"
 
@@ -46,7 +48,23 @@ nonisolated enum OAuthConfiguration {
 
     // MARK: - Google Cloud project
 
-    static let gcpProjectID = "YOUR_PROJECT_ID"
+    static let gcpProjectID = infoValue("GCPProjectID")
     static let pubSubSubscription = "projects/\(gcpProjectID)/subscriptions/chat-events-mac"
     static let pubSubTopic = "projects/\(gcpProjectID)/topics/chat-events"
+
+    // MARK: - Reading the build configuration
+
+    /// `false` when the app is still carrying the placeholders from `Base.xcconfig`,
+    /// which is the state of any checkout without a `Config/Secrets.xcconfig`.
+    /// Sign-in would fail against Google with an opaque error, so callers check this
+    /// first and say what is actually wrong.
+    static var isConfigured: Bool {
+        ![clientID, redirectScheme, gcpProjectID].contains {
+            $0.isEmpty || $0.contains("YOUR_")
+        }
+    }
+
+    private static func infoValue(_ key: String) -> String {
+        Bundle.main.object(forInfoDictionaryKey: key) as? String ?? ""
+    }
 }

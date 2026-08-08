@@ -154,15 +154,26 @@ Neither step has a `gcloud` equivalent.
 
 ### 4. Point the app at your project
 
-Edit [`GoogleChatSwiftUI/GoogleAuth/OAuthConfiguration.swift`](GoogleChatSwiftUI/GoogleAuth/OAuthConfiguration.swift):
+Everything that differs per person lives in one gitignored file:
 
-```swift
-static let clientID = "YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com"
-static let redirectScheme = "com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFIX"
-static let gcpProjectID = "YOUR_PROJECT_ID"
+```bash
+cp Config/Secrets.example.xcconfig Config/Secrets.xcconfig
 ```
 
-Then set `PRODUCT_BUNDLE_IDENTIFIER` in Xcode to the bundle ID you registered with the OAuth client.
+Then fill it in:
+
+```
+APP_BUNDLE_ID = com.yourname.GoogleChatSwiftUI
+DEVELOPMENT_TEAM = YOURTEAMID
+
+GOOGLE_OAUTH_CLIENT_ID = YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com
+GOOGLE_OAUTH_REDIRECT_SCHEME = com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFIX
+GCP_PROJECT_ID = YOUR_PROJECT_ID
+```
+
+`APP_BUNDLE_ID` must match the bundle ID you registered with the OAuth client above; the tests target appends `Tests` to it. `DEVELOPMENT_TEAM` may be left empty, which signs to run locally.
+
+No Xcode settings to change — `Config/Base.xcconfig` includes this file if it exists and supplies placeholders if it doesn't, so the project builds either way. An unconfigured build runs and says so on the sign-in screen rather than failing against Google with `invalid_client`.
 
 > [!NOTE]
 > There is no client secret to fill in, and none is missing. Installed-app OAuth clients are issued without one precisely because the binary is distributable and cannot keep a secret — security comes from PKCE and the redirect URI being bound to the bundle ID. See [RFC 8252 §8](https://datatracker.ietf.org/doc/html/rfc8252#section-8).
@@ -222,6 +233,11 @@ Some absences are permanent, and the design works around them rather than faking
 ## Project layout
 
 ```
+Config/
+├── Base.xcconfig             Per-person build settings, with placeholder defaults
+├── Secrets.example.xcconfig  Template — copy to Secrets.xcconfig (gitignored)
+└── Info.plist                Carries the three values into the binary
+
 GoogleChatSwiftUI/
 ├── GoogleAuth/     OAuth + PKCE, keychain storage, token refresh
 ├── ChatAPI/        Typed Chat REST v1 client, DTOs, transport, directory lookup

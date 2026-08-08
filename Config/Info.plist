@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>GoogleOAuthClientID</key>
+	<string>$(GOOGLE_OAUTH_CLIENT_ID)</string>
+	<key>GoogleOAuthRedirectScheme</key>
+	<string>$(GOOGLE_OAUTH_REDIRECT_SCHEME)</string>
+	<key>GCPProjectID</key>
+	<string>$(GCP_PROJECT_ID)</string>
+</dict>
+</plist>
