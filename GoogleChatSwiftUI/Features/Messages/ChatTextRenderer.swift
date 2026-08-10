@@ -24,7 +24,11 @@ nonisolated enum ChatBlock: Sendable {
     /// Consecutive `> quoted` lines, one entry per line.
     case quote([AttributedString])
     /// The body of a ```` ``` ```` fence, verbatim — no inline markup applies inside.
-    case codeBlock(String)
+    ///
+    /// `language` is set only when the opening fence carried a tag we recognise. An
+    /// untagged block is nil here and left to ``CodeLanguage/detect(_:)``, which guesses
+    /// for the sake of colouring without claiming a name for the block.
+    case codeBlock(language: CodeLanguage?, body: String)
 }
 
 /// Turns Chat's plain-text-with-markup into styled text.
@@ -50,8 +54,8 @@ nonisolated enum ChatTextRenderer {
         var result: [ChatBlock] = []
         for segment in fencedSegments(in: raw) {
             switch segment {
-            case .code(let body):
-                result.append(.codeBlock(body))
+            case .code(let language, let body):
+                result.append(.codeBlock(language: language, body: body))
             case .text(let body):
                 result.append(
                     contentsOf: lineBlocks(body, mentionNames: mentionNames, isOwn: isOwn)
@@ -91,7 +95,7 @@ nonisolated enum ChatTextRenderer {
                     if offset > 0 { result.append(AttributedString("\n")) }
                     result.append(line)
                 }
-            case .codeBlock(let body):
+            case .codeBlock(_, let body):
                 result.append(codeRun(body, isOwn: isOwn))
             }
         }
@@ -109,7 +113,7 @@ nonisolated enum ChatTextRenderer {
 
     private enum Segment {
         case text(String)
-        case code(String)
+        case code(language: CodeLanguage?, body: String)
     }
 
     /// Splits the message at ```` ``` ```` fences.
@@ -129,15 +133,35 @@ nonisolated enum ChatTextRenderer {
             let before = String(rest[..<open.lowerBound])
             if !before.isEmpty { segments.append(.text(before)) }
 
-            let body = fenceBody(String(afterOpen[..<close.lowerBound]))
+            let fenced = fenceContents(String(afterOpen[..<close.lowerBound]))
             // An empty fence carries nothing to show; dropping it beats an empty box.
-            if !body.isEmpty { segments.append(.code(body)) }
+            if !fenced.body.isEmpty {
+                segments.append(.code(language: fenced.language, body: fenced.body))
+            }
 
             rest = afterOpen[close.upperBound...]
         }
 
         if !rest.isEmpty { segments.append(.text(String(rest))) }
         return segments
+    }
+
+    /// Splits a fence's contents into the language tag on the opening line and the
+    /// code beneath it.
+    ///
+    /// Chat itself has no notion of a tagged fence, but people paste ```` ```swift ````
+    /// constantly — out of an editor, a README, another chat client — and without this
+    /// the tag renders as a stray first line of code. Which tags count is
+    /// ``CodeLanguage/init(tag:)``'s business.
+    private static func fenceContents(
+        _ source: String
+    ) -> (language: CodeLanguage?, body: String) {
+        // No newline means a one-line fence like ```make test```, where the first word
+        // is code the author wants to see, not a tag.
+        guard let newline = source.firstIndex(of: "\n") else { return (nil, fenceBody(source)) }
+        let tag = source[..<newline].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let language = CodeLanguage(tag: tag) else { return (nil, fenceBody(source)) }
+        return (language, fenceBody(String(source[source.index(after: newline)...])))
     }
 
     /// Drops the newline people type straight after the opening fence, and any

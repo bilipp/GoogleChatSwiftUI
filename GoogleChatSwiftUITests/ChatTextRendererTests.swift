@@ -125,13 +125,14 @@ struct ChatTextRendererTests {
 
         #expect(parsed.count == 3)
         guard case .paragraph(let before) = parsed[0],
-              case .codeBlock(let code) = parsed[1],
+              case .codeBlock(let language, let code) = parsed[1],
               case .paragraph(let after) = parsed[2]
         else {
             Issue.record("expected paragraph, code, paragraph — got \(parsed)")
             return
         }
         #expect(String(before.characters) == "before")
+        #expect(language == nil)
         #expect(code == "let x = *y*")
         #expect(String(after.characters) == "after")
     }
@@ -141,11 +142,77 @@ struct ChatTextRendererTests {
         let parsed = blocks("run ```make test``` now")
 
         #expect(parsed.count == 3)
-        if case .codeBlock(let code) = parsed[1] {
+        if case .codeBlock(let language, let code) = parsed[1] {
+            // "make" is a word of the command, not a tag: nothing follows it on the
+            // line, so there is no tag to read.
+            #expect(language == nil)
             #expect(code == "make test")
         } else {
             Issue.record("expected a code block in the middle, got \(parsed)")
         }
+    }
+
+    // MARK: - Language tags
+
+    /// A tagged fence is not Chat syntax, but it arrives constantly from editors and
+    /// other clients. Left unparsed the tag shows up as a first line of code.
+    @Test func aLanguageTagIsReadOffTheFenceAndNotShownAsCode() throws {
+        let parsed = blocks("```swift\nlet x = 1\n```")
+
+        try #require(parsed.count == 1)
+        guard case .codeBlock(let language, let code) = parsed[0] else {
+            Issue.record("expected a code block, got \(parsed)")
+            return
+        }
+        #expect(language == .swift)
+        #expect(code == "let x = 1")
+    }
+
+    @Test(arguments: [
+        ("js", CodeLanguage.javaScript), ("JS", .javaScript), ("py", .python),
+        ("yml", .yaml), ("objective-c", .objectiveC), ("c++", .cFamily)
+    ])
+    func languageAliasesResolveToOneLanguage(tag: String, expected: CodeLanguage) throws {
+        let parsed = blocks("```\(tag)\nx\n```")
+
+        guard case .codeBlock(let language, let code) = parsed.first else {
+            Issue.record("expected a code block, got \(parsed)")
+            return
+        }
+        #expect(language == expected)
+        #expect(code == "x")
+    }
+
+    /// The line has to be a language we know, because "any single word" would eat the
+    /// first line of every fence that opens with one — and losing a line of someone's
+    /// code is worse than leaving an unusual language unlabelled.
+    @Test func anUnrecognisedFirstLineStaysPartOfTheCode() throws {
+        let parsed = blocks("```\nbegin\n  work()\nend\n```")
+
+        guard case .codeBlock(let language, let code) = parsed.first else {
+            Issue.record("expected a code block, got \(parsed)")
+            return
+        }
+        #expect(language == nil)
+        #expect(code == "begin\n  work()\nend")
+    }
+
+    /// A fence whose only content is a language word is that word, not an empty block
+    /// with a label.
+    @Test func aTagWithNoCodeUnderItIsJustCode() throws {
+        let parsed = blocks("```swift```")
+
+        guard case .codeBlock(let language, let code) = parsed.first else {
+            Issue.record("expected a code block, got \(parsed)")
+            return
+        }
+        #expect(language == nil)
+        #expect(code == "swift")
+    }
+
+    /// The tag is markup, so the text-only rendering must not carry it either.
+    @Test func plainTextDropsTheLanguageTag() {
+        #expect(plain("```swift\nlet x = 1\n```") == "let x = 1")
     }
 
     @Test func anUnclosedFenceIsLiteralText() {

@@ -29,8 +29,8 @@ struct FormattedMessageText: View {
             bulletList(items)
         case .quote(let lines):
             quote(lines)
-        case .codeBlock(let body):
-            codeBlock(body)
+        case .codeBlock(let language, let body):
+            CodeBlockView(language: language, code: body)
         }
     }
 
@@ -81,21 +81,6 @@ struct FormattedMessageText: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Quote")
     }
-
-    private func codeBlock(_ body: String) -> some View {
-        Text(body)
-            .font(.system(.body, design: .monospaced))
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            // Matches the wash on inline code so the two read as one idea.
-            .background(
-                isOwn ? Color.white.opacity(0.18) : Color.primary.opacity(0.07),
-                in: .rect(cornerRadius: 6)
-            )
-            .accessibilityLabel("Code block")
-            .accessibilityValue(body)
-    }
 }
 
 #Preview("Formatted message") {
@@ -111,8 +96,8 @@ struct FormattedMessageText: View {
             * bullets with an asterisk
             - and *bold* inside an item
 
-            ```
-            let blocks = ChatTextRenderer.blocks(raw)
+            ```swift
+            let blocks = ChatTextRenderer.blocks(raw, mentionNames: names, isOwn: isOwn)
             ```
 
             Untouched: snake_case_name and https://example.com/a_b_c
