@@ -112,45 +112,39 @@ struct CodeBlockView: View {
 
     // MARK: - Code
 
-    /// Code that fits is laid out snug; code that does not scrolls sideways.
+    /// Code that fits is laid out snug; code that does not wraps to the bubble's width.
     ///
-    /// Wrapping is the wrong answer for a code block — a broken line reads as two
-    /// statements, and indentation stops meaning anything — so neither branch wraps.
-    /// `ViewThatFits` measures each candidate at its ideal width and takes the first
-    /// that fits, which is what keeps a short snippet's panel short while a long line
-    /// still gets somewhere to go.
+    /// `ViewThatFits` measures the snug candidate at its ideal width — the width of its
+    /// longest line, which is what `fixedSize` horizontally reports — and takes it when
+    /// there is room. That is what keeps a two-line snippet's panel as short as the
+    /// snippet instead of stretching it across the transcript.
+    ///
+    /// The fallback wraps rather than scrolls. A wrapped line does cost something a
+    /// scroller does not: the break no longer means a statement ended. But nothing that
+    /// has to be dragged sideways gets read, and a long line hidden past the panel's edge
+    /// is a line nobody sees at all — so the whole line, folded, beats half a line with
+    /// the rest behind a gesture. It claims the full width on offer, because a wrap that
+    /// happens earlier than it must is a fold for no reason.
     private var codeArea: some View {
         ViewThatFits(in: .horizontal) {
-            codeText
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-
-            ScrollView(.horizontal) {
-                codeText
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 7)
-            }
-            // Content shorter than the panel would otherwise rubber-band against an
-            // edge it never reaches.
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-            // `.never`, not `.hidden`: hiding the indicator still reserves the gutter a
-            // legacy scroller needs — which is what a Mac shows with a mouse attached on
-            // the default setting — and that left a blank line's worth of empty panel
-            // under every block wide enough to scroll. `.never` gives the space back.
-            // The line clipped mid-word at the edge is then the only cue that there is
-            // more, which a trackpad swipe or shift-scroll goes and gets.
-            .scrollIndicators(.never, axes: .horizontal)
+            codeText(wrapping: false)
+            codeText(wrapping: true)
         }
     }
 
-    /// `fixedSize` horizontally is what refuses the wrap: it makes the text report the
-    /// width of its longest line as its ideal, which `ViewThatFits` then judges and the
-    /// scroll view honours.
-    private var codeText: some View {
+    /// - Parameter wrapping: when false, `fixedSize` horizontally refuses the wrap and
+    ///   makes the text report its longest line as its ideal width, which is what
+    ///   `ViewThatFits` judges. When true the text takes the proposed width and folds
+    ///   into it, and vertical `fixedSize` is what gets it the height every folded line
+    ///   needs instead of one truncated one.
+    private func codeText(wrapping: Bool) -> some View {
         Text(highlighted)
             .font(.system(.callout, design: .monospaced))
             .lineSpacing(2)
-            .fixedSize()
+            .fixedSize(horizontal: !wrapping, vertical: true)
+            .frame(maxWidth: wrapping ? .infinity : nil, alignment: .leading)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
     }
 
     // MARK: - Material
@@ -188,6 +182,10 @@ struct CodeBlockView: View {
                     raw.isEmpty ? [] : parse(raw, count: 3)
                 }
                 """
+        )
+        CodeBlockView(
+            language: nil,
+            code: "curl -sS -H \"Authorization: Bearer $TOKEN\" https://chat.googleapis.com/v1/spaces/AAAA/messages?pageSize=100 | jq '.messages[].text'"
         )
         CodeBlockView(language: .shell, code: "swift test --filter ChatText")
             .padding(10)
