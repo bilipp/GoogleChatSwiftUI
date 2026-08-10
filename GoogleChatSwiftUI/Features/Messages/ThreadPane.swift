@@ -38,6 +38,7 @@ struct ThreadPane: View {
 
         return VStack(spacing: 0) {
             header
+            Divider()
 
             if messages.isEmpty {
                 ContentUnavailableView(
@@ -78,6 +79,16 @@ struct ThreadPane: View {
         .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
     }
 
+    /// No material of its own: the inspector column this pane fills is already a large
+    /// glass surface, so the `.bar` that used to sit here read as a flat chrome band
+    /// pasted over the glass rather than part of it. A rule carries the separation the
+    /// band was there for, which is all it was earning.
+    ///
+    /// The two controls are recessed fills for the same reason the sidebar's search
+    /// field is — see ``SidebarSearchField``. A glass button on a glass column has
+    /// nothing to bend light through and renders as a bare glyph, so `.bordered` is
+    /// what actually reads here, and the circular border shape is the affordance the
+    /// old `xmark.circle.fill` was drawing by hand into an opaque disc.
     private var header: some View {
         HStack {
             // Only when there is a list behind this thread. A thread opened from the
@@ -87,9 +98,12 @@ struct ThreadPane: View {
                 Button {
                     session.closeThreadPane()
                 } label: {
-                    Image(systemName: "chevron.left")
+                    // `.backward` rather than `.left`: it points the way out of the
+                    // panel, which flips with the writing direction.
+                    Image(systemName: "chevron.backward")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
                 .help("Back to threads")
                 .accessibilityLabel("Back to threads")
             }
@@ -104,15 +118,15 @@ struct ThreadPane: View {
             Button {
                 session.closeThreadInspector()
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
             .help("Close thread")
             .accessibilityLabel("Close thread")
         }
-        .padding(12)
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     private var replyLabel: String {

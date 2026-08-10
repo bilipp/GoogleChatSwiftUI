@@ -51,6 +51,10 @@ struct ThreadListPane: View {
 
     // MARK: - Chrome
 
+    /// Bare of material, with a recessed close control — the same treatment, and for
+    /// the same reasons, as ``ThreadPane``'s header. These two are one panel from the
+    /// reader's side, and going back should not look like landing on a different
+    /// surface.
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 1) {
@@ -64,21 +68,23 @@ struct ThreadListPane: View {
                 Button("Mark All Read") {
                     Task { await session.markAllThreadsRead(in: spaceName) }
                 }
+                // Kept small: it is the secondary action here, and at full size the
+                // capsule stands taller than the close button beside it.
                 .controlSize(.small)
                 .help("Clear the unread mark on every thread here")
             }
             Button {
                 session.closeThreadInspector()
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
             .help("Close threads")
             .accessibilityLabel("Close threads")
         }
-        .padding(12)
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     private var subtitle: String {
