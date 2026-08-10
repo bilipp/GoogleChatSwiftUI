@@ -1,6 +1,9 @@
 # Local configuration — see Config/Secrets.example.xcconfig
 Config/Secrets.xcconfig
 
+# Onboarding helper, hard-coded to one person's Cloud project — see docs/SETUP.md §2
+scripts/add-teammate.sh
+
 # macOS
 .DS_Store
 
