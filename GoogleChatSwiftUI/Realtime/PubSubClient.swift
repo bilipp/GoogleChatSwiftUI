@@ -56,8 +56,14 @@ nonisolated struct PubSubClient: Sendable {
         self.transport = transport
     }
 
-    func pull(maxMessages: Int = 100) async throws -> [PubSubReceivedMessage] {
-        let url = Self.baseURL.appending(path: "\(OAuthConfiguration.pubSubSubscription):pull")
+    /// - Parameter subscription: Full resource name, from
+    ///   ``OAuthConfiguration/pubSubSubscription(for:)``. Passed in rather than read
+    ///   from configuration because it depends on who is signed in.
+    func pull(
+        subscription: String,
+        maxMessages: Int = 100
+    ) async throws -> [PubSubReceivedMessage] {
+        let url = Self.baseURL.appending(path: "\(subscription):pull")
         let response = try await transport.post(
             url,
             body: PullRequest(maxMessages: maxMessages),
@@ -70,9 +76,9 @@ nonisolated struct PubSubClient: Sendable {
     ///
     /// Only called after events are durably applied to the store: acking first would
     /// silently drop events if the app crashed mid-write.
-    func acknowledge(ackIds: [String]) async throws {
+    func acknowledge(subscription: String, ackIds: [String]) async throws {
         guard !ackIds.isEmpty else { return }
-        let url = Self.baseURL.appending(path: "\(OAuthConfiguration.pubSubSubscription):acknowledge")
+        let url = Self.baseURL.appending(path: "\(subscription):acknowledge")
         // Ack returns an empty JSON object.
         _ = try await transport.post(url, body: AcknowledgeRequest(ackIds: ackIds), as: EmptyResponse.self)
     }

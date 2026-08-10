@@ -46,45 +46,76 @@ gcloud services enable \
 
 ## 2. Provision Pub/Sub
 
-The topic and subscription names are hard-coded in `OAuthConfiguration`, so either use
-these exactly or change them there too.
+One topic for the project, then **one subscription per person**.
 
 ```bash
 gcloud pubsub topics create chat-events
 
-gcloud pubsub subscriptions create chat-events-mac \
+# Lets Google Chat publish events into the topic
+gcloud pubsub topics add-iam-policy-binding chat-events \
+  --member="serviceAccount:chat-api-push@system.gserviceaccount.com" \
+  --role="roles/pubsub.publisher"
+```
+
+`chat-api-push@system.gserviceaccount.com` is the principal Google Chat publishes as —
+it is keyed to the delivering application, not to your auth method, so it is the same
+for everyone.
+
+The topic name is hard-coded in `OAuthConfiguration`, so use it exactly or change it
+there too.
+
+### One subscription per person
+
+Run this once for each person who will use the app, including yourself. The name is
+derived from the local part of their address, lowercased, with anything that is not a
+letter or digit flattened to a dash — so `p.bischoff@innoloft.com` gets
+`chat-events-p-bischoff`. `OAuthConfiguration.subscriptionID(for:)` is the authority on
+the spelling, and `EventQueueNamingTests` pins it.
+
+```bash
+PERSON=p.bischoff@innoloft.com
+QUEUE=chat-events-p-bischoff
+
+gcloud pubsub subscriptions create "$QUEUE" \
   --topic=chat-events \
   --ack-deadline=60 \
-  --message-retention-duration=24h
+  --message-retention-duration=24h \
+  --expiration-period=never
+
+# Lets that person's app pull with their own OAuth token
+gcloud pubsub subscriptions add-iam-policy-binding "$QUEUE" \
+  --member="user:$PERSON" \
+  --role="roles/pubsub.subscriber"
 ```
+
+`--expiration-period=never` is not optional. A subscription created without it is deleted
+after 31 days without a pull, so anyone who takes a month off comes back to an app that
+syncs on ⌘R and never arrives on its own — a failure that looks nothing like its cause.
 
 | Resource | Value |
 |---|---|
 | Topic | `projects/YOUR_PROJECT_ID/topics/chat-events` |
-| Subscription | `projects/YOUR_PROJECT_ID/subscriptions/chat-events-mac` |
+| Subscription | `projects/YOUR_PROJECT_ID/subscriptions/chat-events-<person>` |
 | Type | Pull — the Mac app pulls directly, so there is no push endpoint to host |
 | Ack deadline | 60 s |
 | Retention | 24 h |
 | Expiration | Never |
 
-### IAM
+The per-person grant is what lets the desktop app pull with that person's own OAuth
+token, which is why no service-account key ever touches disk. It is also the whole
+permission each colleague needs: `roles/pubsub.subscriber` on their own subscription,
+and nothing on the project.
 
-```bash
-# Lets Google Chat publish events into the topic
-gcloud pubsub topics add-iam-policy-binding chat-events \
-  --member="serviceAccount:chat-api-push@system.gserviceaccount.com" \
-  --role="roles/pubsub.publisher"
+> [!IMPORTANT]
+> **Why not one shared subscription.** A Pub/Sub subscription is a single queue, and it
+> distributes its backlog across whoever is pulling it. Chat publishes every
+> subscriber's events into the one topic, so two people sharing a subscription do not
+> each receive the stream — they split it, at random, and each silently misses about
+> half of their own messages. Manual refresh hides it, so it presents as unreliable
+> realtime rather than as a setup mistake. Hence one queue per person.
 
-# Lets the app pull them with your own OAuth token
-gcloud pubsub subscriptions add-iam-policy-binding chat-events-mac \
-  --member="user:you@your-domain.com" \
-  --role="roles/pubsub.subscriber"
-```
-
-`chat-api-push@system.gserviceaccount.com` is the principal Google Chat publishes as —
-it is keyed to the delivering application, not to your auth method, so it is the same
-for everyone. The second grant is what lets the desktop app pull with your own OAuth
-token, which is why no service-account key ever touches disk.
+If someone's subscription is missing, or they hold no grant on it, the app says which
+queue it wanted and stays usable on manual refresh rather than failing opaquely.
 
 ---
 
@@ -114,11 +145,14 @@ https://www.googleapis.com/auth/chat.customemojis.readonly
 https://www.googleapis.com/auth/directory.readonly
 https://www.googleapis.com/auth/pubsub
 https://www.googleapis.com/auth/userinfo.profile
+https://www.googleapis.com/auth/userinfo.email
 ```
 
 `directory.readonly` is not optional in practice: Chat never returns display names, so
 without it every DM is titled "Direct message" and every sender reads "Unknown".
 `pubsub` is what lets the app pull events directly instead of standing up a server.
+`userinfo.email` names the subscription that person pulls from (§2) — without it the app
+cannot tell which queue is theirs, and says so instead of guessing.
 
 ### 3.2 OAuth client
 
@@ -161,10 +195,16 @@ GOOGLE_OAUTH_REDIRECT_SCHEME = com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFI
 GCP_PROJECT_ID = YOUR_PROJECT_ID
 ```
 
-`APP_BUNDLE_ID` must match the bundle ID registered with the OAuth client in §3.2 —
-the redirect URI is bound to it, so a mismatch fails the authorization round-trip. The
-tests target appends `Tests`. `DEVELOPMENT_TEAM` may be left empty, which signs to run
-locally.
+`APP_BUNDLE_ID` should match the bundle ID registered with the OAuth client in §3.2, but
+nothing enforces it: the redirect URI is bound to the *client ID*, not to the bundle ID,
+and the bundle ID is never sent — the authorization request and the token exchange carry
+`client_id`, `redirect_uri`, `code` and `code_verifier` and nothing else. Nor does the
+callback depend on it, because `ASWebAuthenticationSession` intercepts the custom scheme
+in-process rather than having the OS route it to a registered handler. So a mismatch is
+untidy rather than fatal. The tests target appends `Tests`.
+
+`DEVELOPMENT_TEAM` may be left empty, which signs to run locally — see
+[Building without an Apple Developer team](#building-without-an-apple-developer-team).
 
 ### How it reaches the binary
 
@@ -182,6 +222,30 @@ Despite the file's name, none of these values is a secret — installed-app clie
 issued without one on purpose. See [RFC 8252 §8](https://datatracker.ietf.org/doc/html/rfc8252#section-8).
 It is gitignored so the repository stays free of one person's project, not because
 publishing the values would be a leak.
+
+## 5. Building without an Apple Developer team
+
+Leaving `DEVELOPMENT_TEAM` empty builds and runs fine — Xcode falls back to the ad-hoc
+"Sign to Run Locally" identity, and the sandbox entitlements the app needs
+(`app-sandbox`, `network.client`, `files.user-selected.read-write`) all survive. This is
+the right setting for anyone who is not a member of the team that owns the app.
+
+The one consequence is worth knowing before it looks like a bug: **an ad-hoc build asks
+you to sign in again after every rebuild.** An ad-hoc signature's designated requirement
+is the binary hash alone —
+
+```
+$ codesign -d -r- "Google Chat.app"
+# designated => cdhash H"9dc8fe99677e00a637e28866fd5f502a76f9bfe6"
+```
+
+— with no identifier and no team in it, so recompiling produces a different identity as
+far as the keychain is concerned, and the OAuth tokens saved under the previous hash can
+no longer be read. A team-signed build's requirement is identifier-plus-team and stays
+stable across rebuilds, so it keeps its tokens.
+
+Signing in again takes a few seconds and costs nothing else: nothing is lost but the
+token, and the local cache is rebuilt on the next sync either way.
 
 ---
 

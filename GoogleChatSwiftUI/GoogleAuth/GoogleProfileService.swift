@@ -11,6 +11,9 @@ nonisolated struct GoogleUserProfile: Sendable, Equatable {
     var resourceName: String
     /// Numeric Google profile ID, from the PROFILE metadata source.
     var profileID: String?
+    /// Primary address, which names this person's Pub/Sub subscription.
+    /// See ``OAuthConfiguration/subscriptionID(for:)``.
+    var emailAddress: String?
 
     /// The identity Chat uses for `Message.sender.name`, e.g. `users/1234567890`.
     ///
@@ -32,12 +35,48 @@ nonisolated struct GoogleProfileService: Sendable {
         self.urlSession = urlSession
     }
 
+    private static let baseFields = "names,photos,metadata"
+
     func currentUser() async throws -> GoogleUserProfile {
+        // The address is asked for in the same round-trip, but is not allowed to cost
+        // the profile. A token minted before `userinfo.email` was requested — anyone's
+        // stored session at the point this was added — is refused the field rather than
+        // given a response without it, and losing the profile to that would drop the
+        // person back to the sign-in screen on launch for no reason they could act on.
+        // So a refusal retries for the fields that were always readable, and realtime
+        // reports the missing queue instead.
+        let payload: PeopleResponse
+        do {
+            payload = try await fetch(personFields: "\(Self.baseFields),emailAddresses")
+        } catch let error as AuthError {
+            guard case .tokenRequestFailed(403, _, _) = error else { throw error }
+            payload = try await fetch(personFields: Self.baseFields)
+        }
+
+        let profileID = payload.metadata?.sources?
+            .first { $0.type == "PROFILE" }?
+            .id
+
+        // People returns addresses in no guaranteed order, so the primary one is taken
+        // from the metadata flag rather than by position, falling back to the first.
+        let addresses = payload.emailAddresses ?? []
+        let emailAddress = (addresses.first { $0.metadata?.primary == true } ?? addresses.first)?.value
+
+        return GoogleUserProfile(
+            displayName: payload.names?.first?.displayName ?? "Unknown",
+            photoURL: payload.photos?.first?.url.flatMap(URL.init(string:)),
+            resourceName: payload.resourceName ?? "",
+            profileID: profileID,
+            emailAddress: emailAddress
+        )
+    }
+
+    private func fetch(personFields: String) async throws -> PeopleResponse {
         var components = URLComponents(
             string: "https://people.googleapis.com/v1/people/me"
         )!
         components.queryItems = [
-            URLQueryItem(name: "personFields", value: "names,photos,metadata")
+            URLQueryItem(name: "personFields", value: personFields)
         ]
 
         var request = URLRequest(url: components.url!)
@@ -56,17 +95,7 @@ nonisolated struct GoogleProfileService: Sendable {
             )
         }
 
-        let payload = try JSONDecoder().decode(PeopleResponse.self, from: data)
-        let profileID = payload.metadata?.sources?
-            .first { $0.type == "PROFILE" }?
-            .id
-
-        return GoogleUserProfile(
-            displayName: payload.names?.first?.displayName ?? "Unknown",
-            photoURL: payload.photos?.first?.url.flatMap(URL.init(string:)),
-            resourceName: payload.resourceName ?? "",
-            profileID: profileID
-        )
+        return try JSONDecoder().decode(PeopleResponse.self, from: data)
     }
 
     private struct PeopleResponse: Decodable {
@@ -77,10 +106,16 @@ nonisolated struct GoogleProfileService: Sendable {
             let id: String?
         }
         struct Metadata: Decodable { let sources: [Source]? }
+        struct EmailAddress: Decodable {
+            struct FieldMetadata: Decodable { let primary: Bool? }
+            let value: String?
+            let metadata: FieldMetadata?
+        }
 
         let resourceName: String?
         let names: [Name]?
         let photos: [Photo]?
         let metadata: Metadata?
+        let emailAddresses: [EmailAddress]?
     }
 }

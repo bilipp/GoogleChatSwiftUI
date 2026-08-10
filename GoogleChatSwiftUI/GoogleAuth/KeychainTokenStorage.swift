@@ -5,6 +5,13 @@ import Foundation
 /// The app is sandboxed, so these items land in a keychain access group derived from
 /// the app identifier automatically — no `keychain-access-groups` entitlement needed,
 /// and no other app can read them.
+///
+/// That holds for a team-signed build. An ad-hoc one (`DEVELOPMENT_TEAM` empty) gets no
+/// `application-identifier` entitlement at all, and its designated requirement is the
+/// binary hash alone — so every rebuild reads as a different app and cannot load what
+/// the last one saved. The effect is a fresh sign-in per rebuild, which is a known cost
+/// of building without a team rather than something to work around here. See
+/// `docs/SETUP.md`.
 nonisolated struct KeychainTokenStorage: Sendable {
     private let service: String
     private let account: String

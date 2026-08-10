@@ -37,6 +37,12 @@ nonisolated enum OAuthConfiguration {
         "https://www.googleapis.com/auth/chat.customemojis.readonly",
         "https://www.googleapis.com/auth/pubsub",
         "https://www.googleapis.com/auth/userinfo.profile",
+        // Names the Pub/Sub subscription this install pulls from. Everyone signed in
+        // to the same Cloud project shares one topic, and a Pub/Sub subscription
+        // load-balances across its pullers — so a single shared subscription would
+        // hand each event to whichever colleague happened to ask first. The address
+        // is what makes the queue per-person; see `pubSubSubscription(for:)`.
+        "https://www.googleapis.com/auth/userinfo.email",
         // Chat returns user IDs but never display names — not in memberships, not on
         // message senders. Resolving `users/123` to a human name means reading the
         // Workspace directory, which is what this scope is for. Without it every DM
@@ -49,8 +55,39 @@ nonisolated enum OAuthConfiguration {
     // MARK: - Google Cloud project
 
     static let gcpProjectID = infoValue("GCPProjectID")
-    static let pubSubSubscription = "projects/\(gcpProjectID)/subscriptions/chat-events-mac"
     static let pubSubTopic = "projects/\(gcpProjectID)/topics/chat-events"
+
+    /// The Pub/Sub subscription this install pulls from, one per person.
+    ///
+    /// Chat publishes every subscriber's events into the one topic above, and a
+    /// Pub/Sub subscription distributes its backlog across whoever is pulling it.
+    /// One shared subscription therefore does not mean "everyone sees everything" —
+    /// it means each event is delivered to exactly one colleague, at random. Deriving
+    /// the name from the signed-in address gives each person their own queue.
+    ///
+    /// The subscription is not created here. It has to exist already, which keeps the
+    /// grant each person needs down to `roles/pubsub.subscriber` on their own
+    /// subscription rather than permission to create resources in the project. See
+    /// `docs/SETUP.md`.
+    static func pubSubSubscription(for emailAddress: String) -> String {
+        "projects/\(gcpProjectID)/subscriptions/\(subscriptionID(for: emailAddress))"
+    }
+
+    /// Local part of the address, reduced to characters Pub/Sub accepts in an ID.
+    ///
+    /// Pub/Sub requires a leading letter and allows only letters, digits, dashes,
+    /// underscores, periods, tildes, percents and pluses. The `chat-events-` prefix
+    /// supplies the leading letter, so the local part only has to be narrowed — and
+    /// it is narrowed to `[a-z0-9-]` rather than to what Pub/Sub strictly permits, so
+    /// that the name is predictable enough to type into `gcloud` up front:
+    /// `p.bischoff@innoloft.com` becomes `chat-events-p-bischoff`.
+    static func subscriptionID(for emailAddress: String) -> String {
+        let localPart = emailAddress.split(separator: "@").first ?? ""
+        let sanitized = localPart.lowercased().map { character -> Character in
+            character.isASCII && (character.isLetter || character.isNumber) ? character : "-"
+        }
+        return "chat-events-" + String(sanitized)
+    }
 
     // MARK: - Reading the build configuration
 

@@ -9,6 +9,10 @@
 
 // Bundle identifier the OAuth client is registered against. The tests target
 // appends "Tests" to whatever this is.
+//
+// Nothing enforces the match: the bundle ID never travels in the OAuth exchange, and
+// ASWebAuthenticationSession intercepts the redirect in-process rather than leaving the
+// OS to route it by bundle ID. Keeping the two aligned is tidiness. See docs/SETUP.md.
 APP_BUNDLE_ID = com.example.GoogleChatSwiftUI
 
 // Apple Developer Team ID. Left empty so a fresh clone falls back to

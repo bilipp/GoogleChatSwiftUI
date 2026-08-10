@@ -109,6 +109,7 @@ final class ChatSessionModel {
 
     func startRealtime() async {
         await realtime.setSelfChatName(profile?.chatUserName)
+        await realtime.setSignedInAddress(profile?.emailAddress)
         await realtime.onStatusChange { [weak self] status in
             Task { @MainActor in self?.realtimeStatus = status }
         }

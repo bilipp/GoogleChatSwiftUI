@@ -124,32 +124,43 @@ gcloud services enable \
 
 ### 2. Provision Pub/Sub
 
-The topic and subscription names are hard-coded, so use these exactly:
+One topic, then one subscription per person. The topic name is hard-coded, so use it
+exactly:
 
 ```bash
 gcloud pubsub topics create chat-events
-
-gcloud pubsub subscriptions create chat-events-mac \
-  --topic=chat-events \
-  --ack-deadline=60 \
-  --message-retention-duration=24h
 
 # Lets Google Chat publish events into the topic
 gcloud pubsub topics add-iam-policy-binding chat-events \
   --member="serviceAccount:chat-api-push@system.gserviceaccount.com" \
   --role="roles/pubsub.publisher"
+```
 
-# Lets the app pull them with your own OAuth token
-gcloud pubsub subscriptions add-iam-policy-binding chat-events-mac \
+Then, once per person — the queue is named after the local part of their address, with
+anything that is not a letter or digit flattened to a dash:
+
+```bash
+gcloud pubsub subscriptions create chat-events-you \
+  --topic=chat-events \
+  --ack-deadline=60 \
+  --message-retention-duration=24h \
+  --expiration-period=never
+
+# Lets that person's app pull with their own OAuth token
+gcloud pubsub subscriptions add-iam-policy-binding chat-events-you \
   --member="user:you@your-domain.com" \
   --role="roles/pubsub.subscriber"
 ```
+
+One queue each is not optional. A Pub/Sub subscription distributes its backlog across
+whoever pulls it, so colleagues sharing one would split the event stream between them
+rather than each receiving it — see [`docs/SETUP.md §2`](docs/SETUP.md).
 
 ### 3. Configure OAuth — console only
 
 Neither step has a `gcloud` equivalent.
 
-**Consent screen** ([Google Auth Platform](https://console.cloud.google.com/auth/overview)) — user type **Internal**, then add the ten scopes listed in [`docs/SETUP.md §3.1`](docs/SETUP.md).
+**Consent screen** ([Google Auth Platform](https://console.cloud.google.com/auth/overview)) — user type **Internal**, then add the eleven scopes listed in [`docs/SETUP.md §3.1`](docs/SETUP.md).
 
 **Client** ([Clients](https://console.cloud.google.com/auth/clients)) — application type **iOS**, which is also correct for macOS: it issues no client secret and supports the reverse-DNS redirect that `ASWebAuthenticationSession` handles natively. Use your app's bundle identifier.
 
@@ -172,12 +183,12 @@ GOOGLE_OAUTH_REDIRECT_SCHEME = com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFI
 GCP_PROJECT_ID = YOUR_PROJECT_ID
 ```
 
-`APP_BUNDLE_ID` must match the bundle ID you registered with the OAuth client above; the tests target appends `Tests` to it. `DEVELOPMENT_TEAM` may be left empty, which signs to run locally.
+`APP_BUNDLE_ID` should match the bundle ID you registered with the OAuth client above, though nothing enforces it — the bundle ID never travels in the OAuth exchange. The tests target appends `Tests` to it. `DEVELOPMENT_TEAM` may be left empty, which signs to run locally, at the cost of a fresh sign-in after each rebuild ([why](docs/SETUP.md#5-building-without-an-apple-developer-team)).
 
 No Xcode settings to change — `Config/Base.xcconfig` includes this file if it exists and supplies placeholders if it doesn't, so the project builds either way. An unconfigured build runs and says so on the sign-in screen rather than failing against Google with `invalid_client`.
 
 > [!NOTE]
-> There is no client secret to fill in, and none is missing. Installed-app OAuth clients are issued without one precisely because the binary is distributable and cannot keep a secret — security comes from PKCE and the redirect URI being bound to the bundle ID. See [RFC 8252 §8](https://datatracker.ietf.org/doc/html/rfc8252#section-8).
+> There is no client secret to fill in, and none is missing. Installed-app OAuth clients are issued without one precisely because the binary is distributable and cannot keep a secret — security comes from PKCE, which binds the token exchange to the process that started the authorization. See [RFC 8252 §8](https://datatracker.ietf.org/doc/html/rfc8252#section-8).
 
 ### 5. Build and run
 
@@ -192,6 +203,74 @@ Tests run with ⌘U, or:
 ```bash
 xcodebuild test -scheme GoogleChatSwiftUI -destination 'platform=macOS'
 ```
+
+<br>
+
+## Sharing it with colleagues
+
+Everyone points at **one** Cloud project, so steps 1–3 happen once. What repeats per
+person is a Pub/Sub queue and a build.
+
+Nothing here is a secret to guard: the OAuth client carries no secret, and the values
+below are the project's identity rather than a credential. What each colleague needs
+besides them is a Workspace account in the same organisation — the consent screen is
+Internal — and Xcode.
+
+### Once, for each colleague
+
+Create their queue and grant them exactly that (see [`docs/SETUP.md §2`](docs/SETUP.md)):
+
+```bash
+PERSON=alice@your-domain.com
+QUEUE=chat-events-alice        # local part, non-alphanumerics flattened to dashes
+
+gcloud pubsub subscriptions create "$QUEUE" \
+  --topic=chat-events --ack-deadline=60 --message-retention-duration=24h \
+  --expiration-period=never
+
+gcloud pubsub subscriptions add-iam-policy-binding "$QUEUE" \
+  --member="user:$PERSON" --role="roles/pubsub.subscriber"
+```
+
+That grant is the whole of their access to the project. The app derives the queue name
+from whoever signs in, so nobody edits it anywhere.
+
+Do not omit `--expiration-period=never`: the default deletes a subscription after 31 days
+without a pull, so a colleague returning from a month's leave would find realtime quietly
+dead — see [`docs/SETUP.md §2`](docs/SETUP.md).
+
+### What you send them
+
+One block, identical for every person — no per-machine edits:
+
+```bash
+git clone <repo-url> GoogleChatSwiftUI && cd GoogleChatSwiftUI
+
+cat > Config/Secrets.xcconfig <<'EOF'
+APP_BUNDLE_ID = com.example.GoogleChatSwiftUI
+DEVELOPMENT_TEAM =
+GOOGLE_OAUTH_CLIENT_ID = YOUR_NUMBER-YOUR_SUFFIX.apps.googleusercontent.com
+GOOGLE_OAUTH_REDIRECT_SCHEME = com.googleusercontent.apps.YOUR_NUMBER-YOUR_SUFFIX
+GCP_PROJECT_ID = YOUR_PROJECT_ID
+EOF
+
+xcodebuild -scheme GoogleChatSwiftUI -configuration Release -derivedDataPath build build \
+  && open "build/Build/Products/Release/Google Chat.app"
+```
+
+`DEVELOPMENT_TEAM` is empty on purpose: it means nobody needs membership of your Apple
+Developer team, or any Apple account at all. The cost is one fresh sign-in per rebuild
+([why](docs/SETUP.md#5-building-without-an-apple-developer-team)). If your colleagues
+*are* on the team, filling in its ID removes that.
+
+To update later they run `git pull` and the same `xcodebuild` line; the config file stays
+put, being gitignored.
+
+### If realtime looks unreliable
+
+Almost always the queue: either it was never created for that person, or the grant is
+missing. The app names the one it wanted in the status bar. Everything else keeps working
+on manual refresh (⌘R) meanwhile, which is exactly why the failure is easy to miss.
 
 <br>
 

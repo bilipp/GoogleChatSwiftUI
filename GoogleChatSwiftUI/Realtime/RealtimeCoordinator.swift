@@ -25,6 +25,11 @@ actor RealtimeCoordinator {
     private var renewTask: Task<Void, Never>?
     private var subscriptionName: String?
 
+    /// Full name of the Pub/Sub subscription this person pulls from, derived from
+    /// their address once they are signed in. Distinct from `subscriptionName` above,
+    /// which is the Workspace Events subscription that feeds the shared topic.
+    private var pubSubSubscription: String?
+
     private(set) var status: Status = .stopped
     private var statusHandler: (@Sendable (Status) -> Void)?
 
@@ -74,6 +79,15 @@ actor RealtimeCoordinator {
         selfChatName = name
     }
 
+    /// Names the queue to pull from. Must be called before ``start()``.
+    ///
+    /// Nil when the People response carried no address, which means the
+    /// `userinfo.email` scope was not granted — a re-sign-in fixes it, so the loop
+    /// says so rather than silently pulling nothing.
+    func setSignedInAddress(_ emailAddress: String?) {
+        pubSubSubscription = emailAddress.map(OAuthConfiguration.pubSubSubscription(for:))
+    }
+
     private func setStatus(_ new: Status) {
         guard status != new else { return }
         status = new
@@ -105,6 +119,18 @@ actor RealtimeCoordinator {
     // MARK: - Event loop
 
     private func runLoop() async {
+        guard let pubSubSubscription else {
+            setStatus(
+                .degraded(
+                    """
+                    Signed-in address unavailable, so no event queue could be \
+                    identified. Sign out and in again to grant the email scope.
+                    """
+                )
+            )
+            return
+        }
+
         do {
             let subscription = try await events.ensureSubscription()
             subscriptionName = subscription.name
@@ -121,7 +147,7 @@ actor RealtimeCoordinator {
 
         while !Task.isCancelled {
             do {
-                let received = try await pubsub.pull()
+                let received = try await pubsub.pull(subscription: pubSubSubscription)
                 consecutiveFailures = 0
 
                 if received.isEmpty {
@@ -129,14 +155,14 @@ actor RealtimeCoordinator {
                     continue
                 }
 
-                await apply(received)
+                await apply(received, from: pubSubSubscription)
                 setStatus(.live)
             } catch is CancellationError {
                 return
             } catch {
                 consecutiveFailures += 1
                 logger.error("Pull failed (\(consecutiveFailures)): \(error.localizedDescription)")
-                setStatus(.degraded(error.localizedDescription))
+                setStatus(.degraded(Self.pullFailureDescription(error, subscription: pubSubSubscription)))
 
                 // Back off so a persistent failure does not spin.
                 let delay = min(60, pow(2.0, Double(consecutiveFailures)))
@@ -145,7 +171,34 @@ actor RealtimeCoordinator {
         }
     }
 
-    private func apply(_ received: [PubSubReceivedMessage]) async {
+    /// Turns the two setup failures into something actionable.
+    ///
+    /// Both are ordinary onboarding states rather than bugs: a subscription that was
+    /// never created for this person, or one they hold no grant on. The raw Google
+    /// message for either is just "Resource not found" against a URL the person never
+    /// typed, so it is worth naming the subscription and what is missing.
+    private static func pullFailureDescription(_ error: Error, subscription: String) -> String {
+        let id = subscription.split(separator: "/").last.map(String.init) ?? subscription
+
+        guard let apiError = error as? ChatAPIError else { return error.localizedDescription }
+
+        switch apiError.status {
+        case 404:
+            return """
+                No event queue named \(id). Ask whoever administers the Cloud \
+                project to create it — see docs/SETUP.md.
+                """
+        case 403:
+            return """
+                Not permitted to read \(id). It needs roles/pubsub.subscriber for \
+                this account — see docs/SETUP.md.
+                """
+        default:
+            return apiError.localizedDescription
+        }
+    }
+
+    private func apply(_ received: [PubSubReceivedMessage], from subscription: String) async {
         var ackIds: [String] = []
         var touchedSpaces: Set<String> = []
 
@@ -167,7 +220,7 @@ actor RealtimeCoordinator {
         do {
             // Acked only after the writes above have completed, so a crash mid-apply
             // results in redelivery rather than silent loss.
-            try await pubsub.acknowledge(ackIds: ackIds)
+            try await pubsub.acknowledge(subscription: subscription, ackIds: ackIds)
         } catch {
             logger.error("Ack failed: \(error.localizedDescription)")
         }
