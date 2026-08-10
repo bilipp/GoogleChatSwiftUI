@@ -420,9 +420,12 @@ nonisolated struct SyncEngine: Sendable {
         try await store.applyEdit(to: messageName, text: updated.text ?? newText)
     }
 
-    func delete(messageName: String) async throws {
-        try await client.deleteMessage(name: messageName)
-        try await store.applyDeletion(to: messageName)
+    /// - Parameter force: also deletes the message's threaded replies, which Chat
+    ///   demands of anyone deleting the message a thread starts with. The cache
+    ///   tombstones them alongside it, since the server has taken them as well.
+    func delete(messageName: String, force: Bool = false) async throws {
+        try await client.deleteMessage(name: messageName, force: force)
+        try await store.applyDeletion(to: messageName, includingThreadReplies: force)
     }
 
     // MARK: - Reactions

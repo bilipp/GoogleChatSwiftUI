@@ -53,8 +53,8 @@ nonisolated struct ChatClient: Sendable {
         return try await transport.patch(target, body: body, as: T.self)
     }
 
-    func delete(_ path: String) async throws {
-        try await transport.delete(url(path, query: []))
+    func delete(_ path: String, query: [URLQueryItem] = []) async throws {
+        try await transport.delete(url(path, query: query))
     }
 }
 

@@ -950,13 +950,26 @@ actor ChatStore {
 
     /// Tombstones a message locally. Chat keeps deleted messages visible as
     /// "Message deleted", so the row stays rather than vanishing.
-    func applyDeletion(to name: String) throws {
+    /// - Parameter includingThreadReplies: matches a forced delete, where Chat took
+    ///   the whole thread down rather than just the message named here. Without it the
+    ///   replies would sit in the cache as messages that no longer exist server-side,
+    ///   until some later sync noticed.
+    func applyDeletion(to name: String, includingThreadReplies: Bool = false) throws {
         guard let message = try message(named: name) else { return }
-        message.deleteTime = Date()
-        message.text = nil
+        tombstone(message)
+        if includingThreadReplies, let thread = message.thread {
+            for reply in thread.messages where reply.isThreadReply && !reply.isDeleted {
+                tombstone(reply)
+            }
+        }
         // A deleted reply is not one the user still has to go and read.
         if let space = message.thread?.space { Self.refreshThreadState(in: space) }
         try modelContext.save()
+    }
+
+    private func tombstone(_ message: CachedMessage) {
+        message.deleteTime = Date()
+        message.text = nil
     }
 
     // MARK: - Links

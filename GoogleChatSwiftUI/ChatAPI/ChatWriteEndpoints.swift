@@ -133,8 +133,14 @@ nonisolated extension ChatClient {
         )
     }
 
-    func deleteMessage(name: String) async throws {
-        try await delete(name)
+    /// Deletes a message.
+    ///
+    /// - Parameter force: whether to take the message's threaded replies down with it.
+    ///   Chat will not orphan a thread, so deleting its first message is only possible
+    ///   as deleting the whole thread; without this it fails with `FAILED_PRECONDITION`
+    ///   rather than deleting just the one message.
+    func deleteMessage(name: String, force: Bool = false) async throws {
+        try await delete(name, query: force ? [URLQueryItem(name: "force", value: "true")] : [])
     }
 
     /// The signed-in user's read position in a space.

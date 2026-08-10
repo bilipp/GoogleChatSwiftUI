@@ -14,6 +14,13 @@ nonisolated struct ChatAPIError: LocalizedError, Sendable {
         return "Chat API request failed with HTTP \(status)."
     }
 
+    /// Whether a delete was refused for having threaded replies beneath it.
+    ///
+    /// Recoverable, but only by widening what is being deleted: the same call with
+    /// `force` takes the replies too. That is a decision for the person deleting,
+    /// not something to retry behind their back.
+    var requiresForcedDelete: Bool { googleStatus == "FAILED_PRECONDITION" }
+
     /// Whether retrying the identical request could plausibly succeed.
     var isRetryable: Bool {
         status == 429 || status == 500 || status == 502 || status == 503 || status == 504

@@ -617,13 +617,29 @@ final class ChatSessionModel {
         }
     }
 
-    func delete(messageName: String) async {
+    /// How a delete ended, because one of the endings is a question for the user.
+    enum DeletionOutcome {
+        case deleted
+        /// Chat refused: the message starts a thread, and it will not leave the replies
+        /// behind. Retrying with `force` deletes them too — an escalation the person
+        /// deleting has to agree to, so the caller asks rather than this doing it.
+        case needsThreadConfirmation
+        case failed
+    }
+
+    /// - Parameter force: deletes the message's threaded replies along with it.
+    @discardableResult
+    func delete(messageName: String, force: Bool = false) async -> DeletionOutcome {
         messageError = nil
         do {
-            try await sync.delete(messageName: messageName)
+            try await sync.delete(messageName: messageName, force: force)
+            return .deleted
+        } catch let error as ChatAPIError where !force && error.requiresForcedDelete {
+            return .needsThreadConfirmation
         } catch {
             logger.error("Delete failed: \(error.localizedDescription)")
             messageError = error.localizedDescription
+            return .failed
         }
     }
 

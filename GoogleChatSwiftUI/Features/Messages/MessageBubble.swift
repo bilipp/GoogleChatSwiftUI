@@ -43,6 +43,7 @@ struct MessageBubble: View {
     @State private var draft = ""
     @State private var isNamingApp = false
     @State private var appNameDraft = ""
+    @State private var isConfirmingThreadDelete = false
 
     /// The opposite-side gutter that keeps own and other messages visibly aligned to
     /// their sides. In a narrow pane a fixed 48pt gutter eats the text instead.
@@ -134,6 +135,51 @@ struct MessageBubble: View {
                 """
             )
         }
+        .alert("Delete this message and its replies?", isPresented: $isConfirmingThreadDelete) {
+            Button("Delete Thread", role: .destructive) {
+                Task { await session.delete(messageName: message.name, force: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(threadDeleteWarning)
+        }
+    }
+
+    // MARK: - Deleting
+
+    /// Deletes the message, asking first when a thread would go with it.
+    ///
+    /// Chat will not leave a thread's replies without the message that started them,
+    /// so that delete is all-or-nothing — and the "all" reaches other people's replies.
+    /// The cached count catches the usual case before a request is even sent; the
+    /// server catches the rest, since a thread can hold replies this client never
+    /// fetched, and refuses with a precondition failure rather than deleting.
+    private func deleteMessage() async {
+        guard cascadingReplyCount == 0 else {
+            isConfirmingThreadDelete = true
+            return
+        }
+        if await session.delete(messageName: message.name) == .needsThreadConfirmation {
+            isConfirmingThreadDelete = true
+        }
+    }
+
+    /// Replies that deleting this message would take with it, as far as the cache knows.
+    private var cascadingReplyCount: Int {
+        guard !message.isThreadReply, let thread = message.thread else { return 0 }
+        return thread.messages.count { $0.isThreadReply && !$0.isDeleted }
+    }
+
+    private var threadDeleteWarning: String {
+        let count = cascadingReplyCount
+        guard count > 0 else {
+            return """
+                This message starts a thread. Deleting it deletes every reply beneath \
+                it too, including other people's.
+                """
+        }
+        let replies = count == 1 ? "1 reply" : "\(count) replies"
+        return "\(replies) beneath it will be deleted too, including other people's."
     }
 
     // MARK: - Pieces
@@ -437,7 +483,7 @@ struct MessageBubble: View {
                 isEditing = true
             }
             Button("Delete", role: .destructive) {
-                Task { await session.delete(messageName: message.name) }
+                Task { await deleteMessage() }
             }
         }
     }
