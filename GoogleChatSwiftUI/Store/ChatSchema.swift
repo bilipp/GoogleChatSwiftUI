@@ -317,8 +317,8 @@ final class CachedMessage {
     /// message identifies that sender's whole back catalogue.
     var isAppSender: Bool { senderTypeRaw == ChatUser.UserType.bot.rawValue }
 
-    /// Decoded lazily and not cached: cards are rendered by SwiftUI, which already
-    /// re-evaluates only when the underlying row changes.
+    /// Decoded on demand, and not cheap — see ``DecodedMessageContent``, which is what
+    /// the transcript reads through. Views must not call this per body evaluation.
     var cards: [ChatCard] {
         guard let cardsJSON, !isDeleted else { return [] }
         guard let decoded = try? JSONDecoder().decode([ChatCardWithID].self, from: cardsJSON) else {
@@ -330,7 +330,7 @@ final class CachedMessage {
     var hasCards: Bool { cardsJSON != nil && !isDeleted }
 
     /// Smart chips Chat recognised in the text — Drive files, Calendar events, Meet
-    /// links. Decoded lazily, like cards.
+    /// links. Decoded on demand, like cards, and read through the same memo.
     var richLinks: [RichLinkMetadata] {
         guard let richLinksJSON, !isDeleted else { return [] }
         guard let decoded = try? JSONDecoder().decode([ChatAnnotation].self, from: richLinksJSON)

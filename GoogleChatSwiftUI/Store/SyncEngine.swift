@@ -635,26 +635,33 @@ nonisolated struct SyncEngine: Sendable {
         )
         guard !pending.isEmpty else { return 0 }
 
-        await withTaskGroup(of: (String, Date?).self) { group in
+        let states = await withTaskGroup(of: ThreadReadState.self) { group in
             for threadName in pending {
                 group.addTask {
                     do {
                         let state = try await self.client.threadReadState(threadName: threadName)
-                        return (threadName, state.lastReadTime)
+                        return ThreadReadState(
+                            threadName: threadName,
+                            lastReadTime: state.lastReadTime
+                        )
                     } catch {
                         self.logger.error(
                             "Thread read state failed for \(threadName): \(error.localizedDescription)"
                         )
                         // Recorded as checked regardless, so a thread the endpoint
                         // will not answer for is not retried on every visit.
-                        return (threadName, nil)
+                        return ThreadReadState(threadName: threadName, lastReadTime: nil)
                     }
                 }
             }
-            for await (threadName, lastRead) in group {
-                try? await store.applyThreadReadState(lastRead, for: threadName)
-            }
+            var collected: [ThreadReadState] = []
+            for await state in group { collected.append(state) }
+            return collected
         }
+
+        // One write for the batch. Applied one at a time, each would have recomputed
+        // every thread tally in the space — the same answer, twenty-five times over.
+        try? await store.applyThreadReadStates(states)
 
         logger.info("Checked read state for \(pending.count) thread(s) in \(spaceName)")
         return pending.count

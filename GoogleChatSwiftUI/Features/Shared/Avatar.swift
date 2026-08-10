@@ -27,14 +27,12 @@ struct Avatar: View {
                 InitialsCircle(name: name, size: size)
             }
 
+            // Through the shared cache rather than `AsyncImage`: the same few hundred
+            // faces are drawn by the sidebar, the transcript, the thread list and the
+            // search results, and re-decoding one on every scroll is not free. See
+            // ``RemoteImage``.
             if let url = photoURL.flatMap(URL.init(string:)) {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    }
-                }
+                RemoteImage(url: url)
             }
         }
         .frame(width: size, height: size)

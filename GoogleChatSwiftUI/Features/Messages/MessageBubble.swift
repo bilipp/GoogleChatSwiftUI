@@ -76,12 +76,12 @@ struct MessageBubble: View {
 
                 // Cards render outside the bubble: they carry their own surface and
                 // border, and nesting them in a coloured bubble reads as two boxes.
-                ForEach(Array(message.cards.enumerated()), id: \.offset) { _, card in
+                ForEach(Array(cards.enumerated()), id: \.offset) { _, card in
                     CardView(card: card)
                         .contextMenu { contextMenu }
                 }
 
-                ForEach(Array(message.richLinks.enumerated()), id: \.offset) { _, link in
+                ForEach(Array(richLinks.enumerated()), id: \.offset) { _, link in
                     RichLinkChip(link: link)
                 }
 
@@ -252,6 +252,13 @@ struct MessageBubble: View {
             Color.clear.frame(width: 28, height: 1)
         }
     }
+
+    /// Cards render outside the bubble, and smart chips beneath it. Both come through
+    /// ``DecodedMessageContent`` rather than off the message, so the JSON behind them is
+    /// decoded once per payload instead of once per body evaluation.
+    private var cards: [ChatCard] { DecodedMessageContent.cards(of: message) }
+
+    private var richLinks: [RichLinkMetadata] { DecodedMessageContent.richLinks(of: message) }
 
     /// Mention highlighting matches on display name, so the sender's own directory
     /// entry is irrelevant here — only the mentioned users' names matter.

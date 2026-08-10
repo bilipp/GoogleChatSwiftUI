@@ -2,6 +2,17 @@ import Foundation
 import OSLog
 import SwiftData
 
+/// Where the server says the user has read to in one thread.
+///
+/// A named pair rather than a tuple because it crosses into the store actor, and
+/// "(String, Date?)" at a call site says nothing about which end is which.
+nonisolated struct ThreadReadState: Sendable {
+    let threadName: String
+    /// Nil where the endpoint would not answer. Recorded as checked regardless, so a
+    /// thread Chat will not report on is not asked about again on every visit.
+    let lastReadTime: Date?
+}
+
 /// Background writer for the SwiftData cache.
 ///
 /// All mutation happens here, off the main actor, so a 762-space upsert or a long
@@ -492,12 +503,35 @@ actor ChatStore {
     /// epoch, and letting that overwrite a mark seeded from the space would resurrect
     /// every reply in the cache as unread.
     func applyThreadReadState(_ serverTime: Date?, for threadName: String) throws {
-        guard let thread = try thread(named: threadName) else { return }
-        thread.didCheckServerReadState = true
-        if let serverTime, serverTime > (thread.lastReadTime ?? .distantPast) {
+        try applyThreadReadStates([ThreadReadState(threadName: threadName, lastReadTime: serverTime)])
+    }
+
+    /// The same, for a batch of threads answered together.
+    ///
+    /// A batch rather than a loop over the single-thread call, because recomputing a
+    /// space's tallies means walking every thread in it and every message in each of
+    /// those — see ``refreshThreadState(in:)``. Applied one at a time, opening the
+    /// thread pane of a busy space paid for that walk once per thread checked, and the
+    /// answers arrive twenty-five at a time. The marks all land first; the tallies they
+    /// invalidate are recomputed once per space afterwards, which is the same answer for
+    /// a fraction of the work.
+    func applyThreadReadStates(_ states: [ThreadReadState]) throws {
+        guard !states.isEmpty else { return }
+        var touched: [String: CachedSpace] = [:]
+
+        for state in states {
+            guard let thread = try thread(named: state.threadName) else { continue }
+            thread.didCheckServerReadState = true
+            guard let serverTime = state.lastReadTime,
+                  serverTime > (thread.lastReadTime ?? .distantPast)
+            else { continue }
             thread.lastReadTime = serverTime
             thread.didSeedReadState = true
-            if let space = thread.space { Self.refreshThreadState(in: space) }
+            if let space = thread.space { touched[space.name] = space }
+        }
+
+        for space in touched.values {
+            Self.refreshThreadState(in: space)
         }
         try modelContext.save()
     }
