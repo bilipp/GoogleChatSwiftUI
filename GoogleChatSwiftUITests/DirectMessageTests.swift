@@ -23,8 +23,9 @@ struct DirectMessageTests {
 
     /// Decoded rather than built with the memberwise initialiser, so these stay valid
     /// as the DTOs gain fields.
-    private func space(_ id: String, type: String) throws -> ChatSpace {
-        let json = #"{"name":"spaces/\#(id)","spaceType":"\#(type)"}"#
+    private func space(_ id: String, type: String, activeAt: String? = nil) throws -> ChatSpace {
+        let active = activeAt.map { #","lastActiveTime":"\#($0)""# } ?? ""
+        let json = #"{"name":"spaces/\#(id)","spaceType":"\#(type)"\#(active)}"#
         return try GoogleTransport.decoder.decode(ChatSpace.self, from: Data(json.utf8))
     }
 
@@ -54,6 +55,30 @@ struct DirectMessageTests {
         try await store.setResolvedTitle("Engineering", peers: ["users/ada"], for: "spaces/ROOM")
 
         #expect(try await store.directMessageSpaceName(with: "users/ada") == nil)
+    }
+
+    /// Two conversations can end up being between the same two people: a group whose
+    /// other members left, or whose accounts were deleted, is one of them from then on.
+    /// Both are legitimate to open, so the tie is broken by which one is still in use.
+    @Test("The liveliest of several one-to-one conversations wins")
+    func prefersTheMostRecentlyActiveDirectMessage() async throws {
+        let (store, _) = try makeStore()
+        // Ordered so neither the first row nor the last is the right answer.
+        try await store.upsertSpaces([
+            try space("STALE", type: "DIRECT_MESSAGE", activeAt: "2024-03-01T09:00:00Z"),
+            try space("LIVE", type: "DIRECT_MESSAGE", activeAt: "2026-08-01T09:00:00Z"),
+            // Nobody has ever posted here, so it has no activity to compare at all.
+            try space("SILENT", type: "DIRECT_MESSAGE"),
+        ])
+        for id in ["STALE", "LIVE", "SILENT"] {
+            try await store.setResolvedTitle(
+                "Ada Lovelace",
+                peers: ["users/ada"],
+                for: "spaces/\(id)"
+            )
+        }
+
+        #expect(try await store.directMessageSpaceName(with: "users/ada") == "spaces/LIVE")
     }
 
     /// The bug this feature shipped with, and the reason `spaceType` cannot be trusted

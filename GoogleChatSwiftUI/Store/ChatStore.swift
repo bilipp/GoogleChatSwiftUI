@@ -76,6 +76,13 @@ actor ChatStore {
     /// actual membership with the signed-in user removed, so a single entry is the one
     /// honest statement that a conversation is between two people.
     ///
+    /// There can be more than one, and then the liveliest wins. A conversation that
+    /// began as a group collapses to a single peer when everyone else leaves or has
+    /// their account deleted, which leaves two conversations that are both, now,
+    /// between the same two people. Neither is wrong to open — but the one still being
+    /// used is the one the click means, so they are ordered by activity rather than by
+    /// whatever the store hands back first.
+    ///
     /// Filtered in memory rather than by predicate: `peerUserIDs` is an array attribute,
     /// and SwiftData will not translate a comparison over one. The fetch is narrowed to
     /// direct messages first, so this walks a few hundred rows at worst.
@@ -90,7 +97,13 @@ actor ChatStore {
                 predicate: #Predicate<CachedSpace> { $0.spaceTypeRaw == directMessage }
             )
         )
-        return spaces.first { $0.peerUserIDs == [userID] }?.name
+        return spaces
+            .filter { $0.peerUserIDs == [userID] }
+            // Sorted here rather than by the fetch: a `SortDescriptor` over an optional
+            // date leaves where the nils land to the store, and a conversation nobody
+            // has ever posted in is the last one to open, not the first.
+            .max { ($0.lastActiveTime ?? .distantPast) < ($1.lastActiveTime ?? .distantPast) }?
+            .name
     }
 
     /// Caches directory lookups so names survive relaunch and are shared by the
