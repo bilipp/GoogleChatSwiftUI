@@ -21,6 +21,10 @@ struct MessageListView: View {
     private let isThreaded: Bool
     /// Threads here with unread replies, for the toolbar badge.
     private let unreadThreadCount: Int
+    /// Whether the conversation has history the cache has not walked back to yet. False
+    /// at the first message ever sent here, which is where reaching the top stops asking
+    /// for more.
+    private let hasOlderHistory: Bool
 
     /// The message to keep still while older history loads in above it, captured as
     /// the request is made rather than after — by the time it returns, the row that
@@ -34,11 +38,18 @@ struct MessageListView: View {
     /// transcript and the send is aimed from here.
     @State private var replyTarget: ReplyTarget?
 
-    init(spaceName: String, spaceTitle: String, isThreaded: Bool, unreadThreadCount: Int) {
+    init(
+        spaceName: String,
+        spaceTitle: String,
+        isThreaded: Bool,
+        unreadThreadCount: Int,
+        hasOlderHistory: Bool
+    ) {
         self.spaceName = spaceName
         self.spaceTitle = spaceTitle
         self.isThreaded = isThreaded
         self.unreadThreadCount = unreadThreadCount
+        self.hasOlderHistory = hasOlderHistory
         _messages = Query(
             filter: #Predicate<CachedMessage> { $0.space?.name == spaceName },
             sort: [SortDescriptor(\CachedMessage.createTime, order: .forward)]
@@ -68,28 +79,20 @@ struct MessageListView: View {
         }
         .navigationTitle(spaceTitle)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    historyAnchor = days.first?.entries.first?.message.name
-                    Task { await session.loadOlderMessages(in: spaceName) }
-                } label: {
-                    Label("Load Older", systemImage: "arrow.up.circle")
-                }
-                .disabled(session.isLoading(spaceName))
-                .help("Fetch older messages")
-            }
             // Only where threads are a place of their own. In grouped and unthreaded
             // spaces replies are already in the transcript, so a thread index would
             // just be a second copy of what is on screen.
             if isThreaded {
-                ToolbarSpacer(.fixed, placement: .primaryAction)
                 ToolbarItem(placement: .primaryAction) { threadsButton }
+                // Separates this view's own items from the account control. Only where
+                // there is something to separate it from — leading a toolbar with a
+                // spacer just indents the one button that is left.
+                ToolbarSpacer(.fixed, placement: .primaryAction)
             }
             // Last of this view's own items, and declared here rather than on the
             // split view, because that is what puts it after them — see
             // `AccountToolbarButton`. The search field lands to its right whatever
             // any of this says: SwiftUI pins it to the trailing end of the toolbar.
-            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 AccountToolbarButton()
             }
@@ -197,21 +200,27 @@ struct MessageListView: View {
     ///
     /// Every scroll decision lives there rather than being spread across anchors and
     /// change handlers here: where to open, whether an arriving message should pull the
-    /// view down, and how to stand still while older history is inserted above. The
-    /// grouped days are computed once and handed over, since they are needed both as
-    /// content and as the two identities that tell the scroll view which end moved.
+    /// view down, when reaching the top means fetch more, and how to stand still while
+    /// older history is inserted above. The grouped days are computed once and handed
+    /// over, since they are needed both as content and as the two identities that tell
+    /// the scroll view which end moved.
     private var transcript: some View {
         @Bindable var session = session
         let groups = days
+        let oldestID = groups.first?.entries.first?.message.name
 
         return TranscriptScrollView(
             newestID: groups.last?.entries.last?.message.name,
-            oldestID: groups.first?.entries.first?.message.name,
+            oldestID: oldestID,
             horizontalPadding: 16,
             verticalPadding: 12,
             jumpTarget: $session.scrollTarget,
             historyAnchor: $historyAnchor,
-            followTrigger: sendCount
+            followTrigger: sendCount,
+            isLoadingOlder: session.isLoading(spaceName),
+            // Nothing to ask for at the beginning of the conversation, and saying so is
+            // what stops the transcript asking every time the reader rests there.
+            onReachStart: hasOlderHistory ? { loadOlder(holding: oldestID) } : nil
         ) {
             ForEach(groups, id: \.day) { group in
                 DayDivider(day: group.day)
@@ -233,6 +242,17 @@ struct MessageListView: View {
                     .padding(.top, 6)
             }
         }
+    }
+
+    /// Fetches the page above the transcript.
+    ///
+    /// The row to keep still is the one that is oldest *now*, captured before the request
+    /// rather than after it: by the time the page lands, the top of the transcript is the
+    /// history that just arrived, and holding that would leave the reader where they
+    /// already were rather than where they were reading.
+    private func loadOlder(holding anchor: String?) {
+        historyAnchor = anchor
+        Task { await session.loadOlderMessages(in: spaceName) }
     }
 
     /// One message, with everything the bubble cannot work out for itself.

@@ -203,9 +203,9 @@ final class ChatSessionModel {
         var destination = await resolvedDestination(of: link)
 
         // A message the cache has not reached yet is worth a few pages of history: a
-        // link is nearly always to something recent, and the alternative is telling
-        // someone to press Load Older themselves for a message the app could have
-        // fetched while they were still looking at the conversation. Bounded, because
+        // link is nearly always to something recent, and the alternative is leaving
+        // someone to scroll back for it themselves when the app could have fetched it
+        // while they were still looking at the conversation. Bounded, because
         // walking a years-old space to its beginning is not what one click should cost.
         var passes = 0
         while destination == .uncachedMessage, passes < 4 {
@@ -227,7 +227,7 @@ final class ChatSessionModel {
         case .uncachedMessage:
             linkNotice = """
                 That message is older than the history downloaded for this conversation. \
-                Load Older fetches more of it.
+                Scrolling to the top of the transcript fetches more of it.
                 """
         case .space, .unknownSpace:
             break

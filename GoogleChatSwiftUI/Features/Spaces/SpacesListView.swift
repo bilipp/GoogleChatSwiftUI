@@ -42,7 +42,11 @@ struct SpacesListView: View {
                     spaceName: selected.name,
                     spaceTitle: selected.title,
                     isThreaded: selected.isThreaded,
-                    unreadThreadCount: selected.unreadThreadCount
+                    unreadThreadCount: selected.unreadThreadCount,
+                    // Read from the space row rather than from the last fetch's answer,
+                    // so it stays right across the whole conversation: the backfill
+                    // cursor is what knows whether there is anything left to fetch.
+                    hasOlderHistory: !selected.backfillComplete
                 )
                 // Identity tied to the space so switching conversations builds a fresh
                 // view. Without it SwiftUI reuses the instance and carries the previous

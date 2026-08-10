@@ -67,7 +67,7 @@ struct MessageSearchResults: View {
                         """
                         Nothing found for “\(query)”.
                         Search covers downloaded history only — open a conversation \
-                        and use Load Older to fetch more of it.
+                        and scroll to the top to fetch more of it.
                         """
                     )
                 }

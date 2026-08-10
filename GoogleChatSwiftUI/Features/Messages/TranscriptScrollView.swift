@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// A scroll view that behaves the way a conversation should: it opens on the newest
-/// message, keeps following while messages arrive, and stops following the moment the
-/// reader scrolls away to read something older.
+/// message, keeps following while messages arrive, stops following the moment the reader
+/// scrolls away to read something older, and fetches more of it as they reach the top.
 ///
 /// Positioning a transcript is not the same problem as positioning a list. A
 /// `LazyVStack` knows the height only of the rows it has actually built, so a single
@@ -27,6 +27,13 @@ struct TranscriptScrollView<Content: View>: View {
     /// the end" — sending a message, above all. Sending is joining the conversation,
     /// so it returns to the end even from halfway up the history.
     var followTrigger: Int = 0
+    /// True while a page of older history is on its way. Read only to know when a
+    /// request this view asked for has finished, so the next one may be asked for.
+    var isLoadingOlder: Bool = false
+    /// Asks for the page above the transcript, called when the reader reaches the start
+    /// of what is loaded. Nil when there is nothing older to fetch — the beginning of a
+    /// conversation, or a thread, which is always loaded whole.
+    var onReachStart: (() -> Void)?
     @ViewBuilder var content: Content
 
     /// Drives the scroll view's own position commands — the ones that address the end
@@ -49,6 +56,9 @@ struct TranscriptScrollView<Content: View>: View {
     /// True while the reader has hold of the scroll view: a drag, a wheel, or the glide
     /// that follows one.
     @State private var isReaderScrolling = false
+    /// True once older history has been asked for and not yet delivered, so arriving at
+    /// the top asks for one page rather than one per frame of the scroll that got there.
+    @State private var hasAskedForOlder = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -108,6 +118,7 @@ struct TranscriptScrollView<Content: View>: View {
                 TranscriptScrollMetrics($0)
             } action: { old, new in
                 isFollowing = new.isAtEnd
+                askForOlderHistoryIfNeeded(at: new)
                 guard hasSettled, !isHolding, !isReaderScrolling else { return }
                 guard TranscriptScrollMetrics.shouldReturnToEnd(from: old, to: new) else { return }
                 position.scrollTo(edge: .bottom)
@@ -122,7 +133,31 @@ struct TranscriptScrollView<Content: View>: View {
                     || phase == .interacting
                     || phase == .decelerating
             }
+            // A page has landed, or the attempt to fetch one has ended. Either way this
+            // view may ask again — and if the reader is still at the top of a
+            // conversation shorter than the pane, the growth that just arrived is itself
+            // the geometry change that asks.
+            .onChange(of: isLoadingOlder) { _, loading in
+                if !loading { hasAskedForOlder = false }
+            }
         }
+    }
+
+    /// Asks for the page above the transcript once the reader comes within reach of its
+    /// start, which is what replaces reaching for a button to do the same thing.
+    ///
+    /// Driven only by scroll geometry, and that is what keeps a failed fetch from
+    /// becoming a retry loop: the ask is cleared when the request ends, but nothing asks
+    /// again until either the reader or the content actually moves.
+    private func askForOlderHistoryIfNeeded(at metrics: TranscriptScrollMetrics) {
+        // Not while the opening position is still being converged on: those passes build
+        // the stack from the top, so every transcript would look like a reader who had
+        // scrolled back to the beginning of it. Nor while history is being held in
+        // place — that scroll is the last page arriving, not a request for the next.
+        guard hasSettled, !isHolding, !hasAskedForOlder else { return }
+        guard let onReachStart, metrics.isNearStart else { return }
+        hasAskedForOlder = true
+        onReachStart()
     }
 
     /// Converges on the opening position, then reveals the transcript.
@@ -192,8 +227,9 @@ struct TranscriptScrollView<Content: View>: View {
     }
 }
 
-/// What a scroll view looked like at one moment, reduced to the three facts that decide
-/// whether the transcript should be pulled back to its end.
+/// What a scroll view looked like at one moment, reduced to the few facts that decide
+/// whether the transcript should be pulled back to its end, and whether it is time to
+/// fetch more of its history.
 ///
 /// `nonisolated` because it is pure arithmetic: the target defaults to `@MainActor`,
 /// which would otherwise put it out of reach of the test suite.
@@ -205,6 +241,9 @@ nonisolated struct TranscriptScrollMetrics: Equatable {
     /// visible rect rather than the raw offset, so it stays honest whatever the composer
     /// or an error banner does to the insets.
     var distanceFromEnd: CGFloat
+    /// How far the start of the content sits above what the reader can see — the mirror
+    /// of `distanceFromEnd`, and zero when the oldest loaded message is on screen.
+    var distanceFromStart: CGFloat
     /// How far down the content the reader is. Only the direction it moves is used.
     var offset: CGFloat
 
@@ -212,11 +251,27 @@ nonisolated struct TranscriptScrollMetrics: Equatable {
     /// of points off the end is still reading the end.
     static let endTolerance: CGFloat = 8
 
+    /// How far short of the top counts as reaching it. Generous on purpose: a page takes
+    /// a round trip to arrive, and asking for it a screenful early is the difference
+    /// between history that is simply there and history that has to be waited for.
+    static let startLead: CGFloat = 400
+
     var isAtEnd: Bool { distanceFromEnd <= Self.endTolerance }
 
-    init(contentHeight: CGFloat, distanceFromEnd: CGFloat, offset: CGFloat) {
+    /// Close enough to the start of the loaded history that the next page should already
+    /// be on its way. Negative distances count: rubber-banding past the top is about as
+    /// clear a request for more as there is.
+    var isNearStart: Bool { distanceFromStart <= Self.startLead }
+
+    init(
+        contentHeight: CGFloat,
+        distanceFromEnd: CGFloat,
+        distanceFromStart: CGFloat,
+        offset: CGFloat
+    ) {
         self.contentHeight = contentHeight
         self.distanceFromEnd = distanceFromEnd
+        self.distanceFromStart = distanceFromStart
         self.offset = offset
     }
 
@@ -224,6 +279,7 @@ nonisolated struct TranscriptScrollMetrics: Equatable {
         self.init(
             contentHeight: geometry.contentSize.height,
             distanceFromEnd: geometry.contentSize.height - geometry.visibleRect.maxY,
+            distanceFromStart: geometry.visibleRect.minY,
             offset: geometry.contentOffset.y
         )
     }

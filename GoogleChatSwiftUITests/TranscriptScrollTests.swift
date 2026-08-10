@@ -10,9 +10,15 @@ struct TranscriptScrollTests {
     private func metrics(
         height: Double,
         fromEnd: Double,
+        fromStart: Double = 5000,
         offset: Double = 0
     ) -> TranscriptScrollMetrics {
-        TranscriptScrollMetrics(contentHeight: height, distanceFromEnd: fromEnd, offset: offset)
+        TranscriptScrollMetrics(
+            contentHeight: height,
+            distanceFromEnd: fromEnd,
+            distanceFromStart: fromStart,
+            offset: offset
+        )
     }
 
     /// A message arrives, or an attachment finishes loading, beneath a reader sitting at
@@ -71,5 +77,27 @@ struct TranscriptScrollTests {
     /// which the arithmetic reports as overshooting it.
     @Test func contentShorterThanTheViewIsAlwaysAtTheEnd() {
         #expect(metrics(height: 200, fromEnd: -400).isAtEnd)
+    }
+
+    /// The point of the lead is that the page is asked for before the reader runs out of
+    /// history to read, so a screenful short of the top already counts as reaching it.
+    @Test func approachingTheTopCountsAsReachingIt() {
+        #expect(metrics(height: 4000, fromEnd: 3800, fromStart: 200).isNearStart)
+        #expect(!metrics(height: 4000, fromEnd: 2000, fromStart: 2000).isNearStart)
+    }
+
+    /// Dragging past the top is the clearest way there is of asking for more, and the
+    /// arithmetic reports it as a negative distance.
+    @Test func rubberBandingPastTheTopIsNearIt() {
+        #expect(metrics(height: 4000, fromEnd: 4060, fromStart: -60).isNearStart)
+    }
+
+    /// A conversation shorter than the pane has both of its ends on screen at once. Being
+    /// at the end must not stop the top from counting as reached — otherwise the only
+    /// history that can be fetched is history there is already too much of to fit.
+    @Test func aShortConversationIsAtBothEndsAtOnce() {
+        let short = metrics(height: 200, fromEnd: -400, fromStart: 0)
+        #expect(short.isAtEnd)
+        #expect(short.isNearStart)
     }
 }
