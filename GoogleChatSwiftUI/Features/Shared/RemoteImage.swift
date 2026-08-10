@@ -14,24 +14,35 @@ import SwiftUI
 /// `AsyncImage` is missed: there is no placeholder here because the caller already draws
 /// one — an avatar shows initials underneath, which is what a person without a photo gets
 /// permanently anyway.
+///
+/// Takes the size it is offered, so it wants a caller that gives it one.
 struct RemoteImage: View {
     let url: URL
 
     @State private var image: Image?
 
     var body: some View {
-        // No transition: these land on top of initials that are already the right shape
-        // and colour, and a fade would draw the eye to a swap nobody needs to notice.
-        Group {
-            if let image {
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+        // The clear base is load-bearing, not decoration. With `if let image` as the
+        // whole body this view renders nothing until the photo arrives — and SwiftUI
+        // does not run `.task` on content that renders nothing, so the load that would
+        // fill it never started and every avatar sat on its initials forever. A base
+        // that is always there gives the modifier something to attach to.
+        Color.clear
+            // Overflows in one dimension on a non-square photo, which the caller's
+            // `clipShape` takes off — same as when this was a `ZStack` sibling.
+            .overlay {
+                // No transition: these land on top of initials that are already the
+                // right shape and colour, and a fade would draw the eye to a swap
+                // nobody needs to notice.
+                if let image {
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                }
             }
-        }
-        // Keyed on the URL so a row reused for a different person loads that person's
-        // face rather than keeping the last one.
-        .task(id: url) { image = await ImageLoader.shared.image(for: url) }
+            // Keyed on the URL so a row reused for a different person loads that
+            // person's face rather than keeping the last one.
+            .task(id: url) { image = await ImageLoader.shared.image(for: url) }
     }
 }
 
