@@ -32,6 +32,7 @@ It is written for one person's Workspace account and distributed as source. Poin
 - `cardsV2` messages from Chat apps rendered natively; images open in a zoomable in-app viewer
 - Local full-text search over cached history, scoped to one conversation or all of them
 - `chat.google.com` links open in the app, not a browser tab — landing on the message, or in its thread
+- Click anyone's avatar or name in a space or a thread to open your chat with them, creating it if you have never spoken
 
 **Writing**
 

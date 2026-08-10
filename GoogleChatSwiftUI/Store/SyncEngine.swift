@@ -227,6 +227,59 @@ nonisolated struct SyncEngine: Sendable {
             .filter { $0 != selfChatName }
     }
 
+    // MARK: - Direct messages
+
+    /// The conversation with one person, ready to be opened.
+    ///
+    /// Three steps, cheapest first. The cache answers for every one-to-one conversation
+    /// whose members have been resolved, which after the first launch is nearly all of
+    /// them. `findDirectMessage` covers the rest — a DM this account has but has not
+    /// named yet, and it is authoritative where the cache can only be suggestive. And
+    /// `spaces.setup` covers two people who have never spoken, where there is no
+    /// conversation to open until one is made.
+    ///
+    /// Creating one is not as consequential as it sounds: an empty DM is invisible to
+    /// the other person until something is sent, so this is the same gesture as typing
+    /// someone's name into the web client's search box.
+    ///
+    /// - Parameter userID: Chat user resource name, e.g. `users/1234567890`.
+    /// - Returns: the space resource name.
+    func directMessage(with userID: String) async throws -> String {
+        if let cached = try await store.directMessageSpaceName(with: userID) { return cached }
+
+        let space: ChatSpace
+        do {
+            space = try await client.findDirectMessage(with: userID)
+        } catch let error as ChatAPIError where error.status == 404 {
+            space = try await client.setUpDirectMessage(with: userID)
+        }
+
+        try await store.upsertSpaces([space])
+        await nameDirectMessage(space.name, peer: userID)
+        logger.info("Resolved DM with \(userID) to \(space.name)")
+        return space.name
+    }
+
+    /// Titles a DM that has just entered the cache, so the sidebar row about to be
+    /// selected reads as the person's name rather than as the "…" an unresolved space
+    /// shows.
+    ///
+    /// It also records the peer, which is what lets the next click resolve from the
+    /// cache alone.
+    private func nameDirectMessage(_ spaceName: String, peer userID: String) async {
+        var name = (try? await store.displayNames(for: [userID]))?[userID]
+        if name == nil {
+            let directory = (try? await directoryService.people(forChatUserNames: [userID])) ?? [:]
+            if !directory.isEmpty { try? await store.upsertPeople(Array(directory.values)) }
+            name = directory[userID]?.displayName
+        }
+        // Left unresolved when the directory has nothing to say: `setResolvedTitle`
+        // marks a space resolved whatever it is given, and recording "no name" here
+        // would keep the ordinary title pass from ever trying again.
+        guard let name else { return }
+        try? await store.setResolvedTitle(name, peers: [userID], for: spaceName)
+    }
+
     // MARK: - Mentions
 
     /// The people the composer's `@` can reach in a space, with their profiles cached.

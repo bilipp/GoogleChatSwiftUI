@@ -66,6 +66,33 @@ actor ChatStore {
         return try modelContext.fetch(descriptor).map(\.name)
     }
 
+    /// The cached one-to-one conversation with one person, if this account has one.
+    ///
+    /// The peer list has to be exactly this person, and `spaceType` cannot stand in for
+    /// that: Chat labels conversations `DIRECT_MESSAGE` that hold three, four, six
+    /// people — this account has dozens — so "a DM containing them" also describes the
+    /// group chat with them and two colleagues, and matching on that opened whichever
+    /// of the two the fetch happened to return first. `peerUserIDs` is derived from the
+    /// actual membership with the signed-in user removed, so a single entry is the one
+    /// honest statement that a conversation is between two people.
+    ///
+    /// Filtered in memory rather than by predicate: `peerUserIDs` is an array attribute,
+    /// and SwiftData will not translate a comparison over one. The fetch is narrowed to
+    /// direct messages first, so this walks a few hundred rows at worst.
+    ///
+    /// Returns nil for a DM whose members have not been resolved yet, which is why the
+    /// caller has an API fallback rather than treating this as the answer.
+    /// - Parameter userID: Chat user resource name, e.g. `users/1234567890`.
+    func directMessageSpaceName(with userID: String) throws -> String? {
+        let directMessage = ChatSpace.SpaceType.directMessage.rawValue
+        let spaces = try modelContext.fetch(
+            FetchDescriptor<CachedSpace>(
+                predicate: #Predicate<CachedSpace> { $0.spaceTypeRaw == directMessage }
+            )
+        )
+        return spaces.first { $0.peerUserIDs == [userID] }?.name
+    }
+
     /// Caches directory lookups so names survive relaunch and are shared by the
     /// sidebar and the transcript.
     func upsertPeople(_ people: [DirectoryPerson]) throws {

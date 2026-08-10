@@ -159,6 +159,29 @@ final class ChatSessionModel {
         await openSpace(spaceName)
     }
 
+    // MARK: - Direct messages
+
+    /// Finds the one-to-one conversation with a person, creating it if this account has
+    /// never had one with them.
+    ///
+    /// Stops short of opening it, because the caller has something to do first: the
+    /// sidebar's filters have to make room for the conversation before it is selected,
+    /// or the transcript opens with no row to be selected in and no sense of where you
+    /// are. See `SpacesListView.openDirectMessage(with:)`.
+    ///
+    /// - Parameter userID: Chat user resource name, e.g. `users/1234567890`.
+    /// - Returns: the space to open, or nil when it could not be resolved — reported
+    ///   through `messageError`, like any other failed request.
+    func directMessageSpace(with userID: String) async -> String? {
+        do {
+            return try await sync.directMessage(with: userID)
+        } catch {
+            logger.error("DM lookup for \(userID) failed: \(error.localizedDescription)")
+            messageError = "Couldn't open that chat. \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     // MARK: - Links
 
     /// Why a link could not be followed all the way to what it named. Nil the rest of

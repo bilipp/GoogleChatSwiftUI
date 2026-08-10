@@ -79,6 +79,15 @@ struct SpacesListView: View {
         // message text, a smart chip, a card button. `Text`, `Link`, and `CardView` all
         // route through this action rather than reaching AppKit themselves.
         .environment(\.openURL, OpenURLAction(handler: openChatLink))
+        // Installed here for the same reason, and at the same level: a person can be
+        // clicked in the transcript or in the thread inspector, and both want the one
+        // route into a conversation that only this view can open.
+        .environment(
+            \.openDirectMessage,
+            OpenDirectMessageAction { userID in
+                Task { await openDirectMessage(with: userID) }
+            }
+        )
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 ProfileMenu(
@@ -168,6 +177,20 @@ struct SpacesListView: View {
         unhide(link.spaceName)
         Task { await session.reveal(link) }
         return .handled
+    }
+
+    /// Opens the chat with a person, from wherever they were clicked.
+    ///
+    /// The conversation may be one this account has never had, in which case it is
+    /// created — see `SyncEngine.directMessage(with:)` — and a brand-new row can be a
+    /// runloop behind the sidebar's own query. `unhide` can only relax filters for a row
+    /// it can already see, so the one filter that would certainly hide a direct message
+    /// is cleared first, whether or not the row has arrived.
+    private func openDirectMessage(with userID: String) async {
+        guard let spaceName = await session.directMessageSpace(with: userID) else { return }
+        if session.kind == .spaces { session.kind = .all }
+        unhide(spaceName)
+        await session.revealSpace(spaceName)
     }
 
     /// Relaxes any filter that would hide a conversation being opened from outside the

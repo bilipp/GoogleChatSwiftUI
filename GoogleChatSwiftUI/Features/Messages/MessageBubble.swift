@@ -8,6 +8,7 @@ import SwiftUI
 /// is what makes a long conversation scannable.
 struct MessageBubble: View {
     @Environment(ChatSessionModel.self) private var session
+    @Environment(\.openDirectMessage) private var openDirectMessage
 
     let message: CachedMessage
     /// Directory profile for the sender, when one has been resolved.
@@ -190,6 +191,26 @@ struct MessageBubble: View {
         SenderIdentity(message: message, sender: sender)
     }
 
+    /// Who a click on this sender should open a chat with, or nil where there is nobody
+    /// to open one with.
+    ///
+    /// Your own messages are out because a DM with yourself is not what the click means.
+    /// Apps are out for a harder reason: Chat has no `findDirectMessage` for one and
+    /// will not set up a membership for a non-human, so the DM with an app exists only
+    /// if the app was installed — there is nothing this app could open.
+    private var messageablePeer: String? {
+        guard !isOwn, !identity.isApp else { return nil }
+        return message.senderName
+    }
+
+    /// What to call the person in the tooltip and the menu. Not `identity.name`, whose
+    /// placeholder would produce "Message Unknown" for a colleague the directory has
+    /// simply not answered for yet — the chat can still be opened, so the wording
+    /// stops claiming to know who it is with.
+    private var messageableName: String {
+        identity.resolvedName ?? "this person"
+    }
+
     /// The name above the first bubble of a block, tagged when an app posted.
     ///
     /// The tag is what the web client shows too, and it earns its space: these messages
@@ -213,6 +234,7 @@ struct MessageBubble: View {
             }
         }
         .padding(.leading, 4)
+        .opensDirectMessage(with: messageablePeer, named: messageableName)
     }
 
     @ViewBuilder
@@ -225,6 +247,7 @@ struct MessageBubble: View {
                 photoURL: identity.photoURL,
                 isApp: identity.isApp
             )
+            .opensDirectMessage(with: messageablePeer, named: messageableName)
         } else {
             Color.clear.frame(width: 28, height: 1)
         }
@@ -441,6 +464,17 @@ struct MessageBubble: View {
                 ) {
                     onOpenThread()
                 }
+            }
+        }
+
+        // The discoverable half of this: clicking the avatar or the name does the same
+        // thing, but nothing on screen says so until the cursor is already over one.
+        // Outside the gate above on purpose — this is about the person, not the
+        // message, so it stays available on a deleted one.
+        if let peer = messageablePeer {
+            Divider()
+            Button("Message \(messageableName)", systemImage: "bubble.left") {
+                openDirectMessage(peer)
             }
         }
 

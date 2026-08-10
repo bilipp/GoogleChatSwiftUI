@@ -48,6 +48,35 @@ nonisolated struct UpdateMessageBody: Encodable, Sendable {
     var text: String
 }
 
+/// The `spaces.setup` request for a one-to-one conversation.
+///
+/// Chat defines a DM by its two members, so the membership travels in the same call
+/// that creates the space — which is why this is `spaces.setup` and not `spaces.create`:
+/// `create` takes no members and rejects `DIRECT_MESSAGE` outright.
+nonisolated struct SetUpDirectMessageBody: Encodable, Sendable {
+    nonisolated struct SpaceRef: Encodable, Sendable {
+        var spaceType = "DIRECT_MESSAGE"
+    }
+
+    nonisolated struct MembershipRef: Encodable, Sendable {
+        nonisolated struct MemberRef: Encodable, Sendable {
+            var name: String
+            /// Spelled out because the field is not inferred from the resource name,
+            /// and a membership with no type is rejected.
+            var type = "HUMAN"
+        }
+        var member: MemberRef
+    }
+
+    var space = SpaceRef()
+    var memberships: [MembershipRef]
+
+    /// - Parameter user: Chat user resource name, e.g. `users/1234567890`.
+    init(user: String) {
+        memberships = [MembershipRef(member: .init(name: user))]
+    }
+}
+
 nonisolated struct SpaceReadStateBody: Encodable, Sendable {
     var lastReadTime: String
 }
@@ -211,6 +240,40 @@ nonisolated extension ChatClient {
     /// lowercase letters, numbers, and hyphens, up to 63 characters.
     static func newClientMessageID() -> String {
         "client-" + UUID().uuidString.lowercased()
+    }
+
+    // MARK: - Direct messages
+
+    /// The DM this account already has with one person.
+    ///
+    /// A read, kept beside the write below because the two are halves of one operation:
+    /// there is no endpoint that says "give me the conversation with this person",
+    /// only "find it" and "make it".
+    ///
+    /// - Parameter user: Chat user resource name, e.g. `users/1234567890`. Must be a
+    ///   person — Chat has no `findDirectMessage` for an app, and the DM with one can
+    ///   only be created by installing it.
+    /// - Throws: `ChatAPIError` with status 404 when the two have never had a DM. That
+    ///   is an ordinary answer rather than a failure; see ``setUpDirectMessage(with:)``.
+    func findDirectMessage(with user: String) async throws -> ChatSpace {
+        try await get(
+            "spaces:findDirectMessage",
+            query: [URLQueryItem(name: "name", value: user)],
+            as: ChatSpace.self
+        )
+    }
+
+    /// Creates the DM between this account and one person.
+    ///
+    /// Nothing is announced by this. A DM with no messages in it does not appear in the
+    /// other person's conversation list, so opening one is not a poke — they hear about
+    /// it when something is actually sent.
+    ///
+    /// Chat returns the existing conversation rather than a second one if a DM turns out
+    /// to exist after all, so racing this against `findDirectMessage` cannot produce
+    /// duplicates.
+    func setUpDirectMessage(with user: String) async throws -> ChatSpace {
+        try await post("spaces:setup", body: SetUpDirectMessageBody(user: user), as: ChatSpace.self)
     }
 
     // MARK: - Reactions
