@@ -96,6 +96,34 @@ struct ProfileMenu: View {
     }
 }
 
+/// The account control as a toolbar item's content, reading what it shows from the
+/// environment.
+///
+/// It exists so every detail state can place the control itself, as the last item of
+/// its own toolbar. Toolbar order is not declaration order across views: items
+/// contributed by the split view as a whole are laid out before the detail column's
+/// own, so an account control declared up there lands to the *left* of the
+/// transcript's buttons no matter which placement it asks for. Declared alongside
+/// them, in one toolbar, it follows them.
+struct AccountToolbarButton: View {
+    @Environment(AuthModel.self) private var auth
+    @Environment(ChatSessionModel.self) private var session
+
+    var body: some View {
+        ProfileMenu(
+            profile: profile,
+            totalUnread: session.totalUnread,
+            onSignOut: { Task { await auth.signOut() } },
+            onMarkAllRead: { Task { await session.markAllRead() } }
+        )
+    }
+
+    private var profile: GoogleUserProfile? {
+        if case .signedIn(let profile) = auth.state { return profile }
+        return nil
+    }
+}
+
 /// Menu-like row for the account popover, which needs real views rather than the
 /// `Button`s a `Menu` would accept.
 private struct PanelRow: View {

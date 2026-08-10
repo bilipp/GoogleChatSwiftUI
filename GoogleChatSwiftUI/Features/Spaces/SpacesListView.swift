@@ -4,7 +4,6 @@ import SwiftUI
 /// Sidebar + detail. The sidebar is activity-scoped by default because this account
 /// has 762 spaces; search reaches all of them regardless of filter.
 struct SpacesListView: View {
-    @Environment(AuthModel.self) private var auth
     @Environment(ChatSessionModel.self) private var session
     @Query(sort: [SortDescriptor(\CachedSpace.lastActiveTime, order: .reverse)])
     private var allSpaces: [CachedSpace]
@@ -35,6 +34,9 @@ struct SpacesListView: View {
                 // Re-queries when the text or scope changes; without this the fetch
                 // descriptor built in `init` would be reused.
                 .id("\(session.messageQuery)|\(session.messageSearchScope.rawValue)")
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) { AccountToolbarButton() }
+                }
             } else if let selected = selectedSpace {
                 MessageListView(
                     spaceName: selected.name,
@@ -59,6 +61,9 @@ struct SpacesListView: View {
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text("Pick a space or direct message to read it.")
                 )
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) { AccountToolbarButton() }
+                }
             }
         }
         // `.searchable` rather than a hand-rolled toolbar field. A TextField hosted
@@ -88,16 +93,6 @@ struct SpacesListView: View {
                 Task { await openDirectMessage(with: userID) }
             }
         )
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                ProfileMenu(
-                    profile: currentProfile,
-                    totalUnread: session.totalUnread,
-                    onSignOut: { Task { await auth.signOut() } },
-                    onMarkAllRead: { Task { await session.markAllRead() } }
-                )
-            }
-        }
         .task {
             // First, because this is a click that landed before the view existed —
             // the one that launched the app — and the loaders below run in bounded
@@ -234,11 +229,6 @@ struct SpacesListView: View {
             get: { session.threadInspector != .closed },
             set: { shown in if !shown { session.closeThreadInspector() } }
         )
-    }
-
-    private var currentProfile: GoogleUserProfile? {
-        if case .signedIn(let profile) = auth.state { return profile }
-        return nil
     }
 
     private var selectedSpace: CachedSpace? {

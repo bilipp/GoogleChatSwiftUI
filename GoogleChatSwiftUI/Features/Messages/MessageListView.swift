@@ -81,8 +81,17 @@ struct MessageListView: View {
             // Only where threads are a place of their own. In grouped and unthreaded
             // spaces replies are already in the transcript, so a thread index would
             // just be a second copy of what is on screen.
+            if isThreaded {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+                ToolbarItem(placement: .primaryAction) { threadsButton }
+            }
+            // Last of this view's own items, and declared here rather than on the
+            // split view, because that is what puts it after them — see
+            // `AccountToolbarButton`. The search field lands to its right whatever
+            // any of this says: SwiftUI pins it to the trailing end of the toolbar.
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
-                if isThreaded { threadsButton }
+                AccountToolbarButton()
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
