@@ -121,6 +121,9 @@ struct MessageComposer: View {
             Task { await load(providers) }
             return true
         }
+        // Pasting is the only way to send a screenshot that was never saved, and the
+        // picker cannot reach one: there is no file to point it at.
+        .modifier(ImagePasteHandler(isEnabled: isFocused && !isSending, onPaste: stage))
         .onAppear { isFocused = true }
         // Choosing "Reply" happens in the transcript, several rows away from here, so
         // the caret has to come to the composer rather than the user hunting for it.
@@ -375,6 +378,58 @@ struct MessageComposer: View {
         errorMessage = oversized.isEmpty
             ? nil
             : "Too large to send (200 MB limit): \(oversized.joined(separator: ", "))"
+    }
+}
+
+/// Stages the clipboard's images when ⌘V arrives, and otherwise stays out of the way.
+///
+/// Watches keys ahead of `NSApplication.sendEvent(_:)` rather than taking the paste
+/// command through `onPasteCommand(of:)`: while the field has focus that command is
+/// answered by its field editor, which reaches for text and drops everything else, so a
+/// handler further out never hears it. A local monitor is the one hook that runs earlier.
+/// The event is passed along untouched whenever nothing was staged, which leaves pasting
+/// text — and every other ⌘V in the app — exactly as it was.
+private struct ImagePasteHandler: ViewModifier {
+    /// Only the focused composer answers, so the two a thread can have on screen at once
+    /// never both stage the same image.
+    let isEnabled: Bool
+    let onPaste: ([PendingAttachment]) -> Void
+
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear(perform: install)
+            .onDisappear(perform: remove)
+            .onChange(of: isEnabled) { install() }
+    }
+
+    /// Idempotent, so appearing and losing focus can both call it without keeping two
+    /// monitors — or none, after a composer that was hidden comes back.
+    private func install() {
+        remove()
+        guard isEnabled else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard isPaste(event) else { return event }
+            let images = PasteboardImages.attachments(on: .general)
+            guard !images.isEmpty else { return event }
+            onPaste(images)
+            // Swallowed, so the text flavour of the same copy is not also pasted behind
+            // the attachment.
+            return nil
+        }
+    }
+
+    private func remove() {
+        guard let monitor else { return }
+        NSEvent.removeMonitor(monitor)
+        self.monitor = nil
+    }
+
+    /// ⌘V and nothing else — ⇧⌘V is Paste and Match Style, which is about text.
+    private func isPaste(_ event: NSEvent) -> Bool {
+        event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
+            && event.charactersIgnoringModifiers?.lowercased() == "v"
     }
 }
 
