@@ -61,20 +61,21 @@ struct MessageListView: View {
     }
 
     var body: some View {
-        Group {
+        // Built once here and handed down, rather than reached for per row. See
+        // ``TranscriptIndex``.
+        let index = TranscriptIndex(
+            users: users,
+            messages: messages,
+            threads: threads,
+            mentionableIDs: session.mentionableUserIDs(in: spaceName),
+            isThreaded: isThreaded
+        )
+
+        return Group {
             if messages.isEmpty {
-                if session.isLoading(spaceName) {
-                    ProgressView("Loading messages…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ContentUnavailableView(
-                        "No Messages",
-                        systemImage: "bubble",
-                        description: Text("Say something to start the conversation.")
-                    )
-                }
+                emptyState
             } else {
-                transcript
+                transcript(index)
             }
         }
         .navigationTitle(spaceTitle)
@@ -97,49 +98,66 @@ struct MessageListView: View {
                 AccountToolbarButton()
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                if let error = session.messageError {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary)
-                }
-                // A followed link that could not reach the message it named. Stated
-                // rather than silently ignored: the alternative is a click that opens
-                // the right conversation at the wrong place and explains nothing.
-                if let notice = session.linkNotice {
-                    linkNoticeBanner(notice)
-                }
-                MessageComposer(
-                    placeholder: replyTarget == nil ? "Message \(spaceTitle)" : "Reply",
-                    isSending: session.isSending(spaceName),
-                    replyTarget: replyTarget,
-                    onCancelReply: { replyTarget = nil },
-                    mentionCandidates: mentionCandidates
-                ) { composed in
-                    let target = replyTarget
-                    replyTarget = nil
-                    sendCount += 1
-                    Task {
-                        await session.send(
-                            composed.text,
-                            to: spaceName,
-                            replyingTo: target,
-                            attachments: composed.attachments,
-                            mentions: composed.mentions
-                        )
-                    }
-                }
-            }
-        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { composerArea(index) }
         // Members are fetched per space and only once per launch, so this is one call
         // the first time a conversation is opened rather than anything the sidebar
         // pays for — at 762 spaces, a members lookup each would dwarf the whole app.
         .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if session.isLoading(spaceName) {
+            ProgressView("Loading messages…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ContentUnavailableView(
+                "No Messages",
+                systemImage: "bubble",
+                description: Text("Say something to start the conversation.")
+            )
+        }
+    }
+
+    /// The composer and the two banners that sit above it.
+    private func composerArea(_ index: TranscriptIndex) -> some View {
+        VStack(spacing: 0) {
+            if let error = session.messageError {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary)
+            }
+            // A followed link that could not reach the message it named. Stated
+            // rather than silently ignored: the alternative is a click that opens
+            // the right conversation at the wrong place and explains nothing.
+            if let notice = session.linkNotice {
+                linkNoticeBanner(notice)
+            }
+            MessageComposer(
+                placeholder: replyTarget == nil ? "Message \(spaceTitle)" : "Reply",
+                isSending: session.isSending(spaceName),
+                replyTarget: replyTarget,
+                onCancelReply: { replyTarget = nil },
+                mentionCandidates: index.mentionCandidates
+            ) { composed in
+                let target = replyTarget
+                replyTarget = nil
+                sendCount += 1
+                Task {
+                    await session.send(
+                        composed.text,
+                        to: spaceName,
+                        replyingTo: target,
+                        attachments: composed.attachments,
+                        mentions: composed.mentions
+                    )
+                }
+            }
+        }
     }
 
     /// Information rather than failure, so it is styled as a note and not as the red
@@ -204,7 +222,7 @@ struct MessageListView: View {
     /// older history is inserted above. The grouped days are computed once and handed
     /// over, since they are needed both as content and as the two identities that tell
     /// the scroll view which end moved.
-    private var transcript: some View {
+    private func transcript(_ index: TranscriptIndex) -> some View {
         @Bindable var session = session
         let groups = days
         let oldestID = groups.first?.entries.first?.message.name
@@ -226,7 +244,7 @@ struct MessageListView: View {
                 DayDivider(day: group.day)
 
                 ForEach(group.entries, id: \.message.name) { entry in
-                    row(for: entry)
+                    row(for: entry, index: index)
                         .id(entry.message.name)
                 }
             }
@@ -256,87 +274,46 @@ struct MessageListView: View {
     }
 
     /// One message, with everything the bubble cannot work out for itself.
-    private func row(for entry: Entry) -> some View {
+    private func row(for entry: Entry, index: TranscriptIndex) -> some View {
         let message = entry.message
-        let quotedPreview = quoted.preview(for: message)
+        let quotedPreview = index.quoted.preview(for: message)
 
         return MessageBubble(
             message: message,
-            sender: sender(for: message),
-            mentionNames: mentionNames(in: message),
-            mentionCandidates: mentionCandidates,
+            sender: index.sender(of: message),
+            mentionNames: index.mentionNames(in: message),
+            mentionCandidates: index.mentionCandidates,
             isOwn: entry.isOwn,
             isFirstInGroup: entry.isFirstInGroup,
             isLastInGroup: entry.isLastInGroup,
             spaceName: spaceName,
-            threadReplyCount: threadReplyCount(for: message),
-            newReplyCount: newReplyCount(for: message),
+            threadReplyCount: index.replyCount(of: message),
+            newReplyCount: index.unreadReplyCount(of: message),
             quotedPreview: quotedPreview,
             onOpenThread: isThreaded ? { openThread(message) } : nil,
-            onReply: { startReply(to: message) },
-            onOpenQuoted: quotedPreview.map { preview in { openQuoted(preview) } }
+            onReply: { startReply(to: message, index: index) },
+            onOpenQuoted: quotedPreview.map { preview in { openQuoted(preview, index: index) } }
         )
     }
 
-    private var usersByID: [String: CachedUser] {
-        Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    /// Who the composer's `@` can reach in this conversation.
-    private var mentionCandidates: [MentionCandidate] {
-        MentionCandidate.list(
-            for: session.mentionableUserIDs(in: spaceName),
-            users: usersByID
+    private func startReply(to message: CachedMessage, index: TranscriptIndex) {
+        replyTarget = ReplyTarget(
+            message: message,
+            authorName: index.quoted.authorName(of: message)
         )
-    }
-
-    /// Everything needed to say what a reply is quoting. Built from the same rows the
-    /// transcript is already showing, so a quote of a cached message reads as it stands
-    /// now rather than as the snapshot taken when it was quoted.
-    private var quoted: QuotedMessageResolver {
-        QuotedMessageResolver(messagesByName: messagesByName, usersByID: usersByID)
-    }
-
-    /// Every cached message in this space, replies included — a quote can point at one
-    /// even in a threaded space, where replies are not in the transcript.
-    private var messagesByName: [String: CachedMessage] {
-        Dictionary(messages.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    private func startReply(to message: CachedMessage) {
-        replyTarget = ReplyTarget(message: message, authorName: quoted.authorName(of: message))
     }
 
     /// Goes to the message a reply is quoting.
     ///
     /// In a threaded space a quoted reply is not in the transcript at all, so the way
     /// to it is its thread rather than a scroll position that does not exist.
-    private func openQuoted(_ preview: QuotedMessagePreview) {
-        let original = messagesByName[preview.messageName]
+    private func openQuoted(_ preview: QuotedMessagePreview, index: TranscriptIndex) {
+        let original = index.quoted.messagesByName[preview.messageName]
         if isThreaded, original?.isThreadReply == true, let threadName = original?.threadName {
             session.openThread(threadName)
         } else {
             session.scrollTarget = preview.messageName
         }
-    }
-
-    private func sender(for message: CachedMessage) -> CachedUser? {
-        guard let id = message.senderName else { return nil }
-        return usersByID[id]
-    }
-
-    private func mentionNames(in message: CachedMessage) -> [String] {
-        message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
-    }
-
-    private func threadReplyCount(for message: CachedMessage) -> Int {
-        guard isThreaded, let thread = message.threadName else { return 0 }
-        return replyCounts[thread] ?? 0
-    }
-
-    private func newReplyCount(for message: CachedMessage) -> Int {
-        guard isThreaded, let thread = message.threadName else { return 0 }
-        return unreadReplyCounts[thread] ?? 0
     }
 
     private func openThread(_ message: CachedMessage) {
@@ -367,28 +344,6 @@ struct MessageListView: View {
     private var visibleMessages: [CachedMessage] {
         guard isThreaded else { return messages }
         return messages.filter { !$0.isThreadReply }
-    }
-
-    /// Reply counts per thread, computed once rather than per row.
-    private var replyCounts: [String: Int] {
-        guard isThreaded else { return [:] }
-        var counts: [String: Int] = [:]
-        for message in messages where message.isThreadReply {
-            guard let thread = message.threadName else { continue }
-            counts[thread, default: 0] += 1
-        }
-        return counts
-    }
-
-    /// Unread replies per thread, read from the thread rows rather than recomputed:
-    /// the store already maintains them, and the read marks they depend on live there.
-    private var unreadReplyCounts: [String: Int] {
-        guard isThreaded else { return [:] }
-        var counts: [String: Int] = [:]
-        for thread in threads where thread.unreadReplyCount > 0 {
-            counts[thread.name] = thread.unreadReplyCount
-        }
-        return counts
     }
 
     /// Messages bucketed by day, then annotated with sender-run position.
@@ -453,6 +408,93 @@ struct MessageListView: View {
         let start = earlier.createTime ?? Date.distantPast
         let end = later.createTime ?? Date.distantPast
         return end.timeIntervalSince(start)
+    }
+}
+
+/// Everything a transcript row needs looked up, resolved once per body evaluation.
+///
+/// These were computed properties on the view, which reads innocently and is not: a
+/// computed property called from the per-row builder is *recomputed for every row*, so
+/// drawing the transcript rebuilt a dictionary over every cached message and every
+/// directory row once per bubble. That is O(rows × cache) of pure allocation on every
+/// body evaluation — and a body evaluation happens whenever anything the view observes
+/// changes, including each new row the lazy stack builds while scrolling.
+///
+/// A snapshot rather than a live view of the cache, which is what the callers want: the
+/// closures a row hands to its bubble fire on a click, and they should answer about the
+/// transcript the reader clicked in.
+private struct TranscriptIndex {
+    let quoted: QuotedMessageResolver
+    /// Who the composer's `@` can reach in this conversation.
+    let mentionCandidates: [MentionCandidate]
+    /// Replies per thread, and how many of them are unread — the second read from the
+    /// thread rows rather than recomputed, since the store already maintains it and the
+    /// read marks it depends on live there. Both empty where replies are already in the
+    /// transcript, and the counts would describe nothing.
+    private let replyCounts: [String: Int]
+    private let unreadReplyCounts: [String: Int]
+    private let usersByID: [String: CachedUser]
+
+    init(
+        users: [CachedUser],
+        messages: [CachedMessage],
+        threads: [CachedThread],
+        mentionableIDs: [String],
+        isThreaded: Bool
+    ) {
+        let usersByID = Dictionary(
+            users.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Every cached message in this space, replies included — a quote can point at
+        // one even in a threaded space, where replies are not in the transcript.
+        let messagesByName = Dictionary(
+            messages.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        self.usersByID = usersByID
+        quoted = QuotedMessageResolver(messagesByName: messagesByName, usersByID: usersByID)
+        mentionCandidates = MentionCandidate.list(for: mentionableIDs, users: usersByID)
+
+        guard isThreaded else {
+            replyCounts = [:]
+            unreadReplyCounts = [:]
+            return
+        }
+
+        var replies: [String: Int] = [:]
+        for message in messages where message.isThreadReply {
+            guard let thread = message.threadName else { continue }
+            replies[thread, default: 0] += 1
+        }
+        replyCounts = replies
+
+        var unread: [String: Int] = [:]
+        for thread in threads where thread.unreadReplyCount > 0 {
+            unread[thread.name] = thread.unreadReplyCount
+        }
+        unreadReplyCounts = unread
+    }
+
+    func sender(of message: CachedMessage) -> CachedUser? {
+        guard let id = message.senderName else { return nil }
+        return usersByID[id]
+    }
+
+    /// Display names of the people a message mentions, for highlighting.
+    func mentionNames(in message: CachedMessage) -> [String] {
+        message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
+    }
+
+    func replyCount(of message: CachedMessage) -> Int {
+        guard let thread = message.threadName else { return 0 }
+        return replyCounts[thread] ?? 0
+    }
+
+    func unreadReplyCount(of message: CachedMessage) -> Int {
+        guard let thread = message.threadName else { return 0 }
+        return unreadReplyCounts[thread] ?? 0
     }
 }
 

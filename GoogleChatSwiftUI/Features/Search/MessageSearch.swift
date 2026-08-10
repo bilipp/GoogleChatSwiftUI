@@ -79,7 +79,15 @@ struct MessageSearchResults: View {
     }
 
     private var list: some View {
-        List {
+        // Once for the list rather than once per row: `sender(for:)` was reaching for a
+        // computed dictionary of every directory row, so 200 results meant 200 rebuilds
+        // of it on every pass.
+        let usersByID = Dictionary(
+            users.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        return List {
             Section {
                 ForEach(matches) { message in
                     Button {
@@ -87,7 +95,7 @@ struct MessageSearchResults: View {
                     } label: {
                         MessageSearchRow(
                             message: message,
-                            sender: sender(for: message),
+                            sender: message.senderName.flatMap { usersByID[$0] },
                             query: query
                         )
                     }
@@ -107,15 +115,6 @@ struct MessageSearchResults: View {
         matches.count >= 200
             ? "First 200 matches"
             : "\(matches.count) match\(matches.count == 1 ? "" : "es")"
-    }
-
-    private var usersByID: [String: CachedUser] {
-        Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    private func sender(for message: CachedMessage) -> CachedUser? {
-        guard let id = message.senderName else { return nil }
-        return usersByID[id]
     }
 
     /// Opens the containing conversation and asks the transcript to jump to the hit.

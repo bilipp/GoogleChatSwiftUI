@@ -123,13 +123,21 @@ struct ThreadListPane: View {
     }
 
     private var list: some View {
-        ScrollView {
+        // One dictionary for the whole list rather than one per row: `usersByID` was a
+        // computed property reached for twice by every row drawn, so a pane of forty
+        // threads rebuilt a table of every directory row eighty times a pass.
+        let usersByID = Dictionary(
+            users.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        return ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(visibleThreads) { thread in
                     ThreadSummaryRow(
                         thread: thread,
-                        starter: starter(of: thread),
-                        lastReplierName: lastReplierName(in: thread)
+                        starter: starter(of: thread, users: usersByID),
+                        lastReplierName: lastReplierName(in: thread, users: usersByID)
                     ) {
                         session.openThread(thread.name, fromList: true)
                     }
@@ -155,18 +163,20 @@ struct ThreadListPane: View {
         return withReplies.filter(\.hasUnread)
     }
 
-    private var usersByID: [String: CachedUser] {
-        Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-    }
-
     /// Who started the thread. Nil only for a thread whose root has not been cached.
-    private func starter(of thread: CachedThread) -> SenderIdentity? {
+    private func starter(
+        of thread: CachedThread,
+        users usersByID: [String: CachedUser]
+    ) -> SenderIdentity? {
         guard let root = thread.root else { return nil }
         return SenderIdentity(message: root, sender: root.senderName.flatMap { usersByID[$0] })
     }
 
     /// Who spoke last, which is usually why the thread is worth opening.
-    private func lastReplierName(in thread: CachedThread) -> String? {
+    private func lastReplierName(
+        in thread: CachedThread,
+        users usersByID: [String: CachedUser]
+    ) -> String? {
         let replies = thread.messages.filter { $0.isThreadReply && !$0.isDeleted }
         let newest = replies.max { lhs, rhs in
             (lhs.createTime ?? .distantPast) < (rhs.createTime ?? .distantPast)

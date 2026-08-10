@@ -53,7 +53,7 @@ struct QuotedMessagePreview: Equatable {
     /// answers. Markup is stripped for the same reason it is in notifications — the
     /// asterisks would be all that survived the truncation.
     static func line(of message: CachedMessage) -> String {
-        let plain = ChatTextRenderer.plainText(message.summaryText)
+        let plain = RenderedChatText.plainText(message.summaryText)
         return plain
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -87,7 +87,7 @@ struct QuotedMessageResolver {
             messageName: quotedName,
             authorName: displayName(for: message.quotedMessageSender)
                 ?? SenderIdentity.unnamedPerson,
-            text: message.quotedMessageText.map(ChatTextRenderer.plainText) ?? "Quoted message"
+            text: message.quotedMessageText.map(RenderedChatText.plainText) ?? "Quoted message"
         )
     }
 

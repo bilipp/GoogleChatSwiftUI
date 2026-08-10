@@ -259,7 +259,7 @@ struct MessageBubble: View {
         guard !message.isDeleted, let raw = message.text, !raw.isEmpty else {
             return [.paragraph(AttributedString(message.displayText))]
         }
-        return ChatTextRenderer.blocks(raw, mentionNames: mentionNames, isOwn: isOwn)
+        return RenderedChatText.blocks(raw, mentionNames: mentionNames, isOwn: isOwn)
     }
 
     private var bubble: some View {
@@ -581,6 +581,6 @@ struct MessageBubble: View {
         let time = message.createTime?.formatted(date: .omitted, time: .shortened) ?? ""
         // Stripped, because VoiceOver reading "asterisk shipped asterisk" aloud is
         // worse than losing the emphasis.
-        return "\(who) at \(time): \(ChatTextRenderer.plainText(message.summaryText))"
+        return "\(who) at \(time): \(RenderedChatText.plainText(message.summaryText))"
     }
 }

@@ -242,6 +242,15 @@ struct SpacesListView: View {
 
     private var sidebar: some View {
         @Bindable var session = session
+        // One pass over the space list for the whole sidebar — see ``SidebarIndex``.
+        let index = SidebarIndex(
+            spaces: allSpaces,
+            users: users,
+            scope: session.scope,
+            kind: session.kind,
+            showsMuted: session.showsMuted,
+            searchText: session.searchText
+        )
 
         return ScrollViewReader { proxy in
             List(selection: Binding(
@@ -251,7 +260,7 @@ struct SpacesListView: View {
                     Task { await session.openSpace(name) }
                 }
             )) {
-                ForEach(groupedSpaces, id: \.title) { group in
+                ForEach(index.groups, id: \.title) { group in
                     Section(group.title) {
                         // Identified by name so `scrollTo` below can name a row. The
                         // model's own identifier would work for the list but is not
@@ -259,26 +268,26 @@ struct SpacesListView: View {
                         ForEach(group.spaces, id: \.name) { space in
                             SpaceRow(
                                 space: space,
-                                peer: peer(for: space),
+                                peer: index.peer(for: space),
                                 isHighlighted: space.name == highlightedSpaceName
                             )
                             .tag(space.name)
-                            .contextMenu { rowMenu(for: space) }
+                            .contextMenu { rowMenu(for: space, index: index) }
                         }
-                        .onMove(perform: moveHandler(for: group))
+                        .onMove(perform: moveHandler(for: group, index: index))
                     }
                 }
             }
             // Dissolves rows into the header instead of letting them slide under it.
             .scrollEdgeEffectStyle(.hard, for: .top)
-            .overlay { emptyOverlay }
+            .overlay { emptyOverlay(index) }
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 6) {
                     SidebarSearchField(
                         text: $session.searchText,
                         placeholder: "Search conversations",
                         isFocused: $isSearchFocused,
-                        onMoveHighlight: moveHighlight,
+                        onMoveHighlight: { delta in moveHighlight(by: delta, in: index) },
                         onOpenHighlighted: openHighlighted,
                         onCancel: cancelSearch
                     )
@@ -286,10 +295,10 @@ struct SpacesListView: View {
                         scope: $session.scope,
                         kind: $session.kind,
                         showsMuted: $session.showsMuted,
-                        scopeCounts: scopeCounts,
-                        kindCounts: kindCounts,
-                        mutedCount: mutedCount,
-                        visibleCount: visibleSpaces.count
+                        scopeCounts: index.scopeCounts,
+                        kindCounts: index.kindCounts,
+                        mutedCount: index.mutedCount,
+                        visibleCount: index.visibleSpaces.count
                     )
                 }
                 .padding(.horizontal, 10)
@@ -314,36 +323,30 @@ struct SpacesListView: View {
             // A new query means new results: point at the top hit so Return has a
             // visible target without an arrow press first.
             .onChange(of: session.searchText) { _, _ in
-                highlightedSpaceName = defaultHighlight
+                highlightedSpaceName = defaultHighlight(index)
             }
             // Once focus leaves the field the arrows belong to the list itself, and
             // a highlight left behind would claim a target they no longer move.
             .onChange(of: isSearchFocused) { _, focused in
-                highlightedSpaceName = focused ? defaultHighlight : nil
+                highlightedSpaceName = focused ? defaultHighlight(index) : nil
             }
         }
-    }
-
-    /// Every visible row in the order the sidebar draws it, groups included — so the
-    /// arrows walk the list as it looks rather than as it was assembled.
-    private var orderedSpaceNames: [String] {
-        groupedSpaces.flatMap { $0.spaces.map(\.name) }
     }
 
     /// Where the highlight sits before any arrow press: on the top hit once there is
     /// a query, and nowhere at all while the field is empty — a highlight on row one
     /// of an unfiltered list of 762 would be pointing at nothing in particular.
-    private var defaultHighlight: String? {
+    private func defaultHighlight(_ index: SidebarIndex) -> String? {
         session.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
-            : orderedSpaceNames.first
+            : index.orderedSpaceNames.first
     }
 
-    private func moveHighlight(by delta: Int) {
+    private func moveHighlight(by delta: Int, in index: SidebarIndex) {
         highlightedSpaceName = SidebarHighlight.moved(
             from: highlightedSpaceName,
             by: delta,
-            in: orderedSpaceNames
+            in: index.orderedSpaceNames
         )
     }
 
@@ -369,101 +372,25 @@ struct SpacesListView: View {
         }
     }
 
-    /// How many rows each scope would show, honouring the current kind — so the
-    /// numbers in the menu match what picking that option actually produces.
-    private var scopeCounts: [SpaceScope: Int] {
-        let now = Date()
-        var counts: [SpaceScope: Int] = [:]
-        for option in SpaceScope.allCases {
-            counts[option] = allSpaces.count { space in
-                option.matches(space, now: now) && session.kind.matches(space)
-            }
-        }
-        return counts
-    }
-
-    private var kindCounts: [SpaceKind: Int] {
-        let now = Date()
-        var counts: [SpaceKind: Int] = [:]
-        for option in SpaceKind.allCases {
-            counts[option] = allSpaces.count { space in
-                session.scope.matches(space, now: now) && option.matches(space)
-            }
-        }
-        return counts
-    }
-
-    private var usersByID: [String: CachedUser] {
-        Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-    }
-
-    /// The single other person in a DM. Group chats intentionally get a tile instead
-    /// of one arbitrary member's face.
-    private func peer(for space: CachedSpace) -> CachedUser? {
-        guard space.spaceType == .directMessage,
-              let id = space.peerUserIDs.first
-        else { return nil }
-        return usersByID[id]
-    }
-
-    /// Search overrides the scope — if you're looking for a dormant DM by name,
-    /// having "Recent" silently hide it would be actively unhelpful. The kind filter
-    /// still applies, since that is a deliberate narrowing rather than a time limit.
-    private var visibleSpaces: [CachedSpace] {
-        let query = session.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty {
-            return allSpaces.filter { space in
-                session.kind.matches(space) && space.title.localizedCaseInsensitiveContains(query)
-            }
-        }
-        let now = Date()
-        return allSpaces.filter { space in
-            guard session.kind.matches(space) else { return false }
-            // Pinning outranks both the scope and the muted toggle: it is an explicit
-            // "keep this in front of me", and a pin that vanished because the
-            // conversation went quiet for a month would be worse than no pin at all.
-            if space.isPinned { return true }
-            guard session.showsMuted || !space.isMuted else { return false }
-            return session.scope.matches(space, now: now)
-        }
-    }
-
-    /// Pinned rows are counted out: they are listed regardless of this toggle, so
-    /// including them would promise rows the toggle cannot actually reveal.
-    private var mutedCount: Int {
-        let now = Date()
-        return allSpaces.count { space in
-            space.isMuted && !space.isPinned
-                && session.scope.matches(space, now: now) && session.kind.matches(space)
-        }
-    }
-
-    /// The pinned group in the arrangement the user chose.
-    ///
-    /// Pinned wins over muted for a space that is both: you can pin something you
-    /// have silenced, and the pin is the more deliberate of the two instructions.
-    private var pinnedSpaces: [CachedSpace] {
-        visibleSpaces
-            .filter(\.isPinned)
-            // Ties fall back to the query's recency order, so a group pinned before
-            // ordering existed still lists in a stable, sensible sequence.
-            .sorted { $0.pinnedOrder < $1.pinnedOrder }
-    }
-
     /// Only the pinned group is arrangeable: the others are ordered by the server's
     /// section order and by recency, neither of which is this app's to overrule.
     /// `nil` leaves those rows undraggable.
     ///
     /// Spelled out as a typed closure rather than a ternary inside the list body,
     /// which pushed that expression past what the type checker would solve.
-    private func moveHandler(for group: SpaceGroup) -> ((IndexSet, Int) -> Void)? {
+    private func moveHandler(
+        for group: SpaceGroup,
+        index: SidebarIndex
+    ) -> ((IndexSet, Int) -> Void)? {
         guard group.isPinned else { return nil }
-        return { offsets, destination in movePinned(from: offsets, to: destination) }
+        return { offsets, destination in
+            movePinned(from: offsets, to: destination, in: index)
+        }
     }
 
     /// Drag-to-reorder within the pinned section.
-    private func movePinned(from offsets: IndexSet, to destination: Int) {
-        var names = pinnedSpaces.map(\.name)
+    private func movePinned(from offsets: IndexSet, to destination: Int, in index: SidebarIndex) {
+        var names = index.pinnedSpaces.map(\.name)
         names.move(fromOffsets: offsets, toOffset: destination)
         Task { await session.reorderPinned(names) }
     }
@@ -473,17 +400,17 @@ struct SpacesListView: View {
     /// Dragging is the obvious gesture but the worst one to rely on alone here: the
     /// rows are also a selection list, the group can be taller than the sidebar, and
     /// a drag is unreachable by keyboard or VoiceOver.
-    private func movePinned(_ space: CachedSpace, by delta: Int) {
-        var names = pinnedSpaces.map(\.name)
-        guard let index = names.firstIndex(of: space.name),
-              names.indices.contains(index + delta)
+    private func movePinned(_ space: CachedSpace, by delta: Int, in index: SidebarIndex) {
+        var names = index.pinnedSpaces.map(\.name)
+        guard let position = names.firstIndex(of: space.name),
+              names.indices.contains(position + delta)
         else { return }
-        names.swapAt(index, index + delta)
+        names.swapAt(position, position + delta)
         Task { await session.reorderPinned(names) }
     }
 
     @ViewBuilder
-    private func rowMenu(for space: CachedSpace) -> some View {
+    private func rowMenu(for space: CachedSpace, index: SidebarIndex) -> some View {
         // Unlike pin and mute, this one is Chat's own read state rather than local
         // decoration, so it shows up on chat.google.com too.
         if space.isUnread {
@@ -508,65 +435,201 @@ struct SpacesListView: View {
         }
 
         if space.isPinned {
-            let order = pinnedSpaces.map(\.name)
-            let index = order.firstIndex(of: space.name)
+            let order = index.pinnedSpaces.map(\.name)
+            let position = order.firstIndex(of: space.name)
             Divider()
-            Button("Move Up", systemImage: "arrow.up") { movePinned(space, by: -1) }
-                .disabled(index == nil || index == 0)
-            Button("Move Down", systemImage: "arrow.down") { movePinned(space, by: 1) }
-                .disabled(index == nil || index == order.count - 1)
+            Button("Move Up", systemImage: "arrow.up") { movePinned(space, by: -1, in: index) }
+                .disabled(position == nil || position == 0)
+            Button("Move Down", systemImage: "arrow.down") { movePinned(space, by: 1, in: index) }
+                .disabled(position == nil || position == order.count - 1)
             // Goes through the same offsets-based move as a drag: stepping it up by
             // its own index would swap with the current top rather than move past it,
             // which is a different arrangement entirely.
             Button("Move to Top", systemImage: "arrow.up.to.line") {
-                guard let index else { return }
-                movePinned(from: IndexSet(integer: index), to: 0)
+                guard let position else { return }
+                movePinned(from: IndexSet(integer: position), to: 0, in: index)
             }
-            .disabled(index == nil || index == 0)
+            .disabled(position == nil || position == 0)
         }
     }
 
-    private struct SpaceGroup {
-        let title: String
-        let sortOrder: Int
-        let spaces: [CachedSpace]
-        /// Drives `.onMove`: only this group can be rearranged.
-        var isPinned = false
+    @ViewBuilder
+    private func emptyOverlay(_ index: SidebarIndex) -> some View {
+        switch session.spacesState {
+        case .refreshing where allSpaces.isEmpty:
+            ProgressView("Loading spaces…")
+        case .failed(let message):
+            VStack(spacing: 12) {
+                Label("Couldn't load spaces", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .font(.callout)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+                Button("Retry") { Task { await session.refreshSpaces() } }
+            }
+            .padding()
+        default:
+            if index.visibleSpaces.isEmpty && !allSpaces.isEmpty {
+                ContentUnavailableView.search
+            }
+        }
     }
+}
 
+private struct SpaceGroup {
+    let title: String
+    let sortOrder: Int
+    let spaces: [CachedSpace]
+    /// Drives `.onMove`: only this group can be rearranged.
+    var isPinned = false
+}
+
+/// Everything the sidebar derives from the space list, worked out once per body
+/// evaluation.
+///
+/// These were computed properties, and the filtered list underneath them was being
+/// rebuilt five times a pass over 762 rows — by the grouping, by the pinned group, by
+/// the filter bar's count, by the empty overlay, and again by the order the arrow keys
+/// walk. Worse, `peer(for:)` reached for a dictionary of every directory row and was
+/// called *per row drawn*, which is the same O(rows × cache) trap the transcript had.
+///
+/// The counts are the reason this takes the filter state as parameters rather than
+/// reading the session: they describe what each option *would* show, so each is
+/// measured against the other axis's current setting rather than its own.
+private struct SidebarIndex {
+    /// The rows the sidebar shows, before grouping.
+    let visibleSpaces: [CachedSpace]
     /// Pinned first, then the sections, then muted — the shape the web client's
     /// sidebar has, built from this app's own pin and mute state.
-    ///
-    /// Muted conversations are pulled out of their sections rather than shown in
-    /// place. Returning them to the sections they came from would scatter the very
-    /// rows you asked to keep out of the way through the whole list; a single trailing
-    /// group keeps them one glance away instead.
-    private var groupedSpaces: [SpaceGroup] {
-        let spaces = visibleSpaces
-        let pinned = pinnedSpaces
-        let muted = spaces.filter { $0.isMuted && !$0.isPinned }
-        let rest = spaces.filter { !$0.isPinned && !$0.isMuted }
+    let groups: [SpaceGroup]
+    /// The pinned group in the arrangement the user chose.
+    let pinnedSpaces: [CachedSpace]
+    /// Every visible row in the order the sidebar draws it, groups included — so the
+    /// arrows walk the list as it looks rather than as it was assembled.
+    let orderedSpaceNames: [String]
+    /// How many rows each scope would show, honouring the current kind — so the
+    /// numbers in the menu match what picking that option actually produces.
+    let scopeCounts: [SpaceScope: Int]
+    let kindCounts: [SpaceKind: Int]
+    /// Pinned rows are counted out: they are listed regardless of the muted toggle, so
+    /// including them would promise rows the toggle cannot actually reveal.
+    let mutedCount: Int
+    private let usersByID: [String: CachedUser]
+
+    init(
+        spaces: [CachedSpace],
+        users: [CachedUser],
+        scope: SpaceScope,
+        kind: SpaceKind,
+        showsMuted: Bool,
+        searchText: String
+    ) {
+        usersByID = Dictionary(
+            users.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        let now = Date()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Search overrides the scope — if you're looking for a dormant DM by name,
+        // having "Recent" silently hide it would be actively unhelpful. The kind filter
+        // still applies, since that is a deliberate narrowing rather than a time limit.
+        var visible: [CachedSpace] = []
+        var scopeTally: [SpaceScope: Int] = [:]
+        var kindTally: [SpaceKind: Int] = [:]
+        var muted = 0
+
+        // One walk of the list for all four answers. Each was its own pass before, and
+        // the two tallies were a pass per option on top of that.
+        for space in spaces {
+            let matchesKind = kind.matches(space)
+            let matchesScope = scope.matches(space, now: now)
+
+            if !query.isEmpty {
+                if matchesKind, space.title.localizedCaseInsensitiveContains(query) {
+                    visible.append(space)
+                }
+            } else if matchesKind {
+                // Pinning outranks both the scope and the muted toggle: it is an
+                // explicit "keep this in front of me", and a pin that vanished because
+                // the conversation went quiet for a month would be worse than no pin.
+                if space.isPinned {
+                    visible.append(space)
+                } else if showsMuted || !space.isMuted, matchesScope {
+                    visible.append(space)
+                }
+            }
+
+            for option in SpaceScope.allCases where matchesKind && option.matches(space, now: now) {
+                scopeTally[option, default: 0] += 1
+            }
+            for option in SpaceKind.allCases where matchesScope && option.matches(space) {
+                kindTally[option, default: 0] += 1
+            }
+            if space.isMuted, !space.isPinned, matchesScope, matchesKind { muted += 1 }
+        }
+
+        // Absent keys would read as "no count at all" rather than "none": the filter bar
+        // shows the number next to every option, including the ones that match nothing.
+        for option in SpaceScope.allCases where scopeTally[option] == nil { scopeTally[option] = 0 }
+        for option in SpaceKind.allCases where kindTally[option] == nil { kindTally[option] = 0 }
+
+        visibleSpaces = visible
+        scopeCounts = scopeTally
+        kindCounts = kindTally
+        mutedCount = muted
+
+        // Pinned wins over muted for a space that is both: you can pin something you
+        // have silenced, and the pin is the more deliberate of the two instructions.
+        // Ties fall back to the query's recency order, so a group pinned before ordering
+        // existed still lists in a stable, sensible sequence.
+        pinnedSpaces = visible.filter(\.isPinned).sorted { $0.pinnedOrder < $1.pinnedOrder }
+
+        // Muted conversations are pulled out of their sections rather than shown in
+        // place. Returning them to the sections they came from would scatter the very
+        // rows you asked to keep out of the way through the whole list; a single
+        // trailing group keeps them one glance away instead.
+        let mutedGroup = visible.filter { $0.isMuted && !$0.isPinned }
+        let rest = visible.filter { !$0.isPinned && !$0.isMuted }
 
         // `.min` / `.max` so these two hold their ends of the list even against a
         // custom section the user dragged to the very top or bottom of their sidebar.
-        var groups: [SpaceGroup] = []
-        if !pinned.isEmpty {
-            groups.append(
-                SpaceGroup(title: "Pinned", sortOrder: .min, spaces: pinned, isPinned: true)
+        var assembled: [SpaceGroup] = []
+        if !pinnedSpaces.isEmpty {
+            assembled.append(
+                SpaceGroup(
+                    title: "Pinned",
+                    sortOrder: .min,
+                    spaces: pinnedSpaces,
+                    isPinned: true
+                )
             )
         }
         if !rest.isEmpty {
-            groups.append(contentsOf: sectionGroups(for: rest))
+            assembled.append(contentsOf: Self.sectionGroups(for: rest))
         }
-        if !muted.isEmpty {
-            groups.append(SpaceGroup(title: "Muted", sortOrder: .max, spaces: muted))
+        if !mutedGroup.isEmpty {
+            assembled.append(SpaceGroup(title: "Muted", sortOrder: .max, spaces: mutedGroup))
         }
-        return groups
+        groups = assembled
+        orderedSpaceNames = assembled.flatMap { $0.spaces.map(\.name) }
+    }
+
+    /// The single other person in a DM. Group chats intentionally get a tile instead
+    /// of one arbitrary member's face.
+    func peer(for space: CachedSpace) -> CachedUser? {
+        guard space.spaceType == .directMessage,
+              let id = space.peerUserIDs.first
+        else { return nil }
+        return usersByID[id]
     }
 
     /// Falls back to one flat unlabelled group when sections have not loaded, so the
     /// sidebar never becomes a single header called "Section".
-    private func sectionGroups(for spaces: [CachedSpace]) -> [SpaceGroup] {
+    private static func sectionGroups(for spaces: [CachedSpace]) -> [SpaceGroup] {
         let hasSections = spaces.contains { $0.sectionTitle != nil }
         guard hasSections else {
             return [SpaceGroup(title: "Conversations", sortOrder: 0, spaces: spaces)]
@@ -587,30 +650,6 @@ struct SpacesListView: View {
                 if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
                 return lhs.title < rhs.title
             }
-    }
-
-    @ViewBuilder
-    private var emptyOverlay: some View {
-        switch session.spacesState {
-        case .refreshing where allSpaces.isEmpty:
-            ProgressView("Loading spaces…")
-        case .failed(let message):
-            VStack(spacing: 12) {
-                Label("Couldn't load spaces", systemImage: "exclamationmark.triangle.fill")
-                    .font(.headline)
-                    .foregroundStyle(.orange)
-                Text(message)
-                    .font(.callout)
-                    .multilineTextAlignment(.center)
-                    .textSelection(.enabled)
-                Button("Retry") { Task { await session.refreshSpaces() } }
-            }
-            .padding()
-        default:
-            if visibleSpaces.isEmpty && !allSpaces.isEmpty {
-                ContentUnavailableView.search
-            }
-        }
     }
 }
 

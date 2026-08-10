@@ -29,7 +29,14 @@ struct ThreadPane: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // Once per body evaluation rather than once per row — see ``ThreadIndex``.
+        let index = ThreadIndex(
+            users: users,
+            messages: messages,
+            mentionableIDs: session.mentionableUserIDs(in: spaceName)
+        )
+
+        return VStack(spacing: 0) {
             header
 
             if messages.isEmpty {
@@ -40,7 +47,7 @@ struct ThreadPane: View {
                 )
                 .frame(maxHeight: .infinity)
             } else {
-                transcript
+                transcript(index)
             }
 
             MessageComposer(
@@ -48,7 +55,7 @@ struct ThreadPane: View {
                 isSending: session.isSending(spaceName),
                 replyTarget: replyTarget,
                 onCancelReply: { replyTarget = nil },
-                mentionCandidates: mentionCandidates
+                mentionCandidates: index.mentionCandidates
             ) { composed in
                 let target = replyTarget
                 replyTarget = nil
@@ -116,7 +123,7 @@ struct ThreadPane: View {
     /// The same positioning as the main transcript, for the same reasons — see
     /// `TranscriptScrollView`. A thread opens on its newest reply, which is what the
     /// reader came for.
-    private var transcript: some View {
+    private func transcript(_ index: ThreadIndex) -> some View {
         TranscriptScrollView(
             newestID: messages.last?.name,
             oldestID: messages.first?.name,
@@ -124,7 +131,7 @@ struct ThreadPane: View {
             verticalPadding: 10,
             followTrigger: sendCount
         ) {
-            ForEach(Array(messages.enumerated()), id: \.element.name) { index, message in
+            ForEach(Array(messages.enumerated()), id: \.element.name) { offset, message in
                 // Marks where the replies the user had not seen begin. Opening
                 // the thread has already cleared the unread mark by now, so this
                 // is drawn from the position captured as it was opened.
@@ -137,22 +144,22 @@ struct ThreadPane: View {
                 // stays visible while scrolling.
                 MessageBubble(
                     message: message,
-                    sender: sender(for: message),
-                    mentionNames: mentionNames(in: message),
-                    mentionCandidates: mentionCandidates,
+                    sender: index.sender(of: message),
+                    mentionNames: index.mentionNames(in: message),
+                    mentionCandidates: index.mentionCandidates,
                     isOwn: session.isOwnMessage(message),
                     isFirstInGroup: true,
                     isLastInGroup: true,
                     spaceName: spaceName,
-                    quotedPreview: quoted.preview(for: message),
-                    onReply: { startReply(to: message) },
+                    quotedPreview: index.quoted.preview(for: message),
+                    onReply: { startReply(to: message, index: index) },
                     // No jump to the quoted message: everything a reply here can
                     // quote is in this thread, already on screen.
                     isCompact: true
                 )
                 .id(message.name)
 
-                if index == 0 && messages.count > 1 {
+                if offset == 0 && messages.count > 1 {
                     Divider().padding(.vertical, 8)
                 }
             }
@@ -173,48 +180,54 @@ struct ThreadPane: View {
         return first?.name
     }
 
-    private var usersByID: [String: CachedUser] {
-        Dictionary(users.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+    /// The reply is posted into this thread whatever was quoted, root included —
+    /// unlike the transcript, where quoting a root starts a new thread.
+    private func startReply(to message: CachedMessage, index: ThreadIndex) {
+        replyTarget = ReplyTarget(
+            message: message,
+            authorName: index.quoted.authorName(of: message),
+            in: threadName
+        )
     }
+}
 
+/// The lookups a thread's rows need, resolved once per body evaluation.
+///
+/// Smaller than the transcript's ``TranscriptIndex`` but built for the same reason:
+/// reached for from the per-row builder, each of these rebuilt a dictionary over every
+/// directory row once per bubble drawn.
+private struct ThreadIndex {
+    /// Resolves quotes against this thread's own messages, which is all a reply here
+    /// can be quoting: Chat does not allow a quote to reach out of its thread.
+    let quoted: QuotedMessageResolver
     /// The same people the main transcript offers: a thread reply goes to the space,
     /// so its `@` reaches everyone in the space rather than only those who have posted
     /// in this thread.
-    private var mentionCandidates: [MentionCandidate] {
-        MentionCandidate.list(
-            for: session.mentionableUserIDs(in: spaceName),
-            users: usersByID
-        )
-    }
+    let mentionCandidates: [MentionCandidate]
+    private let usersByID: [String: CachedUser]
 
-    /// Resolves quotes against this thread's own messages, which is all a reply here
-    /// can be quoting: Chat does not allow a quote to reach out of its thread.
-    private var quoted: QuotedMessageResolver {
-        QuotedMessageResolver(
+    init(users: [CachedUser], messages: [CachedMessage], mentionableIDs: [String]) {
+        let usersByID = Dictionary(
+            users.map { ($0.name, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        self.usersByID = usersByID
+        quoted = QuotedMessageResolver(
             messagesByName: Dictionary(
                 messages.map { ($0.name, $0) },
                 uniquingKeysWith: { first, _ in first }
             ),
             usersByID: usersByID
         )
+        mentionCandidates = MentionCandidate.list(for: mentionableIDs, users: usersByID)
     }
 
-    /// The reply is posted into this thread whatever was quoted, root included —
-    /// unlike the transcript, where quoting a root starts a new thread.
-    private func startReply(to message: CachedMessage) {
-        replyTarget = ReplyTarget(
-            message: message,
-            authorName: quoted.authorName(of: message),
-            in: threadName
-        )
-    }
-
-    private func sender(for message: CachedMessage) -> CachedUser? {
+    func sender(of message: CachedMessage) -> CachedUser? {
         guard let id = message.senderName else { return nil }
         return usersByID[id]
     }
 
-    private func mentionNames(in message: CachedMessage) -> [String] {
+    func mentionNames(in message: CachedMessage) -> [String] {
         message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
     }
 }
