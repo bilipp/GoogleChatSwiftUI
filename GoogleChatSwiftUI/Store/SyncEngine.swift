@@ -11,6 +11,8 @@ nonisolated struct SyncEngine: Sendable {
     private let client: ChatClient
     private let store: ChatStore
     private let directoryService: DirectoryService
+    /// Shared per engine rather than per chip, because its cache is the whole point.
+    private let driveMetadataService: DriveMetadataService
     private let logger = AppLog.logger("sync")
 
     /// One screenful plus margin. Small enough to render fast, large enough that
@@ -21,6 +23,7 @@ nonisolated struct SyncEngine: Sendable {
         self.client = client
         self.store = store
         directoryService = DirectoryService(transport: client.transport)
+        driveMetadataService = DriveMetadataService(transport: client.transport)
     }
 
     /// Refreshes the space list. Cheap — a handful of paginated calls — so it runs
@@ -528,6 +531,14 @@ nonisolated struct SyncEngine: Sendable {
 
     func downloadAttachment(resourceName: String) async throws -> Data {
         try await client.downloadAttachment(resourceName: resourceName)
+    }
+
+    // MARK: - Drive
+
+    /// Title and file kind for a linked Drive file, or nil where it cannot be read.
+    /// Cached inside the service, so repeated chips for one file cost one request.
+    func driveFile(id: String) async -> DriveFileMetadata? {
+        await driveMetadataService.metadata(for: id)
     }
 
     func markRead(spaceName: String) async throws {

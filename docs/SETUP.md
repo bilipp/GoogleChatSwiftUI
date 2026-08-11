@@ -33,7 +33,8 @@ gcloud services enable \
   workspaceevents.googleapis.com \
   pubsub.googleapis.com \
   people.googleapis.com \
-  admin.googleapis.com
+  admin.googleapis.com \
+  drive.googleapis.com
 ```
 
 | API | Why |
@@ -43,6 +44,7 @@ gcloud services enable \
 | `pubsub.googleapis.com` | Event delivery transport |
 | `people.googleapis.com` | Resolving sender names and avatars |
 | `admin.googleapis.com` | Directory fallback for org user lookup |
+| `drive.googleapis.com` | Titles for linked Drive files |
 
 ## 2. Provision Pub/Sub
 
@@ -143,6 +145,7 @@ https://www.googleapis.com/auth/chat.users.readstate
 https://www.googleapis.com/auth/chat.users.sections
 https://www.googleapis.com/auth/chat.customemojis.readonly
 https://www.googleapis.com/auth/directory.readonly
+https://www.googleapis.com/auth/drive.metadata.readonly
 https://www.googleapis.com/auth/pubsub
 https://www.googleapis.com/auth/userinfo.profile
 https://www.googleapis.com/auth/userinfo.email
@@ -150,6 +153,12 @@ https://www.googleapis.com/auth/userinfo.email
 
 `directory.readonly` is not optional in practice: Chat never returns display names, so
 without it every DM is titled "Direct message" and every sender reads "Unknown".
+`drive.metadata.readonly` is what gives a shared Drive link its actual title: Chat
+annotates the link with a file ID and no title. Metadata only, and that is a deliberate
+ceiling — Drive returns a thumbnail image only to apps that can read file *content*, so
+showing one would mean holding `drive.readonly` over the whole account to decorate a
+chip. Without this scope Drive links still render and still open; they just read "Google
+Drive" and the URL, as they did before.
 `pubsub` is what lets the app pull events directly instead of standing up a server.
 `userinfo.email` names the subscription that person pulls from (§2) — without it the app
 cannot tell which queue is theirs, and says so instead of guessing.

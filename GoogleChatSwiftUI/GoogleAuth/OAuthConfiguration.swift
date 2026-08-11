@@ -48,6 +48,14 @@ nonisolated enum OAuthConfiguration {
         // Workspace directory, which is what this scope is for. Without it every DM
         // is titled "Direct message" and every sender reads "Unknown".
         "https://www.googleapis.com/auth/directory.readonly",
+        // Chat annotates a Drive link with a file ID, a MIME type and a URI, and no
+        // title — the web client reads titles from Drive separately, which is what this
+        // scope does here. Metadata only: Drive withholds `thumbnailLink` from apps that
+        // cannot read file content, so a rendered thumbnail would mean asking for
+        // `drive.readonly` — read access to every file in the account — to decorate a
+        // chip. The title, kind, owner and edit date this returns are what the preview
+        // actually shows.
+        "https://www.googleapis.com/auth/drive.metadata.readonly",
     ]
 
     static var scopeString: String { scopes.joined(separator: " ") }

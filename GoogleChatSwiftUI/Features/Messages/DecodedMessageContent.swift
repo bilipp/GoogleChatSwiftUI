@@ -44,4 +44,29 @@ import Foundation
         linkEntries[payload] = decoded
         return decoded
     }
+
+    /// Drive links that Chat did not annotate, found in the message text.
+    ///
+    /// Chat annotates most Drive URLs, but not all: a link pasted into a space where the
+    /// sender's client did not resolve it arrives as plain text, and it deserves the same
+    /// preview as one that came through as a rich link. Annotated files are excluded here
+    /// rather than at the call site so a link is never previewed twice.
+    ///
+    /// Memoised for the reason the decodes above are — this runs `NSDataDetector` over
+    /// the body, and a body re-runs on every unrelated change to the transcript around
+    /// it. Keyed on the text so an edit that adds a link is picked up and an unchanged
+    /// message is scanned once.
+    static func bareDriveLinks(of message: CachedMessage) -> [DriveFileLink] {
+        guard !message.isDeleted, let text = message.text, !text.isEmpty else { return [] }
+        if let cached = driveEntries[text] { return cached }
+
+        let annotated = Set(richLinks(of: message).compactMap(DriveFileLinkParser.fileID(of:)))
+        let found = DriveFileLinkParser.links(in: text).filter { !annotated.contains($0.fileID) }
+
+        if driveEntries.count >= capacity { driveEntries.removeAll(keepingCapacity: true) }
+        driveEntries[text] = found
+        return found
+    }
+
+    private static var driveEntries: [String: [DriveFileLink]] = [:]
 }

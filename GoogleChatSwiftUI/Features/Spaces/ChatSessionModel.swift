@@ -755,6 +755,13 @@ final class ChatSessionModel {
         try await sync.downloadAttachment(resourceName: resourceName)
     }
 
+    /// Title and file kind for a Drive link, for the chips in the transcript to fill
+    /// themselves in with. Nil where the file cannot be read — no access, deleted, or a
+    /// sign-in that predates the Drive scope — and the caller keeps its plain form.
+    func driveFile(id: String) async -> DriveFileMetadata? {
+        await sync.driveFile(id: id)
+    }
+
     /// Names an app sender — a Chat app or an incoming webhook.
     ///
     /// Local, and not for want of trying: Chat returns a sender's ID and type but never

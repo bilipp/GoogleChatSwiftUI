@@ -88,6 +88,12 @@ struct MessageBubble: View {
                     RichLinkChip(link: link)
                 }
 
+                // Drive links Chat left as plain text. The URL stays tappable in the
+                // bubble above; this adds the same preview an annotated link gets.
+                ForEach(bareDriveLinks, id: \.fileID) { link in
+                    DriveLinkChip(fileID: link.fileID, url: link.url)
+                }
+
                 if !message.attachments.isEmpty {
                     AttachmentList(attachments: message.attachments, isOwn: isOwn)
                 }
@@ -265,6 +271,10 @@ struct MessageBubble: View {
     private var cards: [ChatCard] { DecodedMessageContent.cards(of: message) }
 
     private var richLinks: [RichLinkMetadata] { DecodedMessageContent.richLinks(of: message) }
+
+    private var bareDriveLinks: [DriveFileLink] {
+        DecodedMessageContent.bareDriveLinks(of: message)
+    }
 
     /// Mention highlighting matches on display name, so the sender's own directory
     /// entry is irrelevant here — only the mentioned users' names matter.
