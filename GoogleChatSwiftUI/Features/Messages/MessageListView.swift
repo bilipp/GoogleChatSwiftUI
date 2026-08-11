@@ -286,6 +286,7 @@ struct MessageListView: View {
             isOwn: entry.isOwn,
             isFirstInGroup: entry.isFirstInGroup,
             isLastInGroup: entry.isLastInGroup,
+            isHighlighted: session.highlightedMessage == message.name,
             spaceName: spaceName,
             threadReplyCount: index.replyCount(of: message),
             newReplyCount: index.unreadReplyCount(of: message),
@@ -311,8 +312,9 @@ struct MessageListView: View {
         let original = index.quoted.messagesByName[preview.messageName]
         if isThreaded, original?.isThreadReply == true, let threadName = original?.threadName {
             session.openThread(threadName)
+            session.jumpInThread(to: preview.messageName)
         } else {
-            session.scrollTarget = preview.messageName
+            session.jump(to: preview.messageName)
         }
     }
 

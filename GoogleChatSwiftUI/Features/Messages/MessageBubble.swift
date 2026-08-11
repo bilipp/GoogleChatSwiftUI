@@ -22,6 +22,9 @@ struct MessageBubble: View {
     let isOwn: Bool
     let isFirstInGroup: Bool
     let isLastInGroup: Bool
+    /// True while this is the message a followed link, a search hit or a quote sent the
+    /// reader to — see ``MessageHighlight``.
+    var isHighlighted: Bool = false
     let spaceName: String
     /// Replies beneath this message's thread. Zero in unthreaded spaces.
     var threadReplyCount: Int = 0
@@ -120,6 +123,9 @@ struct MessageBubble: View {
         }
         .frame(maxWidth: .infinity, alignment: isOwn ? .trailing : .leading)
         .padding(.vertical, isFirstInGroup ? 4 : 1)
+        // Around the whole row rather than the bubble: the band has to be findable by
+        // someone scanning the transcript for it, and the row is what spans the pane.
+        .messageHighlight(isHighlighted)
         // Deliberately not `.combine`: combining children replaces the selectable
         // Text with a single synthetic element and drag-selection stops working.
         .accessibilityElement(children: .contain)
@@ -586,8 +592,11 @@ struct MessageBubble: View {
             ? "You"
             : (identity.isApp ? "\(identity.name), app" : identity.name)
         let time = message.createTime?.formatted(date: .omitted, time: .shortened) ?? ""
+        // Said first, because it is why this row is the one being read: a band nobody
+        // can see is no answer at all to "which message was meant".
+        let mark = isHighlighted ? "The message you were sent to. " : ""
         // Stripped, because VoiceOver reading "asterisk shipped asterisk" aloud is
         // worse than losing the emphasis.
-        return "\(who) at \(time): \(RenderedChatText.plainText(message.summaryText))"
+        return "\(mark)\(who) at \(time): \(RenderedChatText.plainText(message.summaryText))"
     }
 }

@@ -122,7 +122,7 @@ struct MessageSearchResults: View {
         guard let space = message.space?.name else { return }
         Task {
             await session.openSpace(space)
-            session.scrollTarget = message.name
+            session.jump(to: message.name)
             session.messageQuery = ""
         }
     }

@@ -130,9 +130,11 @@ nonisolated enum ChatLinkDestination: Equatable, Sendable {
     case space
     /// Open the conversation and scroll its transcript to this message.
     case message(String)
-    /// Open this thread. A reply in a threaded space is not in the transcript, so
-    /// there is no position there to scroll to.
-    case thread(String)
+    /// Open this thread, and go to this message within it. A reply in a threaded space is
+    /// not in the transcript, so the thread pane holds the only position there is for it —
+    /// which is why the message travels with the thread rather than being dropped here.
+    /// Nil where the link named a thread and no message in it.
+    case thread(String, message: String?)
     /// The conversation is cached but the message it names is not, which downloaded
     /// history not reaching back far enough is the usual reason for.
     case uncachedMessage

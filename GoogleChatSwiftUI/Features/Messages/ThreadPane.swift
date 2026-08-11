@@ -138,11 +138,16 @@ struct ThreadPane: View {
     /// `TranscriptScrollView`. A thread opens on its newest reply, which is what the
     /// reader came for.
     private func transcript(_ index: ThreadIndex) -> some View {
-        TranscriptScrollView(
+        @Bindable var session = session
+
+        return TranscriptScrollView(
             newestID: messages.last?.name,
             oldestID: messages.first?.name,
             horizontalPadding: 12,
             verticalPadding: 10,
+            // Set only by a followed link naming one reply out of a thread's many. Every
+            // other way in opens on the newest reply, which is what the reader came for.
+            jumpTarget: $session.threadScrollTarget,
             followTrigger: sendCount
         ) {
             ForEach(Array(messages.enumerated()), id: \.element.name) { offset, message in
@@ -164,6 +169,7 @@ struct ThreadPane: View {
                     isOwn: session.isOwnMessage(message),
                     isFirstInGroup: true,
                     isLastInGroup: true,
+                    isHighlighted: session.highlightedMessage == message.name,
                     spaceName: spaceName,
                     quotedPreview: index.quoted.preview(for: message),
                     onReply: { startReply(to: message, index: index) },

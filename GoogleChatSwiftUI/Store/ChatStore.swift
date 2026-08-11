@@ -1061,13 +1061,17 @@ actor ChatStore {
         guard let messageName = link.messageName else {
             // A thread is somewhere to go only where threads are a place of their own.
             // Elsewhere its replies are already in the transcript.
-            if let threadName = link.threadName, space.isThreaded { return .thread(threadName) }
+            if let threadName = link.threadName, space.isThreaded {
+                return .thread(threadName, message: nil)
+            }
             return .space
         }
 
         guard let message = try message(named: messageName) else { return .uncachedMessage }
         if space.isThreaded, message.isThreadReply, let threadName = message.threadName {
-            return .thread(threadName)
+            // The reply is carried along with the thread it is in: the pane has a
+            // position for it even though the transcript does not.
+            return .thread(threadName, message: messageName)
         }
         return .message(messageName)
     }

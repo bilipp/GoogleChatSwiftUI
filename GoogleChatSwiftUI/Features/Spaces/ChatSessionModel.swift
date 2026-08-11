@@ -40,6 +40,23 @@ final class ChatSessionModel {
     var messageSearchScope: MessageSearchScope = .allConversations
     /// Message the transcript should jump to, set when a search result is opened.
     var scrollTarget: String?
+    /// Message the open thread should jump to. The thread pane's own target rather than
+    /// a share of the one above: both surfaces are on screen at once, so a single value
+    /// would have two readers racing to consume and clear it.
+    var threadScrollTarget: String?
+    /// The message a jump landed on, marked until the mark has been seen — see
+    /// ``MessageHighlight``. Set here rather than by the surface that draws it because
+    /// the thing being marked outlives the view: a link can arrive before the transcript
+    /// it points into exists.
+    private(set) var highlightedMessage: String?
+    /// Clears the mark. Held so a second jump replaces the first's mark rather than
+    /// having its own cleared out from under it by the older timer.
+    private var highlightTask: Task<Void, Never>?
+
+    /// How long the mark stays. Long enough to be found by someone who looked away while
+    /// the conversation was opening, and short enough that it is gone before it starts
+    /// looking like a selection.
+    private static let highlightDuration = Duration.seconds(5)
 
     var isSearchingMessages: Bool {
         messageQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
@@ -193,6 +210,44 @@ final class ChatSessionModel {
         linkNotice = nil
     }
 
+    // MARK: - Going to a message
+
+    /// Sends the transcript to a message and marks it once it is there.
+    ///
+    /// The two halves are one action and are called as one: a scroll with nothing marked
+    /// leaves the reader guessing which of the messages now on screen they were brought
+    /// for, which is the complaint every caller here would otherwise produce.
+    func jump(to messageName: String) {
+        scrollTarget = messageName
+        markLanding(on: messageName)
+    }
+
+    /// The same, for a message that lives in the thread pane rather than the transcript.
+    func jumpInThread(to messageName: String) {
+        threadScrollTarget = messageName
+        markLanding(on: messageName)
+    }
+
+    private func markLanding(on messageName: String) {
+        highlightTask?.cancel()
+        highlightedMessage = messageName
+        highlightTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.highlightDuration)
+            guard !Task.isCancelled else { return }
+            guard self?.highlightedMessage == messageName else { return }
+            self?.highlightedMessage = nil
+        }
+    }
+
+    /// Drops any mark and the timer that would have dropped it. Called when leaving the
+    /// conversation the marked message is in, since a mark waiting in a transcript nobody
+    /// is looking at would be there to greet whoever opens it next.
+    private func clearLanding() {
+        highlightTask?.cancel()
+        highlightTask = nil
+        highlightedMessage = nil
+    }
+
     /// Follows a `chat.google.com` link inside the app.
     ///
     /// The caller has already established that this account knows the conversation —
@@ -221,9 +276,12 @@ final class ChatSessionModel {
 
         switch destination {
         case .message(let messageName):
-            scrollTarget = messageName
-        case .thread(let threadName):
+            jump(to: messageName)
+        case .thread(let threadName, let messageName):
             openThread(threadName)
+            // A link to one reply among dozens needs the mark more than the transcript
+            // does: the pane opens on the newest reply, which is rarely the one meant.
+            if let messageName { jumpInThread(to: messageName) }
         case .uncachedMessage:
             linkNotice = """
                 That message is older than the history downloaded for this conversation. \
@@ -401,6 +459,8 @@ final class ChatSessionModel {
         // looking at now. The search flow sets its own target after this returns; every
         // other way into a conversation should open it at the newest message.
         scrollTarget = nil
+        threadScrollTarget = nil
+        clearLanding()
         guard !loadingSpaceNames.contains(spaceName) else { return }
 
         loadingSpaceNames.insert(spaceName)
@@ -508,6 +568,9 @@ final class ChatSessionModel {
     func openThread(_ threadName: String, fromList: Bool = false) {
         threadInspector = .thread(name: threadName, cameFromList: fromList)
         openedThreadReadMark = nil
+        // Opening a thread by hand opens it at its newest reply. `reveal(_:)` sets its
+        // own target after this returns, for the one case that has somewhere else to go.
+        threadScrollTarget = nil
         Task {
             let previous = await markThreadRead(threadName)
             // Discarded if the user has already moved on, so a slow write cannot
