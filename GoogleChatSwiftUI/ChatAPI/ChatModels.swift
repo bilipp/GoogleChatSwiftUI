@@ -26,7 +26,7 @@ nonisolated struct ChatUser: Codable, Sendable, Hashable, Identifiable {
 }
 
 nonisolated struct ChatSpace: Decodable, Sendable, Hashable, Identifiable {
-    enum SpaceType: String, Decodable, Sendable {
+    enum SpaceType: String, Decodable, Sendable, CaseIterable {
         case unspecified = "SPACE_TYPE_UNSPECIFIED"
         case space = "SPACE"
         case groupChat = "GROUP_CHAT"

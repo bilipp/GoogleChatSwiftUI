@@ -3,76 +3,39 @@ import SwiftUI
 
 /// Sidebar + detail. The sidebar is activity-scoped by default because this account
 /// has 762 spaces; search reaches all of them regardless of filter.
+///
+/// Neither half reads the whole space list any more. Both own a `@Query` narrowed to what
+/// they actually draw — the sidebar to the current filter, the detail to the one open
+/// conversation — because `@Query` refetches on every write to the store and materializing
+/// 769 `CachedSpace` rows costs ~52ms of main-thread work each time. See ``SpaceQueries``.
+/// The queries live in child views for a mechanical reason: a `@Query` predicate can only
+/// be built in `init`, and the filter state lives in `session`, which an initializer
+/// cannot reach.
 struct SpacesListView: View {
     @Environment(ChatSessionModel.self) private var session
-    @Query(sort: [SortDescriptor(\CachedSpace.lastActiveTime, order: .reverse)])
-    private var allSpaces: [CachedSpace]
-    /// Directory profiles, for DM avatars. Chat supplies no images of its own.
-    @Query private var users: [CachedUser]
+    /// For the by-name lookups that used to read the full list: following a link,
+    /// relaxing the filters around a conversation being opened from elsewhere.
+    @Environment(\.modelContext) private var modelContext
     @FocusState private var isSearchFocused: Bool
     /// Focus of the toolbar's message-search field, so ⌘⇧F can put the caret there.
     /// Separate from the sidebar's: the two fields search different things and are
     /// both on screen at once.
     @FocusState private var isMessageSearchFocused: Bool
-    /// The row the arrow keys are pointing at while the search field has focus.
-    /// Deliberately not the list's selection: moving through results must not open
-    /// each conversation it passes over, only the one you press Return on.
-    @State private var highlightedSpaceName: String?
 
     var body: some View {
         @Bindable var session = session
 
         NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 260, ideal: 300)
+            SidebarSpaceList(
+                scope: session.scope,
+                kind: session.kind,
+                showsMuted: session.showsMuted,
+                searchText: session.searchText,
+                isSearchFocused: $isSearchFocused
+            )
+            .navigationSplitViewColumnWidth(min: 260, ideal: 300)
         } detail: {
-            if session.isSearchingMessages {
-                // Replaces the transcript rather than overlaying it: search results
-                // and a conversation are two different things to be reading.
-                MessageSearchResults(
-                    query: session.messageQuery.trimmingCharacters(in: .whitespacesAndNewlines),
-                    scopedTo: session.messageSearchScope == .currentConversation
-                        ? session.selectedSpaceName
-                        : nil
-                )
-                // Re-queries when the text or scope changes; without this the fetch
-                // descriptor built in `init` would be reused.
-                .id("\(session.messageQuery)|\(session.messageSearchScope.rawValue)")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) { AccountToolbarButton() }
-                }
-            } else if let selected = selectedSpace {
-                MessageListView(
-                    spaceName: selected.name,
-                    spaceTitle: selected.title,
-                    isThreaded: selected.isThreaded,
-                    unreadThreadCount: selected.unreadThreadCount,
-                    // Read from the space row rather than from the last fetch's answer,
-                    // so it stays right across the whole conversation: the backfill
-                    // cursor is what knows whether there is anything left to fetch.
-                    hasOlderHistory: !selected.backfillComplete
-                )
-                // Identity tied to the space so switching conversations builds a fresh
-                // view. Without it SwiftUI reuses the instance and carries the previous
-                // space's scroll offset into the new transcript.
-                .id(selected.name)
-                .inspector(isPresented: threadBinding) {
-                    inspectorContent(for: selected)
-                        // The inspector's default width is sized for property
-                        // panels, not a conversation — bubbles plus an avatar
-                        // need real room or they collapse to a few words a line.
-                        .inspectorColumnWidth(min: 380, ideal: 460, max: 760)
-                }
-            } else {
-                ContentUnavailableView(
-                    "No Conversation Selected",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Pick a space or direct message to read it.")
-                )
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) { AccountToolbarButton() }
-                }
-            }
+            detail
         }
         // `.searchable` rather than a hand-rolled toolbar field. A TextField hosted
         // in a ToolbarItem cannot be focused programmatically at all — toolbar content
@@ -163,6 +126,45 @@ struct SpacesListView: View {
         }
     }
 
+    @ViewBuilder
+    private var detail: some View {
+        if session.isSearchingMessages {
+            // Replaces the transcript rather than overlaying it: search results
+            // and a conversation are two different things to be reading.
+            MessageSearchResults(
+                query: session.messageQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+                scopedTo: session.messageSearchScope == .currentConversation
+                    ? session.selectedSpaceName
+                    : nil
+            )
+            // Re-queries when the text or scope changes; without this the fetch
+            // descriptor built in `init` would be reused.
+            .id("\(session.messageQuery)|\(session.messageSearchScope.rawValue)")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { AccountToolbarButton() }
+            }
+        } else if let name = session.selectedSpaceName {
+            // Identity tied to the space so switching conversations builds a fresh view.
+            // Without it SwiftUI reuses the instance and carries the previous space's
+            // scroll offset into the new transcript.
+            ConversationDetail(spaceName: name)
+                .id(name)
+        } else {
+            noConversation
+        }
+    }
+
+    private var noConversation: some View {
+        ContentUnavailableView(
+            "No Conversation Selected",
+            systemImage: "bubble.left.and.bubble.right",
+            description: Text("Pick a space or direct message to read it.")
+        )
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { AccountToolbarButton() }
+        }
+    }
+
     /// Opens the conversation a clicked notification named.
     private func openFromNotification() async {
         guard let name = NotificationRouter.shared.claimPendingSpace() else { return }
@@ -182,9 +184,9 @@ struct SpacesListView: View {
     /// had anyway. The check is against the cached space list because the decision has to
     /// be made now, synchronously, before the click is either handled or passed on.
     private func openChatLink(_ url: URL) -> OpenURLAction.Result {
-        guard let link = ChatDeepLink(url: url),
-              allSpaces.contains(where: { $0.name == link.spaceName })
-        else { return .systemAction }
+        guard let link = ChatDeepLink(url: url), isCached(link.spaceName) else {
+            return .systemAction
+        }
 
         unhide(link.spaceName)
         Task { await session.reveal(link) }
@@ -213,10 +215,85 @@ struct SpacesListView: View {
     /// leaving no sense of where you are. The search field needs no handling: opening a
     /// conversation clears it.
     private func unhide(_ spaceName: String) {
-        guard let space = allSpaces.first(where: { $0.name == spaceName }) else { return }
+        guard let space = space(named: spaceName) else { return }
         if !session.kind.matches(space) { session.kind = .all }
         if !session.scope.matches(space, now: Date()) { session.scope = .all }
         if space.isMuted { session.showsMuted = true }
+    }
+
+    /// The open conversation's row, for the few places outside the detail pane that need
+    /// it. Fetched by name rather than found in a list, since no view here holds one.
+    private var selectedSpace: CachedSpace? {
+        session.selectedSpaceName.flatMap(space(named:))
+    }
+
+    private func space(named spaceName: String) -> CachedSpace? {
+        var descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate { $0.name == spaceName }
+        )
+        descriptor.fetchLimit = 1
+        return try? modelContext.fetch(descriptor).first
+    }
+
+    /// Whether this account knows the space at all — a count rather than a fetch, since
+    /// the answer is a yes or no and a row would be thrown away.
+    private func isCached(_ spaceName: String) -> Bool {
+        let descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { $0.name == spaceName }
+        )
+        return (try? modelContext.fetchCount(descriptor)) ?? 0 > 0
+    }
+}
+
+/// The open conversation, with the thread inspector beside it.
+///
+/// Owns a `@Query` for its one space rather than being handed a row found in the sidebar's
+/// list: the sidebar's query is narrowed to the current filter now, and a conversation can
+/// outlive its place in it — one left open long enough to age out of "Recent" would
+/// otherwise vanish from the pane it is being read in.
+private struct ConversationDetail: View {
+    @Environment(ChatSessionModel.self) private var session
+    @Query private var spaces: [CachedSpace]
+
+    private let spaceName: String
+
+    init(spaceName: String) {
+        self.spaceName = spaceName
+        var descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate { $0.name == spaceName }
+        )
+        descriptor.fetchLimit = 1
+        _spaces = Query(descriptor)
+    }
+
+    var body: some View {
+        if let space = spaces.first {
+            MessageListView(
+                spaceName: space.name,
+                spaceTitle: space.title,
+                isThreaded: space.isThreaded,
+                unreadThreadCount: space.unreadThreadCount,
+                // Read from the space row rather than from the last fetch's answer,
+                // so it stays right across the whole conversation: the backfill
+                // cursor is what knows whether there is anything left to fetch.
+                hasOlderHistory: !space.backfillComplete
+            )
+            .inspector(isPresented: threadBinding) {
+                inspectorContent(for: space)
+                    // The inspector's default width is sized for property
+                    // panels, not a conversation — bubbles plus an avatar
+                    // need real room or they collapse to a few words a line.
+                    .inspectorColumnWidth(min: 380, ideal: 460, max: 760)
+            }
+        } else {
+            // The row has not arrived yet — a direct message created moments ago can be
+            // a runloop behind its own query.
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) { AccountToolbarButton() }
+                }
+        }
     }
 
     /// The thread index and a single thread are two views of the same panel, so they
@@ -247,22 +324,70 @@ struct SpacesListView: View {
             set: { shown in if !shown { session.closeThreadInspector() } }
         )
     }
+}
 
-    private var selectedSpace: CachedSpace? {
-        guard let name = session.selectedSpaceName else { return nil }
-        return allSpaces.first { $0.name == name }
+/// The conversation list.
+///
+/// Owns the narrowed `@Query`, which is why it is a view of its own: a predicate can only
+/// be built in `init`, so the filter state has to arrive as parameters rather than be read
+/// from `session`. See ``SpaceQueries`` for what the narrowing is worth.
+private struct SidebarSpaceList: View {
+    @Environment(ChatSessionModel.self) private var session
+    @Environment(\.modelContext) private var modelContext
+    /// Rows the current filter could show — a superset of what is drawn, which
+    /// ``SidebarIndex`` then narrows exactly.
+    @Query private var spaces: [CachedSpace]
+    /// Directory profiles, for DM avatars. Chat supplies no images of its own.
+    @Query private var users: [CachedUser]
+    @FocusState.Binding private var isSearchFocused: Bool
+    /// The row the arrow keys are pointing at while the search field has focus.
+    /// Deliberately not the list's selection: moving through results must not open
+    /// each conversation it passes over, only the one you press Return on.
+    @State private var highlightedSpaceName: String?
+
+    private let scope: SpaceScope
+    private let kind: SpaceKind
+    private let showsMuted: Bool
+    private let searchText: String
+
+    init(
+        scope: SpaceScope,
+        kind: SpaceKind,
+        showsMuted: Bool,
+        searchText: String,
+        isSearchFocused: FocusState<Bool>.Binding
+    ) {
+        self.scope = scope
+        self.kind = kind
+        self.showsMuted = showsMuted
+        self.searchText = searchText
+        _isSearchFocused = isSearchFocused
+
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        _spaces = Query(
+            // Only whether there *is* a query, not what it says: the text is matched in
+            // memory, so typing narrows the same fetched set instead of asking SQLite
+            // again on every keystroke.
+            filter: SpaceQueries.sidebarRows(
+                scope: scope,
+                kind: kind,
+                hasSearchQuery: !query.isEmpty,
+                now: Date()
+            ),
+            sort: [SortDescriptor(\CachedSpace.lastActiveTime, order: .reverse)]
+        )
     }
 
-    private var sidebar: some View {
+    var body: some View {
         @Bindable var session = session
-        // One pass over the space list for the whole sidebar — see ``SidebarIndex``.
+        // One pass over the fetched rows for the whole sidebar — see ``SidebarIndex``.
         let index = SidebarIndex(
-            spaces: allSpaces,
+            spaces: spaces,
             users: users,
-            scope: session.scope,
-            kind: session.kind,
-            showsMuted: session.showsMuted,
-            searchText: session.searchText
+            scope: scope,
+            kind: kind,
+            showsMuted: showsMuted,
+            searchText: searchText
         )
 
         return ScrollViewReader { proxy in
@@ -308,10 +433,16 @@ struct SpacesListView: View {
                         scope: $session.scope,
                         kind: $session.kind,
                         showsMuted: $session.showsMuted,
-                        scopeCounts: index.scopeCounts,
-                        kindCounts: index.kindCounts,
-                        mutedCount: index.mutedCount,
-                        visibleCount: index.visibleSpaces.count
+                        // Eager, unlike the rest: the button's own title and the Muted
+                        // item's enabled state both depend on it, so it is read whether
+                        // or not the menu is ever opened. One count, a quarter of a
+                        // millisecond.
+                        mutedCount: mutedCount,
+                        visibleCount: index.visibleSpaces.count,
+                        // Deferred, because these are only ever read inside the menu's
+                        // content. Seven counts is about 7ms — worth not paying on every
+                        // pass of a list that redraws whenever the store is written to.
+                        counts: menuCounts
                     )
                 }
                 .padding(.horizontal, 10)
@@ -335,7 +466,7 @@ struct SpacesListView: View {
             }
             // A new query means new results: point at the top hit so Return has a
             // visible target without an arrow press first.
-            .onChange(of: session.searchText) { _, _ in
+            .onChange(of: searchText) { _, _ in
                 highlightedSpaceName = defaultHighlight(index)
             }
             // Once focus leaves the field the arrows belong to the list itself, and
@@ -346,11 +477,50 @@ struct SpacesListView: View {
         }
     }
 
+    // MARK: - Counts
+
+    private var mutedCount: Int {
+        (try? SidebarCounts.count(
+            scope: scope,
+            kind: kind,
+            mutedOnly: true,
+            now: Date(),
+            in: modelContext
+        )) ?? 0
+    }
+
+    /// What each option in the filter menu would list. Measured against the *other*
+    /// axis's current setting, so each number is what picking that one option produces.
+    private func menuCounts() -> SidebarOptionCounts {
+        let now = Date()
+        var byScope: [SpaceScope: Int] = [:]
+        for option in SpaceScope.allCases {
+            byScope[option] = (try? SidebarCounts.count(
+                scope: option, kind: kind, now: now, in: modelContext
+            )) ?? 0
+        }
+        var byKind: [SpaceKind: Int] = [:]
+        for option in SpaceKind.allCases {
+            byKind[option] = (try? SidebarCounts.count(
+                scope: scope, kind: option, now: now, in: modelContext
+            )) ?? 0
+        }
+        return SidebarOptionCounts(scope: byScope, kind: byKind)
+    }
+
+    /// Whether anything is cached at all, which is what separates "still loading" from
+    /// "your filter matches nothing". A count, since the rows would be discarded.
+    private var hasAnySpaces: Bool {
+        ((try? modelContext.fetchCount(FetchDescriptor<CachedSpace>())) ?? 0) > 0
+    }
+
+    // MARK: - Highlight
+
     /// Where the highlight sits before any arrow press: on the top hit once there is
     /// a query, and nowhere at all while the field is empty — a highlight on row one
     /// of an unfiltered list of 762 would be pointing at nothing in particular.
     private func defaultHighlight(_ index: SidebarIndex) -> String? {
-        session.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : index.orderedSpaceNames.first
     }
@@ -384,6 +554,8 @@ struct SpacesListView: View {
             session.searchText = ""
         }
     }
+
+    // MARK: - Reordering
 
     /// Only the pinned group is arrangeable: the others are ordered by the server's
     /// section order and by recency, neither of which is this app's to overrule.
@@ -469,7 +641,7 @@ struct SpacesListView: View {
     @ViewBuilder
     private func emptyOverlay(_ index: SidebarIndex) -> some View {
         switch session.spacesState {
-        case .refreshing where allSpaces.isEmpty:
+        case .refreshing where !hasAnySpaces:
             ProgressView("Loading spaces…")
         case .failed(let message):
             VStack(spacing: 12) {
@@ -484,14 +656,14 @@ struct SpacesListView: View {
             }
             .padding()
         default:
-            if index.visibleSpaces.isEmpty && !allSpaces.isEmpty {
+            if index.visibleSpaces.isEmpty && hasAnySpaces {
                 ContentUnavailableView.search
             }
         }
     }
 }
 
-private struct SpaceGroup {
+struct SpaceGroup {
     let title: String
     let sortOrder: Int
     let spaces: [CachedSpace]
@@ -499,19 +671,19 @@ private struct SpaceGroup {
     var isPinned = false
 }
 
-/// Everything the sidebar derives from the space list, worked out once per body
+/// Everything the sidebar derives from the rows it fetched, worked out once per body
 /// evaluation.
 ///
 /// These were computed properties, and the filtered list underneath them was being
-/// rebuilt five times a pass over 762 rows — by the grouping, by the pinned group, by
-/// the filter bar's count, by the empty overlay, and again by the order the arrow keys
-/// walk. Worse, `peer(for:)` reached for a dictionary of every directory row and was
-/// called *per row drawn*, which is the same O(rows × cache) trap the transcript had.
+/// rebuilt five times a pass — by the grouping, by the pinned group, by the filter bar's
+/// count, by the empty overlay, and again by the order the arrow keys walk. Worse,
+/// `peer(for:)` reached for a dictionary of every directory row and was called *per row
+/// drawn*, which is the same O(rows × cache) trap the transcript had.
 ///
-/// The counts are the reason this takes the filter state as parameters rather than
-/// reading the session: they describe what each option *would* show, so each is
-/// measured against the other axis's current setting rather than its own.
-private struct SidebarIndex {
+/// The counts used to be tallied here too, in the same pass. They moved to
+/// ``SidebarCounts`` when the fetch stopped returning every space: a number describing
+/// rows outside the current filter cannot be derived from rows inside it.
+struct SidebarIndex {
     /// The rows the sidebar shows, before grouping.
     let visibleSpaces: [CachedSpace]
     /// Pinned first, then the sections, then muted — the shape the web client's
@@ -522,13 +694,6 @@ private struct SidebarIndex {
     /// Every visible row in the order the sidebar draws it, groups included — so the
     /// arrows walk the list as it looks rather than as it was assembled.
     let orderedSpaceNames: [String]
-    /// How many rows each scope would show, honouring the current kind — so the
-    /// numbers in the menu match what picking that option actually produces.
-    let scopeCounts: [SpaceScope: Int]
-    let kindCounts: [SpaceKind: Int]
-    /// Pinned rows are counted out: they are listed regardless of the muted toggle, so
-    /// including them would promise rows the toggle cannot actually reveal.
-    let mutedCount: Int
     private let usersByID: [String: CachedUser]
 
     init(
@@ -550,50 +715,28 @@ private struct SidebarIndex {
         // Search overrides the scope — if you're looking for a dormant DM by name,
         // having "Recent" silently hide it would be actively unhelpful. The kind filter
         // still applies, since that is a deliberate narrowing rather than a time limit.
+        //
+        // Still applied here rather than left to the fetch: `spaces` is only a superset,
+        // deliberately, so this pass remains the authority on what is drawn.
         var visible: [CachedSpace] = []
-        var scopeTally: [SpaceScope: Int] = [:]
-        var kindTally: [SpaceKind: Int] = [:]
-        var muted = 0
-
-        // One walk of the list for all four answers. Each was its own pass before, and
-        // the two tallies were a pass per option on top of that.
         for space in spaces {
-            let matchesKind = kind.matches(space)
-            let matchesScope = scope.matches(space, now: now)
+            guard kind.matches(space) else { continue }
 
             if !query.isEmpty {
-                if matchesKind, space.title.localizedCaseInsensitiveContains(query) {
+                if space.title.localizedCaseInsensitiveContains(query) {
                     visible.append(space)
                 }
-            } else if matchesKind {
+            } else if space.isPinned {
                 // Pinning outranks both the scope and the muted toggle: it is an
                 // explicit "keep this in front of me", and a pin that vanished because
                 // the conversation went quiet for a month would be worse than no pin.
-                if space.isPinned {
-                    visible.append(space)
-                } else if showsMuted || !space.isMuted, matchesScope {
-                    visible.append(space)
-                }
+                visible.append(space)
+            } else if showsMuted || !space.isMuted, scope.matches(space, now: now) {
+                visible.append(space)
             }
-
-            for option in SpaceScope.allCases where matchesKind && option.matches(space, now: now) {
-                scopeTally[option, default: 0] += 1
-            }
-            for option in SpaceKind.allCases where matchesScope && option.matches(space) {
-                kindTally[option, default: 0] += 1
-            }
-            if space.isMuted, !space.isPinned, matchesScope, matchesKind { muted += 1 }
         }
 
-        // Absent keys would read as "no count at all" rather than "none": the filter bar
-        // shows the number next to every option, including the ones that match nothing.
-        for option in SpaceScope.allCases where scopeTally[option] == nil { scopeTally[option] = 0 }
-        for option in SpaceKind.allCases where kindTally[option] == nil { kindTally[option] = 0 }
-
         visibleSpaces = visible
-        scopeCounts = scopeTally
-        kindCounts = kindTally
-        mutedCount = muted
 
         // Pinned wins over muted for a space that is both: you can pin something you
         // have silenced, and the pin is the more deliberate of the two instructions.

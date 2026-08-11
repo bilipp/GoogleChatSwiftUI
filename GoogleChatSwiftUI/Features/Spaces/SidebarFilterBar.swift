@@ -10,15 +10,23 @@ struct SidebarFilterBar: View {
     @Binding var scope: SpaceScope
     @Binding var kind: SpaceKind
     @Binding var showsMuted: Bool
-    /// Row count each option would produce, so the menu shows consequences.
-    let scopeCounts: [SpaceScope: Int]
-    let kindCounts: [SpaceKind: Int]
+    /// Muted, unpinned rows behind the toggle. Eager because the button's own title and
+    /// this item's enabled state both read it, whether or not the menu is ever opened.
     let mutedCount: Int
     let visibleCount: Int
+    /// Row count each option would produce, so the menu shows consequences.
+    ///
+    /// A closure rather than the numbers themselves: they are read only inside the menu's
+    /// content, and counting all seven costs a few milliseconds against the store — see
+    /// ``SidebarCounts``. Passing them in would spend that on every pass of a sidebar that
+    /// redraws whenever anything is written.
+    let counts: () -> SidebarOptionCounts
 
     var body: some View {
         HStack(spacing: 6) {
             Menu {
+                let counted = counts()
+
                 Section("Show") {
                     ForEach(SpaceScope.allCases) { option in
                         Button {
@@ -27,7 +35,7 @@ struct SidebarFilterBar: View {
                             optionLabel(
                                 title: option.title,
                                 caption: option.caption,
-                                count: scopeCounts[option],
+                                count: counted.scope[option],
                                 isSelected: scope == option
                             )
                         }
@@ -56,7 +64,7 @@ struct SidebarFilterBar: View {
                             optionLabel(
                                 title: option.title,
                                 caption: nil,
-                                count: kindCounts[option],
+                                count: counted.kind[option],
                                 isSelected: kind == option
                             )
                         }
@@ -121,4 +129,13 @@ struct SidebarFilterBar: View {
             }
         }
     }
+}
+
+/// How many rows each filter option would list.
+///
+/// A value of its own so the counts can be handed over in one piece from inside the
+/// menu's content, where they are worked out — see ``SidebarFilterBar/counts``.
+struct SidebarOptionCounts {
+    var scope: [SpaceScope: Int] = [:]
+    var kind: [SpaceKind: Int] = [:]
 }

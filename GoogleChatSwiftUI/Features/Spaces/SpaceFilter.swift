@@ -39,7 +39,7 @@ enum SpaceScope: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    static let recentWindow: TimeInterval = 60 * 60 * 24 * 30
+    nonisolated static let recentWindow: TimeInterval = 60 * 60 * 24 * 30
 
     func matches(_ space: CachedSpace, now: Date) -> Bool {
         switch self {
@@ -96,6 +96,30 @@ enum SpaceKind: String, CaseIterable, Identifiable, Sendable {
             return space.spaceType == .space || space.spaceType == .groupChat
         case .directMessages:
             return space.spaceType == .directMessage
+        }
+    }
+}
+
+extension SpaceKind {
+    /// The `CachedSpace.spaceTypeRaw` values this kind admits, or nil where it admits
+    /// every one of them and no clause is wanted at all.
+    ///
+    /// Exists so the kind axis can travel into a SwiftData predicate as a captured list
+    /// rather than as one hand-written predicate per (scope, kind) pair — see
+    /// ``SpaceQueries``.
+    ///
+    /// ``all`` returns nil rather than a list of every case *including* `nil`, which was
+    /// the first attempt and was wrong: SQL's `IN` never matches NULL, so a space whose
+    /// `spaceType` the API omitted would be filtered out by the very option meaning
+    /// "everything". Its absence has to drop the clause, not widen it.
+    nonisolated var admittedRawValues: [String?]? {
+        switch self {
+        case .all:
+            return nil
+        case .spaces:
+            return [ChatSpace.SpaceType.space.rawValue, ChatSpace.SpaceType.groupChat.rawValue]
+        case .directMessages:
+            return [ChatSpace.SpaceType.directMessage.rawValue]
         }
     }
 }
