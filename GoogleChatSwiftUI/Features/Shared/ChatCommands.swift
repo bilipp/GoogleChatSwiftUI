@@ -37,10 +37,19 @@ struct ChatCommands: Commands {
         }
 
         CommandGroup(after: .textEditing) {
-            // No "Search Messages" item: `.searchable` installs its own Find entry
-            // with ⌘F, and a second one here would shadow it.
+            // The only keyboard route to message search. `.searchable` puts the field
+            // in the toolbar but installs no Find command of its own — verified against
+            // a running build: the Edit menu has no Find item, and ⌘F focuses nothing —
+            // so without this the field is reachable by mouse alone.
             //
-            // ⌘⇧K rather than a second Find-flavoured shortcut: this is the
+            // ⌘⇧F pairs with the ⌘⇧K below, and stays clear of the plain ⌘F that a
+            // future find-within-transcript would want.
+            Button("Search Messages") {
+                NotificationCenter.default.post(name: .chatFocusMessageSearch, object: nil)
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+
+            // ⌘⇧K rather than another Find-flavoured shortcut: this is the
             // jump-to-conversation gesture other chat clients use, and it reads as
             // navigation — which is what it does — instead of as text search.
             Button("Search Conversations") {
@@ -56,5 +65,6 @@ extension Notification.Name {
     static let chatMarkAllRead = Notification.Name("chatMarkAllRead")
     static let chatMarkUnread = Notification.Name("chatMarkUnread")
     static let chatFocusSearch = Notification.Name("chatFocusSearch")
+    static let chatFocusMessageSearch = Notification.Name("chatFocusMessageSearch")
     static let chatToggleThreads = Notification.Name("chatToggleThreads")
 }

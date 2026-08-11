@@ -10,6 +10,10 @@ struct SpacesListView: View {
     /// Directory profiles, for DM avatars. Chat supplies no images of its own.
     @Query private var users: [CachedUser]
     @FocusState private var isSearchFocused: Bool
+    /// Focus of the toolbar's message-search field, so ⌘⇧F can put the caret there.
+    /// Separate from the sidebar's: the two fields search different things and are
+    /// both on screen at once.
+    @FocusState private var isMessageSearchFocused: Bool
     /// The row the arrow keys are pointing at while the search field has focus.
     /// Deliberately not the list's selection: moving through results must not open
     /// each conversation it passes over, only the one you press Return on.
@@ -84,6 +88,10 @@ struct SpacesListView: View {
                 Text(option.title).tag(option)
             }
         }
+        // The one handle SwiftUI offers on a search field it owns. A `@FocusState`
+        // attached to some view of ours could not reach it: the field is built by
+        // `.searchable` and hosted in the toolbar, outside this hierarchy entirely.
+        .searchFocused($isMessageSearchFocused)
         // Above every message surface, so a link is caught wherever it was rendered:
         // message text, a smart chip, a card button. `Text`, `Link`, and `CardView` all
         // route through this action rather than reaching AppKit themselves.
@@ -137,6 +145,11 @@ struct SpacesListView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .chatFocusSearch)) { _ in
             isSearchFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatFocusMessageSearch)) { _ in
+            // Only takes focus; a query already typed is left standing so the shortcut
+            // can also be used to get back to a result list you clicked away from.
+            isMessageSearchFocused = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .chatToggleThreads)) { _ in
             // Ignored where threads are not a place of their own, matching the
