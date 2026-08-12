@@ -6,15 +6,19 @@
 #     scripts/release.sh               build, zip, install, upload
 #     scripts/release.sh --no-upload   everything but the upload
 #     scripts/release.sh --no-install  leave /Applications alone
+#     scripts/release.sh --no-commit   leave the bump in the working tree
 #
 # Each run raises CURRENT_PROJECT_VERSION by one and stamps that number into the zip
 # name, so two builds of the same marketing version never arrive as the same file. The
-# bump is left uncommitted in the working tree; commit it with whatever it shipped.
+# raise is then committed by itself, so the number a teammate reads in About maps to a
+# point in history and the next run starts from a number the repository knows about
+# rather than one only this working tree does.
 
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PBXPROJ="$PROJECT_ROOT/GoogleChatSwiftUI.xcodeproj/project.pbxproj"
+PBXPROJ_REL=GoogleChatSwiftUI.xcodeproj/project.pbxproj
+PBXPROJ="$PROJECT_ROOT/$PBXPROJ_REL"
 SCHEME=GoogleChatSwiftUI
 OUT_DIR="$PROJECT_ROOT/build/release"
 
@@ -27,13 +31,15 @@ DRIVE_REMOTE=gdrive
 
 UPLOAD=yes
 INSTALL=yes
+COMMIT=yes
 
 while [ $# -gt 0 ]; do
     case $1 in
         --no-upload) UPLOAD=no ;;
         --no-install) INSTALL=no ;;
+        --no-commit) COMMIT=no ;;
         *)
-            echo "usage: $(basename "$0") [--no-upload] [--no-install]" >&2
+            echo "usage: $(basename "$0") [--no-upload] [--no-install] [--no-commit]" >&2
             exit 64
             ;;
     esac
@@ -78,6 +84,28 @@ MARKETING=${MARKETING:-0}
 sed -i '' -E "s/^([[:space:]]*CURRENT_PROJECT_VERSION = )[0-9]+;$/\1$BUILD;/" "$PBXPROJ"
 
 echo "==> Build $CURRENT -> $BUILD (version $MARKETING)"
+
+# Whether the bump can be committed on its own is decided here rather than after the
+# build, so a run that cannot have it says so before spending two minutes archiving.
+# The commit is path-limited to project.pbxproj, which is only "just the build number"
+# if nothing else in that file is uncommitted — a target someone added in Xcode and has
+# not committed yet would otherwise be swept into a commit claiming to be a version
+# bump. Compared with the version lines removed from both sides, so this script's own
+# edit above does not count as a difference.
+if [ "$COMMIT" = yes ]; then
+    strip_version() { sed -E '/^[[:space:]]*CURRENT_PROJECT_VERSION = [0-9]+;$/d'; }
+
+    if ! command -v git >/dev/null \
+        || ! git -C "$PROJECT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+        echo "    not committing the bump: no git history here"
+        COMMIT=no
+    elif ! diff -q \
+        <(git -C "$PROJECT_ROOT" show "HEAD:$PBXPROJ_REL" | strip_version) \
+        <(strip_version <"$PBXPROJ") >/dev/null; then
+        echo "    not committing the bump: $PBXPROJ_REL has other uncommitted changes"
+        COMMIT=no
+    fi
+fi
 
 # ---------------------------------------------------------------------------------
 # Archive and export
@@ -184,6 +212,24 @@ ZIP="$OUT_DIR/GoogleChat-$MARKETING-b$BUILD.zip"
 
 echo "==> Zipping $(basename "$ZIP")"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+
+# ---------------------------------------------------------------------------------
+# Commit the bump
+# ---------------------------------------------------------------------------------
+
+# Once a zip carries the number, the number is spent — so this is where it goes into
+# history, whether or not the install and the upload below get that far. A failure here
+# leaves the bump in the working tree, which is where it already was, so it is worth a
+# warning rather than the end of a release that has otherwise happened.
+if [ "$COMMIT" = yes ]; then
+    echo "==> Committing build $BUILD"
+    if ! git -C "$PROJECT_ROOT" commit --only --quiet \
+        -m "Build $BUILD" \
+        -m "Raised by scripts/release.sh for $(basename "$ZIP")." \
+        -- "$PBXPROJ_REL"; then
+        echo "warning: could not commit the bump; it is still in the working tree" >&2
+    fi
+fi
 
 # ---------------------------------------------------------------------------------
 # Install
