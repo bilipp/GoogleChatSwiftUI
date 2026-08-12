@@ -1,7 +1,11 @@
 import Foundation
 import Observation
 
-/// Tracks which emoji this user actually reacts with, most recent first.
+/// Tracks which emoji this user actually reaches for, most recent first — reacting
+/// with one, or completing one from a `:shortcode` in the composer.
+///
+/// One history for both: someone who reacts with 🙂 all day means it when they type
+/// `:sli`, and the reaction row is no less right for knowing what they write.
 ///
 /// Lives in `UserDefaults` rather than SwiftData: it is a small user preference, not
 /// cached server state, and it should survive the cache being rebuilt.
@@ -40,7 +44,8 @@ final class RecentEmojiStore {
         return Array(result.prefix(Self.suggestionCount))
     }
 
-    /// Records a reaction the user added.
+    /// Records an emoji the user chose — a reaction they added, or a completion they
+    /// accepted in the composer.
     ///
     /// Only additions are recorded — removing a reaction is not a signal that the
     /// user wants to use that emoji again.

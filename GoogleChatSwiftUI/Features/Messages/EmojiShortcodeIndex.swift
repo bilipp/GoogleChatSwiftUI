@@ -96,29 +96,47 @@ nonisolated enum EmojiShortcodeIndex {
 
     /// Suggestions for a fragment typed after a colon, best first.
     ///
+    /// `recents` is the user's emoji history, most recent first — the same list the
+    /// reaction picker ranks by, so one habit serves both places. It separates
+    /// candidates the fragment matches equally well and nothing more: `:sli` offers 🙂
+    /// ahead of 🍕 once the user has reached for 🙂, but history never promotes a
+    /// loose match over a closer one, or `:fire` would stop meaning 🔥.
+    ///
     /// The same emoji can be reachable under both an alias and its Unicode name, so
     /// results are collapsed by emoji: a list showing 😄 twice looks broken.
-    static func matches(for query: String, limit: Int = suggestionLimit) -> [EmojiShortcode] {
+    static func matches(
+        for query: String,
+        recents: [String] = [],
+        limit: Int = suggestionLimit
+    ) -> [EmojiShortcode] {
         let needle = query.lowercased()
         guard needle.count >= minimumQueryLength else { return [] }
 
         let compactNeedle = compact(needle)
-        let ranked = all.enumerated().compactMap { index, entry -> (Int, Int, Int, EmojiShortcode)? in
-            guard let rank = rank(entry.shortcode, against: needle, compactNeedle) else {
-                return nil
+        let recency = recencyRanks(recents)
+        let ranked = all.enumerated()
+            .compactMap { index, entry -> (Int, Int, Int, Int, EmojiShortcode)? in
+                guard let rank = rank(entry.shortcode, against: needle, compactNeedle) else {
+                    return nil
+                }
+                // Shorter names are the more literal reading of the fragment, and the
+                // catalogue index keeps the order stable where lengths tie.
+                return (
+                    rank,
+                    recency[recencyKey(entry.emoji)] ?? Int.max,
+                    entry.shortcode.count,
+                    index,
+                    entry
+                )
             }
-            // Shorter names are the more literal reading of the fragment, and the
-            // catalogue index keeps the order stable where lengths tie.
-            return (rank, entry.shortcode.count, index, entry)
-        }
-        .sorted { lhs, rhs in
-            (lhs.0, lhs.1, lhs.2) < (rhs.0, rhs.1, rhs.2)
-        }
+            .sorted { lhs, rhs in
+                (lhs.0, lhs.1, lhs.2, lhs.3) < (rhs.0, rhs.1, rhs.2, rhs.3)
+            }
 
         var seen = Set<String>()
         var result: [EmojiShortcode] = []
-        for candidate in ranked where seen.insert(candidate.3.emoji).inserted {
-            result.append(candidate.3)
+        for candidate in ranked where seen.insert(candidate.4.emoji).inserted {
+            result.append(candidate.4)
             if result.count == limit { break }
         }
         return result
@@ -149,6 +167,22 @@ nonisolated enum EmojiShortcodeIndex {
     /// Separator-free form, so `:thumbsup` and `:thumbs_up` reach the same entry.
     private static func compact(_ value: String) -> String {
         value.filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// Position of each remembered emoji, lowest first. The first occurrence wins, so
+    /// a history holding both spellings of a heart is ranked by the newer of the two.
+    private static func recencyRanks(_ recents: [String]) -> [String: Int] {
+        Dictionary(
+            recents.enumerated().map { (recencyKey($0.element), $0.offset) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    /// History and catalogue disagree about the variation selector — `❤️` comes back
+    /// from Chat as bare `❤` — and two spellings of one emoji would leave the ranking
+    /// blind to half the user's habits.
+    private static func recencyKey(_ emoji: String) -> String {
+        String(String.UnicodeScalarView(emoji.unicodeScalars.filter { $0 != "\u{FE0F}" }))
     }
 
     // MARK: - Building

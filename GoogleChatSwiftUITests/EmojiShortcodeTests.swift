@@ -108,6 +108,33 @@ struct EmojiShortcodeTests {
         #expect(EmojiShortcodeIndex.matches(for: "qqzzxx").isEmpty)
     }
 
+    // MARK: - Recency
+
+    /// The case this exists for: `:sli` fits 🙂 and 🍕 equally well, and the one the
+    /// user keeps reaching for should be the one they can accept without reading.
+    @Test func ordersEquallyGoodMatchesByRecentUse() {
+        #expect(EmojiShortcodeIndex.matches(for: "sli").contains { $0.emoji == "🙂" })
+        #expect(EmojiShortcodeIndex.matches(for: "sli", recents: ["🙂"]).first?.emoji == "🙂")
+    }
+
+    /// History is ordered, so the newer of two remembered emoji leads.
+    @Test func prefersTheMoreRecentlyUsedEmoji() {
+        #expect(EmojiShortcodeIndex.matches(for: "sli", recents: ["🍕", "🙂"]).first?.emoji == "🍕")
+        #expect(EmojiShortcodeIndex.matches(for: "sli", recents: ["🙂", "🍕"]).first?.emoji == "🙂")
+    }
+
+    /// History separates ties and nothing more. Were it to outrank the match itself,
+    /// one use of 🚒 would take `:fire` away from 🔥.
+    @Test func doesNotLetHistoryBeatACloserMatch() {
+        #expect(EmojiShortcodeIndex.matches(for: "fire", recents: ["🚒"]).first?.emoji == "🔥")
+    }
+
+    /// Reactions come back from Chat without the variation selector the catalogue
+    /// carries, and both spellings have to count as the same habit.
+    @Test func recognisesRememberedEmojiWithoutTheVariationSelector() {
+        #expect(EmojiShortcodeIndex.matches(for: "hea", recents: ["❤"]).first?.emoji == "❤️")
+    }
+
     // MARK: - Derivation
 
     /// The point of deriving from ICU: emoji nobody wrote an alias for are still

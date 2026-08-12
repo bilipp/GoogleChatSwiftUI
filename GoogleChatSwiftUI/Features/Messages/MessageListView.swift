@@ -142,7 +142,9 @@ struct MessageListView: View {
                 isSending: session.isSending(spaceName),
                 replyTarget: replyTarget,
                 onCancelReply: { replyTarget = nil },
-                mentionCandidates: index.mentionCandidates
+                mentionCandidates: index.mentionCandidates,
+                recentEmoji: session.recentEmoji.recents,
+                onUseEmoji: { session.recentEmoji.record($0) }
             ) { composed in
                 let target = replyTarget
                 replyTarget = nil

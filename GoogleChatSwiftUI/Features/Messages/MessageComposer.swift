@@ -34,6 +34,12 @@ struct MessageComposer: View {
     /// Who `@` can reach here. Empty until the space's members have been resolved,
     /// which simply means the list stays shut rather than offering half a room.
     var mentionCandidates: [MentionCandidate] = []
+    /// The user's emoji history, most recent first, used to order completions that the
+    /// typed fragment fits equally well. See ``EmojiShortcodeIndex/matches(for:recents:limit:)``.
+    var recentEmoji: [String] = []
+    /// Reports an emoji the user completed here, so the history the next completion —
+    /// and the reaction picker — ranks by includes what gets typed, not only reactions.
+    var onUseEmoji: (String) -> Void = { _ in }
     let onSend: (ComposedMessage) -> Void
 
     @State private var text: String = ""
@@ -263,6 +269,7 @@ struct MessageComposer: View {
     private func refreshSuggestions() {
         if let completed = EmojiShortcodeTrigger.completed(in: text) {
             text.replaceSubrange(completed.range, with: completed.emoji)
+            onUseEmoji(completed.emoji)
             suggestions = []
             return
         }
@@ -278,7 +285,9 @@ struct MessageComposer: View {
             suggestions = []
             return
         }
-        suggestions = EmojiShortcodeIndex.matches(for: pending.query).map(CompletionSuggestion.emoji)
+        suggestions = EmojiShortcodeIndex
+            .matches(for: pending.query, recents: recentEmoji)
+            .map(CompletionSuggestion.emoji)
         selectedSuggestion = 0
     }
 
@@ -312,6 +321,7 @@ struct MessageComposer: View {
         // Trailing space because a completion is nearly always mid-sentence, and
         // typing one by hand after every emoji is the kind of friction people notice.
         text.replaceSubrange(pending.range, with: match.emoji + " ")
+        onUseEmoji(match.emoji)
         suggestions = []
         return true
     }
