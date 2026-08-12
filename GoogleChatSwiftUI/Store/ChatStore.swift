@@ -1045,9 +1045,15 @@ actor ChatStore {
     }
 
     /// Applies an edit locally after the server has accepted it.
-    func applyEdit(to name: String, text: String) throws {
+    ///
+    /// - Parameter formattedText: the server's formatted copy of the new body. Written
+    ///   even when nil, unlike most fields here: leaving the old one in place would
+    ///   render the message as it read before the edit until some later sync replaced
+    ///   it — the one stale value the transcript cannot hide.
+    func applyEdit(to name: String, text: String, formattedText: String?) throws {
         guard let message = try message(named: name) else { return }
         message.text = text
+        message.formattedText = formattedText
         message.lastUpdateTime = Date()
         try modelContext.save()
     }
@@ -1074,6 +1080,7 @@ actor ChatStore {
     private func tombstone(_ message: CachedMessage) {
         message.deleteTime = Date()
         message.text = nil
+        message.formattedText = nil
     }
 
     // MARK: - Links

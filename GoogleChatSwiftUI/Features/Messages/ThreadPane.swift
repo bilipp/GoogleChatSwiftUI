@@ -166,7 +166,7 @@ struct ThreadPane: View {
                 MessageBubble(
                     message: message,
                     sender: index.sender(of: message),
-                    mentionNames: index.mentionNames(in: message),
+                    mentions: index.mentions(in: message),
                     mentionCandidates: index.mentionCandidates,
                     isOwn: session.isOwnMessage(message),
                     isFirstInGroup: true,
@@ -249,8 +249,15 @@ private struct ThreadIndex {
         return usersByID[id]
     }
 
-    func mentionNames(in message: CachedMessage) -> [String] {
-        message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
+    /// Display names of the people a message mentions, keyed by user resource name,
+    /// as in the transcript's own index.
+    func mentions(in message: CachedMessage) -> [String: String] {
+        var resolved: [String: String] = [:]
+        for id in message.mentionedUserIDs {
+            guard let name = usersByID[id]?.displayName, !name.isEmpty else { continue }
+            resolved[id] = name
+        }
+        return resolved
     }
 }
 

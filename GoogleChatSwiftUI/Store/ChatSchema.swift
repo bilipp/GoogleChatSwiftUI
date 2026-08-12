@@ -213,6 +213,17 @@ final class CachedMessage {
     @Attribute(.unique) var name: String
 
     var text: String?
+
+    /// The same body with its formatting still in it — see ``ChatTextSource``.
+    ///
+    /// Stored beside `text` rather than instead of it because the two answer different
+    /// questions. This one is what the transcript renders, since `text` has had the
+    /// markup taken out of it and can no longer say a span was code. `text` is what
+    /// search indexes and what a notification banner shows, where markup would be
+    /// noise, and it is the fallback whenever this is nil — a locally composed message
+    /// still waiting on the server, or a row cached before this column existed.
+    var formattedText: String?
+
     /// Chat's own plain-text stand-in for card messages.
     var fallbackText: String?
     var createTime: Date?
@@ -370,6 +381,7 @@ final class CachedMessage {
 
     func apply(_ remote: ChatMessage) {
         text = remote.text
+        formattedText = remote.formattedText
         fallbackText = remote.fallbackText
         searchableText = Self.searchIndex(text: remote.text, fallback: remote.fallbackText)
         // Re-encoded rather than carrying the original bytes: the wire payload is not

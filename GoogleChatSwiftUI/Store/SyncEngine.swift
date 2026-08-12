@@ -512,8 +512,13 @@ nonisolated struct SyncEngine: Sendable {
         )
         // The server's own copy renders mentions back as names, so the cache stores the
         // readable form. `newText` is the fallback for the same reason: it is what the
-        // user typed, never the markup.
-        try await store.applyEdit(to: messageName, text: updated.text ?? newText)
+        // user typed, never the markup. The formatted copy travels alongside it, since
+        // that is what the transcript renders.
+        try await store.applyEdit(
+            to: messageName,
+            text: updated.text ?? newText,
+            formattedText: updated.formattedText
+        )
     }
 
     /// - Parameter force: also deletes the message's threaded replies, which Chat

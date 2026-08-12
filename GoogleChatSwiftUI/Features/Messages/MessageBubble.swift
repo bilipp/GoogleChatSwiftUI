@@ -13,8 +13,11 @@ struct MessageBubble: View {
     let message: CachedMessage
     /// Directory profile for the sender, when one has been resolved.
     let sender: CachedUser?
-    /// Display names of users mentioned in this message, for highlighting.
-    let mentionNames: [String]
+    /// Display names of the people this message mentions, keyed by user resource name.
+    ///
+    /// Both halves are needed: the name is what gets highlighted in Chat's plain copy
+    /// of the body, and the resource name is how its formatted copy refers to them.
+    let mentions: [String: String]
     /// Who can be mentioned in this conversation, so an edit can re-encode the names
     /// in the draft. Without it, correcting a typo in a message that mentions someone
     /// posts their name back as prose and quietly un-mentions them.
@@ -277,13 +280,23 @@ struct MessageBubble: View {
         DecodedMessageContent.bareDriveLinks(of: message)
     }
 
+    /// Which of Chat's two copies of this body to render — see
+    /// ``ChatTextRenderer/body(formatted:plain:mentions:)``.
+    private var messageBody: ChatMessageBody {
+        ChatTextRenderer.body(
+            formatted: message.formattedText,
+            plain: message.text,
+            mentions: mentions
+        )
+    }
+
     /// Mention highlighting matches on display name, so the sender's own directory
     /// entry is irrelevant here — only the mentioned users' names matter.
     private var renderedBlocks: [ChatBlock] {
-        guard !message.isDeleted, let raw = message.text, !raw.isEmpty else {
+        guard !message.isDeleted, !messageBody.isEmpty else {
             return [.paragraph(AttributedString(message.displayText))]
         }
-        return RenderedChatText.blocks(raw, mentionNames: mentionNames, isOwn: isOwn)
+        return RenderedChatText.blocks(messageBody, mentions: mentions, isOwn: isOwn)
     }
 
     private var bubble: some View {
@@ -537,7 +550,7 @@ struct MessageBubble: View {
         if isOwn && !message.isDeleted && !message.isPending {
             Divider()
             Button("Edit") {
-                draft = message.text ?? ""
+                draft = ChatTextRenderer.editable(messageBody, mentions: mentions)
                 isEditing = true
             }
             Button("Delete", role: .destructive) {
@@ -572,10 +585,16 @@ struct MessageBubble: View {
     ///
     /// The edit field itself offers no completion, so a *new* mention has to be typed
     /// out in full to be recognised.
+    ///
+    /// Compared against what the field was opened with rather than against `text`,
+    /// since the draft starts from the formatted body: measuring an unchanged draft
+    /// against the plain copy would call every formatted message edited and post its
+    /// own markup back at it.
     private func saveEdit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         isEditing = false
-        guard !text.isEmpty, text != message.text else { return }
+        let original = ChatTextRenderer.editable(messageBody, mentions: mentions)
+        guard !text.isEmpty, text != original else { return }
         Task {
             await session.edit(
                 messageName: message.name,

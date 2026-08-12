@@ -11,6 +11,31 @@ nonisolated enum ChatCodeAttribute: AttributedStringKey {
     static let name = "chatCode"
 }
 
+/// Which of Chat's two copies of a body some text came from.
+///
+/// The API answers for a message twice. `text` is the plain body, and plain means
+/// *stripped*: whatever the sender formatted has been taken back out of it, so a
+/// message posted with a fenced block arrives as the code with no fence around it and
+/// nothing anywhere saying there was one. `formattedText` is the same body with the
+/// markup restored, and carries three forms that appear nowhere else — `<users/123>`
+/// for a mention, `<url|label>` for a hyperlink, and a backslash before any character
+/// that would otherwise read as markup.
+///
+/// Both go through the same passes. This is what decides whether those three forms are
+/// syntax or the literal characters somebody typed.
+nonisolated enum ChatTextSource: Sendable, Hashable {
+    case plain
+    case formatted
+}
+
+/// A message body together with the field it came from.
+nonisolated struct ChatMessageBody: Sendable, Hashable {
+    let text: String
+    let source: ChatTextSource
+
+    var isEmpty: Bool { text.isEmpty }
+}
+
 /// One piece of a formatted message.
 ///
 /// Chat's block formats — quotes, bullets, fenced code — cannot be expressed as
@@ -31,24 +56,29 @@ nonisolated enum ChatBlock: Sendable {
     case codeBlock(language: CodeLanguage?, body: String)
 }
 
-/// Turns Chat's plain-text-with-markup into styled text.
+/// Turns Chat's markup into styled text.
 ///
-/// Chat sends its formatting literally in `text` — `*bold*`, `_italic_`,
+/// Chat's formatting is markup in the body itself — `*bold*`, `_italic_`,
 /// `~strike~`, `` `code` ``, ```` ```blocks``` ````, `> quotes` and `- bullets` —
-/// so rendering it raw shows the markup characters. Mentions arrive as separate
-/// annotations rather than inline markup.
+/// so rendering it raw shows the markup characters.
 ///
-/// Syntax follows <https://support.google.com/chat/answer/7649118>.
+/// Syntax follows <https://support.google.com/chat/answer/7649118>, plus the three
+/// forms only `formattedText` uses — see ``ChatTextSource``.
 nonisolated enum ChatTextRenderer {
     // MARK: - Entry points
 
     /// Parses `raw` into the blocks that make up a message.
     ///
-    /// - Parameter mentionNames: display names of users mentioned in this message,
-    ///   used to highlight the matching `@Name` spans.
+    /// - Parameters:
+    ///   - mentions: display names of the people this message mentions, keyed by user
+    ///     resource name. `formattedText` names them by resource name and needs the
+    ///     map to write anything readable; `text` names them in full already, and the
+    ///     names are what the matching `@Name` spans are highlighted by.
+    ///   - source: which field `raw` came out of. See ``ChatTextSource``.
     static func blocks(
         _ raw: String,
-        mentionNames: [String] = [],
+        mentions: [String: String] = [:],
+        source: ChatTextSource = .plain,
         isOwn: Bool = false
     ) -> [ChatBlock] {
         var result: [ChatBlock] = []
@@ -58,7 +88,12 @@ nonisolated enum ChatTextRenderer {
                 result.append(.codeBlock(language: language, body: body))
             case .text(let body):
                 result.append(
-                    contentsOf: lineBlocks(body, mentionNames: mentionNames, isOwn: isOwn)
+                    contentsOf: lineBlocks(
+                        body,
+                        mentions: mentions,
+                        source: source,
+                        isOwn: isOwn
+                    )
                 )
             }
         }
@@ -75,11 +110,12 @@ nonisolated enum ChatTextRenderer {
     /// keep their text but lose their decoration.
     static func attributed(
         _ raw: String,
-        mentionNames: [String] = [],
+        mentions: [String: String] = [:],
+        source: ChatTextSource = .plain,
         isOwn: Bool = false
     ) -> AttributedString {
         var result = AttributedString()
-        for block in blocks(raw, mentionNames: mentionNames, isOwn: isOwn) {
+        for block in blocks(raw, mentions: mentions, source: source, isOwn: isOwn) {
             if !result.characters.isEmpty { result.append(AttributedString("\n")) }
             switch block {
             case .paragraph(let text):
@@ -107,6 +143,71 @@ nonisolated enum ChatTextRenderer {
     /// asterisks would just be noise.
     static func plainText(_ raw: String) -> String {
         String(attributed(raw).characters)
+    }
+
+    // MARK: - Choosing a body
+
+    /// Which of a message's two bodies to render.
+    ///
+    /// `formattedText` whenever there is one, because it is the only copy that still
+    /// says a span was code: Chat resolves formatting as the message is posted and
+    /// serves `text` with the markup taken out, so a fenced block reaches `text` as
+    /// bare lines and renders as prose however good the parser is.
+    ///
+    /// The exception is mentions. `formattedText` writes them as `<users/123>`, and a
+    /// user the directory has not answered for yet has no name to put there — a raw
+    /// resource name on screen is worse than a message that lost its backticks. So a
+    /// body naming somebody unknown falls back to the plain copy, where Chat has
+    /// already written the name out. The lookup lands within a second or two and the
+    /// bubble re-renders with the formatting.
+    static func body(
+        formatted: String?,
+        plain: String?,
+        mentions: [String: String]
+    ) -> ChatMessageBody {
+        let fallback = ChatMessageBody(text: plain ?? "", source: .plain)
+        guard let formatted, !formatted.isEmpty else { return fallback }
+        guard mentionIDs(in: formatted).allSatisfy({ mentionName(of: $0, in: mentions) != nil })
+        else { return fallback }
+        return ChatMessageBody(text: formatted, source: .formatted)
+    }
+
+    /// The body as the composer would have written it, for the edit field.
+    ///
+    /// Markup, escapes and `<url|label>` are left exactly as Chat sent them: all three
+    /// are valid on the way back in, so fixing a typo posts the same formatting back
+    /// rather than flattening the message. Mentions are the exception — `<users/123>`
+    /// is not something anyone can edit around — and are written as names, which
+    /// `MessageBubble.saveEdit` encodes again on the way out.
+    static func editable(_ body: ChatMessageBody, mentions: [String: String]) -> String {
+        guard body.source == .formatted else { return body.text }
+        var result = body.text
+        for id in Set(mentionIDs(in: body.text)) {
+            guard let name = mentionName(of: id, in: mentions) else { continue }
+            result = result.replacingOccurrences(of: "<\(id)>", with: "@\(name)")
+        }
+        return result
+    }
+
+    /// The user resource names a `formattedText` body mentions.
+    static func mentionIDs(in formatted: String) -> [String] {
+        var found: [String] = []
+        var rest = Substring(formatted)
+        while let open = rest.range(of: "<users/") {
+            // Past the `<`, so the id is what runs up to the closing bracket.
+            let inner = rest[open.lowerBound...].dropFirst()
+            guard let close = inner.range(of: ">") else { break }
+            found.append(String(inner[..<close.lowerBound]))
+            rest = inner[close.upperBound...]
+        }
+        return found
+    }
+
+    /// `users/all` is Chat's own name for everyone in the space. It is never in the
+    /// directory, so it is answered here rather than looked up.
+    private static func mentionName(of id: String, in mentions: [String: String]) -> String? {
+        if let name = mentions[id] { return name }
+        return id == MentionCandidate.everyoneName ? MentionCandidate.everyone.displayName : nil
     }
 
     // MARK: - Fenced code blocks
@@ -185,7 +286,8 @@ nonisolated enum ChatTextRenderer {
     /// makes a multi-line quote read as a single quotation.
     private static func lineBlocks(
         _ text: String,
-        mentionNames: [String],
+        mentions: [String: String],
+        source: ChatTextSource,
         isOwn: Bool
     ) -> [ChatBlock] {
         var blocks: [ChatBlock] = []
@@ -194,7 +296,7 @@ nonisolated enum ChatTextRenderer {
         var quotes: [String] = []
 
         func inline(_ line: String) -> AttributedString {
-            inlineText(line, mentionNames: mentionNames, isOwn: isOwn)
+            inlineText(line, mentions: mentions, source: source, isOwn: isOwn)
         }
 
         func flushParagraph() {
@@ -307,13 +409,26 @@ nonisolated enum ChatTextRenderer {
     }
 
     private static func inlineText(
-        _ source: String,
-        mentionNames: [String],
+        _ line: String,
+        mentions: [String: String],
+        source: ChatTextSource,
         isOwn: Bool
     ) -> AttributedString {
-        var text = parseInline(Array(source), style: [], isOwn: isOwn)
+        var text = parseInline(
+            Array(line),
+            style: [],
+            mentions: mentions,
+            source: source,
+            isOwn: isOwn
+        )
         linkifyURLs(in: &text, isOwn: isOwn)
-        highlightMentions(in: &text, names: mentionNames, isOwn: isOwn)
+        // Longest first, so `@Ana` cannot claim the opening of `@Ana Silva` — and so a
+        // dictionary's unordered values do not decide which of the two wins.
+        highlightMentions(
+            in: &text,
+            names: mentions.values.sorted { $0.count > $1.count },
+            isOwn: isOwn
+        )
         return text
     }
 
@@ -326,6 +441,8 @@ nonisolated enum ChatTextRenderer {
     private static func parseInline(
         _ characters: [Character],
         style: InlineStyle,
+        mentions: [String: String],
+        source: ChatTextSource,
         isOwn: Bool
     ) -> AttributedString {
         var result = AttributedString()
@@ -339,12 +456,31 @@ nonisolated enum ChatTextRenderer {
         }
 
         while index < characters.count {
+            if source == .formatted, let escaped = escapedCharacter(characters, at: index) {
+                literal.append(escaped)
+                index += 2
+                continue
+            }
+
+            if source == .formatted,
+               let token = angleToken(characters, at: index, mentions: mentions, isOwn: isOwn) {
+                flushLiteral()
+                result.append(token.run)
+                index = token.end + 1
+                continue
+            }
+
             guard let delimiter = Delimiter(characters[index]),
                   // Re-opening a style already in effect would leave the closing
                   // delimiter with nothing to pair against.
                   delimiter.style.map({ !style.contains($0) }) ?? true,
                   isOpening(characters, at: index),
-                  let close = closingIndex(characters, after: index, delimiter: delimiter)
+                  let close = closingIndex(
+                      characters,
+                      after: index,
+                      delimiter: delimiter,
+                      source: source
+                  )
             else {
                 literal.append(characters[index])
                 index += 1
@@ -354,7 +490,15 @@ nonisolated enum ChatTextRenderer {
             flushLiteral()
             let inner = Array(characters[(index + 1)..<close])
             if let nested = delimiter.style {
-                result.append(parseInline(inner, style: style.union(nested), isOwn: isOwn))
+                result.append(
+                    parseInline(
+                        inner,
+                        style: style.union(nested),
+                        mentions: mentions,
+                        source: source,
+                        isOwn: isOwn
+                    )
+                )
             } else {
                 result.append(codeRun(String(inner), isOwn: isOwn))
             }
@@ -363,6 +507,77 @@ nonisolated enum ChatTextRenderer {
 
         flushLiteral()
         return result
+    }
+
+    // MARK: - `formattedText` forms
+
+    /// The character a backslash at `index` escapes, or nil if it escapes nothing.
+    ///
+    /// Chat backslashes anything in the body that would otherwise be read as markup, so
+    /// a message about `*args` comes back as `\*args` and has to lose the backslash
+    /// here — while keeping the asterisk literal, which is the whole point of it.
+    ///
+    /// Letters and digits are excluded so that a `\n` written in prose, or a Windows
+    /// path, survives as typed: Chat had no reason to escape either, and something that
+    /// is not an escape should not be eaten as one.
+    private static func escapedCharacter(_ characters: [Character], at index: Int) -> Character? {
+        guard characters[index] == "\\", index + 1 < characters.count else { return nil }
+        let next = characters[index + 1]
+        guard !next.isLetter, !next.isNumber, !next.isWhitespace else { return nil }
+        return next
+    }
+
+    /// The `<…>` construct at `index`, when it is one Chat wrote.
+    ///
+    /// Nil for anything else, which is the commoner case by far — every `<div>` and
+    /// `a < b` in a message reaches here too, and has to come out as typed.
+    ///
+    /// - Returns: the run to append, and the index of the closing `>`.
+    private static func angleToken(
+        _ characters: [Character],
+        at index: Int,
+        mentions: [String: String],
+        isOwn: Bool
+    ) -> (run: AttributedString, end: Int)? {
+        guard characters[index] == "<" else { return nil }
+
+        var close = index + 1
+        // A newline before the bracket closes means this was never a token: no form
+        // Chat writes spans lines.
+        while close < characters.count, characters[close] != ">", characters[close] != "\n" {
+            close += 1
+        }
+        guard close < characters.count, characters[close] == ">" else { return nil }
+
+        let body = String(characters[(index + 1)..<close])
+        guard !body.isEmpty else { return nil }
+
+        if body.hasPrefix("users/") {
+            guard let name = mentionName(of: body, in: mentions) else { return nil }
+            return (mentionRun("@\(name)", isOwn: isOwn), close)
+        }
+
+        // `<url|label>`: only the part before the bar is a link, and the label is free
+        // text — often the title of the page rather than anything URL-shaped.
+        if let bar = body.firstIndex(of: "|") {
+            let target = String(body[..<bar])
+            let label = String(body[body.index(after: bar)...])
+            guard !label.isEmpty, let url = detectedURL(in: target) else { return nil }
+            return (linkRun(label, url: url, isOwn: isOwn), close)
+        }
+
+        guard let url = detectedURL(in: body) else { return nil }
+        return (linkRun(body, url: url, isOwn: isOwn), close)
+    }
+
+    /// The URL `raw` is, rather than one it contains: a token is a link only if the
+    /// whole of it is.
+    private static func detectedURL(in raw: String) -> URL? {
+        guard let urlDetector, !raw.isEmpty else { return nil }
+        let range = NSRange(raw.startIndex..., in: raw)
+        guard let match = urlDetector.firstMatch(in: raw, range: range), match.range == range
+        else { return nil }
+        return match.url
     }
 
     /// A delimiter opens a span only at a word boundary and with something other
@@ -392,14 +607,21 @@ nonisolated enum ChatTextRenderer {
     /// Finds the delimiter that closes the span opened at `open`.
     ///
     /// Code spans are stepped over wholesale, so the `*` in `` *see `a*b` here* ``
-    /// belongs to the code rather than closing the bold early.
+    /// belongs to the code rather than closing the bold early. An escaped delimiter is
+    /// stepped over for the same reason: `\*` is an asterisk somebody typed, and taking
+    /// it for the end of a span would close it in the wrong place.
     private static func closingIndex(
         _ characters: [Character],
         after open: Int,
-        delimiter: Delimiter
+        delimiter: Delimiter,
+        source: ChatTextSource
     ) -> Int? {
         var index = open + 1
         while index < characters.count {
+            if source == .formatted, escapedCharacter(characters, at: index) != nil {
+                index += 2
+                continue
+            }
             if delimiter != .code,
                characters[index] == "`",
                isOpening(characters, at: index),
@@ -454,6 +676,24 @@ nonisolated enum ChatTextRenderer {
         return run
     }
 
+    /// Link styling, shared by the detector pass below and `formattedText`'s explicit
+    /// `<url|label>`, so a link looks the same however Chat described it.
+    private static func linkRun(_ label: String, url: URL, isOwn: Bool) -> AttributedString {
+        var run = AttributedString(label)
+        run.link = url
+        run.underlineStyle = .single
+        // Accent-on-accent would vanish inside an own-message bubble.
+        run.foregroundColor = isOwn ? .white : .accentColor
+        return run
+    }
+
+    private static func mentionRun(_ name: String, isOwn: Bool) -> AttributedString {
+        var run = AttributedString(name)
+        run.font = Font.body.weight(.semibold)
+        run.foregroundColor = isOwn ? .white : .accentColor
+        return run
+    }
+
     // MARK: - Links
 
     /// Detector is built once: `NSDataDetector` compiles a regex on init, and doing
@@ -483,7 +723,11 @@ nonisolated enum ChatTextRenderer {
                   let stringRange = Range(match.range, in: plain),
                   let lower = AttributedString.Index(stringRange.lowerBound, within: text),
                   let upper = AttributedString.Index(stringRange.upperBound, within: text),
-                  !isCode(text[lower..<upper])
+                  !isCode(text[lower..<upper]),
+                  // A `<url|label>` whose label happens to read as a URL already points
+                  // somewhere Chat chose. Detecting the label would send the reader to
+                  // the wrong place.
+                  !isLinked(text[lower..<upper])
             else { continue }
 
             text[lower..<upper].link = url
@@ -521,5 +765,9 @@ nonisolated enum ChatTextRenderer {
 
     private static func isCode(_ slice: AttributedSubstring) -> Bool {
         slice.runs.contains { $0[ChatCodeAttribute.self] == true }
+    }
+
+    private static func isLinked(_ slice: AttributedSubstring) -> Bool {
+        slice.runs.contains { $0.link != nil }
     }
 }

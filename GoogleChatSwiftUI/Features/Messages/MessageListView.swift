@@ -283,7 +283,7 @@ struct MessageListView: View {
         return MessageBubble(
             message: message,
             sender: index.sender(of: message),
-            mentionNames: index.mentionNames(in: message),
+            mentions: index.mentions(in: message),
             mentionCandidates: index.mentionCandidates,
             isOwn: entry.isOwn,
             isFirstInGroup: entry.isFirstInGroup,
@@ -486,9 +486,18 @@ private struct TranscriptIndex {
         return usersByID[id]
     }
 
-    /// Display names of the people a message mentions, for highlighting.
-    func mentionNames(in message: CachedMessage) -> [String] {
-        message.mentionedUserIDs.compactMap { usersByID[$0]?.displayName }
+    /// Display names of the people a message mentions, keyed by user resource name.
+    ///
+    /// People the directory has not answered for yet are left out rather than named
+    /// "Unknown" — see ``ChatTextRenderer/body(formatted:plain:mentions:)`` for what a
+    /// missing name costs.
+    func mentions(in message: CachedMessage) -> [String: String] {
+        var resolved: [String: String] = [:]
+        for id in message.mentionedUserIDs {
+            guard let name = usersByID[id]?.displayName, !name.isEmpty else { continue }
+            resolved[id] = name
+        }
+        return resolved
     }
 
     func replyCount(of message: CachedMessage) -> Int {

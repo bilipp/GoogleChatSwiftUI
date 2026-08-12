@@ -26,8 +26,8 @@ import SwiftUI
 /// is assembled inside an actor, and the tests call it directly.
 @MainActor enum RenderedChatText {
     private struct BlocksKey: Hashable {
-        let raw: String
-        let mentionNames: [String]
+        let body: ChatMessageBody
+        let mentions: [String: String]
         let isOwn: Bool
     }
 
@@ -35,16 +35,25 @@ import SwiftUI
     private static var plainEntries: [String: String] = [:]
     private static let capacity = 500
 
-    /// The blocks of a message, parsed once per distinct text.
+    /// The blocks of a message, parsed once per distinct body.
+    ///
+    /// The mentions are part of the key as well as the text: a body that names somebody
+    /// renders differently once the directory answers for them, and an entry made
+    /// before that must not outlive it.
     static func blocks(
-        _ raw: String,
-        mentionNames: [String] = [],
+        _ body: ChatMessageBody,
+        mentions: [String: String] = [:],
         isOwn: Bool = false
     ) -> [ChatBlock] {
-        let key = BlocksKey(raw: raw, mentionNames: mentionNames, isOwn: isOwn)
+        let key = BlocksKey(body: body, mentions: mentions, isOwn: isOwn)
         if let cached = blockEntries[key] { return cached }
 
-        let parsed = ChatTextRenderer.blocks(raw, mentionNames: mentionNames, isOwn: isOwn)
+        let parsed = ChatTextRenderer.blocks(
+            body.text,
+            mentions: mentions,
+            source: body.source,
+            isOwn: isOwn
+        )
         if blockEntries.count >= capacity { blockEntries.removeAll(keepingCapacity: true) }
         blockEntries[key] = parsed
         return parsed

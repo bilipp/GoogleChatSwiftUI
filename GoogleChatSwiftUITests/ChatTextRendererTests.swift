@@ -22,7 +22,20 @@ struct ChatTextRendererTests {
 
     /// The single paragraph a message is expected to collapse to.
     private func paragraph(_ raw: String) throws -> AttributedString {
-        let parsed = blocks(raw)
+        try paragraph(of: blocks(raw))
+    }
+
+    /// The same, for a body that came out of `formattedText` rather than `text`.
+    private func formattedParagraph(
+        _ raw: String,
+        mentions: [String: String] = [:]
+    ) throws -> AttributedString {
+        try paragraph(
+            of: ChatTextRenderer.blocks(raw, mentions: mentions, source: .formatted)
+        )
+    }
+
+    private func paragraph(of parsed: [ChatBlock]) throws -> AttributedString {
         try #require(parsed.count == 1)
         guard case .paragraph(let text) = parsed[0] else {
             Issue.record("expected one paragraph, got \(parsed)")
@@ -280,7 +293,10 @@ struct ChatTextRendererTests {
     // MARK: - Mentions
 
     @Test func mentionsAreHighlightedOutsideCodeSpans() throws {
-        let parsed = ChatTextRenderer.blocks("hi @Ada Lovelace", mentionNames: ["Ada Lovelace"])
+        let parsed = ChatTextRenderer.blocks(
+            "hi @Ada Lovelace",
+            mentions: ["users/1": "Ada Lovelace"]
+        )
         guard case .paragraph(let text) = try #require(parsed.first) else {
             Issue.record("expected a paragraph, got \(parsed)")
             return
@@ -304,5 +320,145 @@ struct ChatTextRendererTests {
         let raw = "Just a normal sentence, with punctuation — and an em dash."
 
         #expect(plain(raw) == raw)
+    }
+
+    // MARK: - Choosing a body
+
+    /// The bug these were written for: Chat resolves formatting as a message is posted
+    /// and serves `text` with the markup taken back out, so a message about
+    /// `` `a_tool_name` `` reaches `text` as bare prose and rendering it can only ever
+    /// show bare prose. `formattedText` is the copy that still knows.
+    @Test func formattedCopyIsPreferredOverThePlainOne() {
+        let body = ChatTextRenderer.body(
+            formatted: "call `module_entities_get_for_module` first",
+            plain: "call module_entities_get_for_module first",
+            mentions: [:]
+        )
+
+        #expect(body.source == .formatted)
+        #expect(body.text.contains("`"))
+    }
+
+    @Test func plainCopyIsUsedWhenChatSentNoFormattedOne() {
+        let body = ChatTextRenderer.body(formatted: nil, plain: "typed just now", mentions: [:])
+
+        #expect(body.source == .plain)
+        #expect(body.text == "typed just now")
+    }
+
+    /// A mention this app cannot name yet would render as `<users/123>`, which is worse
+    /// than a message that lost its backticks. The plain copy has the name written out,
+    /// so it stands in until the directory answers.
+    @Test func unnamedMentionFallsBackToThePlainCopy() {
+        let body = ChatTextRenderer.body(
+            formatted: "<users/1> see `this`",
+            plain: "@Ada Lovelace see this",
+            mentions: [:]
+        )
+
+        #expect(body.source == .plain)
+        #expect(body.text == "@Ada Lovelace see this")
+    }
+
+    @Test func namedMentionKeepsTheFormattedCopy() {
+        let body = ChatTextRenderer.body(
+            formatted: "<users/1> see `this`",
+            plain: "@Ada Lovelace see this",
+            mentions: ["users/1": "Ada Lovelace"]
+        )
+
+        #expect(body.source == .formatted)
+    }
+
+    /// `users/all` is Chat's own name for the room and is in nobody's directory, so it
+    /// must not be the thing that sends a message back to its plain copy.
+    @Test func everyoneMentionNeedsNoDirectoryEntry() throws {
+        let body = ChatTextRenderer.body(
+            formatted: "<users/all> heads up",
+            plain: "@all heads up",
+            mentions: [:]
+        )
+        #expect(body.source == .formatted)
+
+        let text = try formattedParagraph("<users/all> heads up")
+        #expect(String(text.characters) == "@all heads up")
+    }
+
+    // MARK: - `formattedText` forms
+
+    @Test func mentionTokensAreRenderedAsNames() throws {
+        let text = try formattedParagraph(
+            "<users/1> can you look?",
+            mentions: ["users/1": "Ada Lovelace"]
+        )
+
+        #expect(String(text.characters) == "@Ada Lovelace can you look?")
+        let range = try #require(text.range(of: "@Ada Lovelace"))
+        #expect(text[range].runs.allSatisfy { $0.foregroundColor == .accentColor })
+    }
+
+    /// Chat backslashes anything in the body that would otherwise read as markup. The
+    /// escape has to go and the character it protected has to stay literal — including
+    /// when it is a delimiter that would otherwise close a span in the wrong place.
+    @Test func escapesResolveToTheirCharacter() throws {
+        let text = try formattedParagraph("*\\[InnoMCP\\] shipped* with \\*args")
+
+        #expect(String(text.characters) == "[InnoMCP] shipped with *args")
+        #expect(isBold("[InnoMCP] shipped", in: text))
+    }
+
+    /// Only Chat's own escapes. A backslash in prose — a regex, a path — is a character
+    /// somebody typed and stays one.
+    @Test func backslashesBeforeWordCharactersAreLiteral() throws {
+        let text = try formattedParagraph("matches \\d+ in C:\\temp")
+
+        #expect(String(text.characters) == "matches \\d+ in C:\\temp")
+    }
+
+    @Test func customHyperlinksLinkTheirLabel() throws {
+        let text = try formattedParagraph("see <https://example.com/spec|the spec> for more")
+
+        #expect(String(text.characters) == "see the spec for more")
+        let range = try #require(text.range(of: "the spec"))
+        #expect(text[range].runs.allSatisfy { $0.link == URL(string: "https://example.com/spec") })
+    }
+
+    @Test func bracketedAddressesBecomeLinks() throws {
+        let text = try formattedParagraph("ask <ada@example.com>")
+
+        #expect(String(text.characters) == "ask ada@example.com")
+        let range = try #require(text.range(of: "ada@example.com"))
+        #expect(text[range].runs.allSatisfy { $0.link == URL(string: "mailto:ada@example.com") })
+    }
+
+    /// Angle brackets are ordinary punctuation far more often than they are syntax.
+    @Test func anglesThatAreNotTokensStayLiteral() throws {
+        let text = try formattedParagraph("wrap it in a <div> when a < b")
+
+        #expect(String(text.characters) == "wrap it in a <div> when a < b")
+    }
+
+    /// None of the above is syntax in `text`, which is what a locally composed message
+    /// and every row cached before this still renders from.
+    @Test func plainBodiesKeepFormattedOnlyFormsLiteral() throws {
+        let text = try paragraph("send <users/1> a \\[bracket\\]")
+
+        #expect(String(text.characters) == "send <users/1> a \\[bracket\\]")
+    }
+
+    // MARK: - Editing
+
+    /// The edit field starts from the formatted body, so fixing a typo posts the
+    /// formatting back rather than flattening the message. Mentions are the exception:
+    /// nobody can edit around `<users/1>`, and the send path encodes the name again.
+    @Test func editableBodyKeepsMarkupAndNamesMentions() {
+        let body = ChatMessageBody(
+            text: "<users/1> the `parser` is *done*",
+            source: .formatted
+        )
+
+        let draft = ChatTextRenderer.editable(body, mentions: ["users/1": "Ada Lovelace"])
+
+        #expect(draft == "@Ada Lovelace the `parser` is *done*")
     }
 }
