@@ -2,12 +2,18 @@ import SwiftUI
 
 /// Emoji reaction chips under a message, plus an add-reaction button.
 struct ReactionBar: View {
+    /// Needed to ask who reacted: the answer is a listing call on the message, not
+    /// something the cached counts can supply.
+    let messageName: String
     let reactions: [CachedReaction]
     /// The user's most-used emoji, seeded with defaults until they have history.
     let suggestions: [String]
     let onToggle: (String) -> Void
 
     @State private var isPickerPresented = false
+    /// The chip whose reactor list is open, if any. One value rather than a flag per
+    /// chip, because only one sheet can be open at a time anyway.
+    @State private var reactorsShownFor: ReactionSummary?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -17,6 +23,16 @@ struct ReactionBar: View {
             addButton
         }
         .padding(.top, 2)
+        // One sheet for the whole bar rather than one per chip: the sheet can switch
+        // between a message's emoji itself, so which chip was right-clicked only decides
+        // where it opens.
+        .sheet(item: $reactorsShownFor) { target in
+            ReactorSheet(
+                messageName: messageName,
+                reactions: summaries,
+                initialEmoji: target.emoji
+            )
+        }
     }
 
     /// Stable ordering so chips don't reshuffle as counts change.
@@ -25,6 +41,16 @@ struct ReactionBar: View {
             if lhs.count != rhs.count { return lhs.count > rhs.count }
             return lhs.emoji < rhs.emoji
         }
+    }
+
+    /// The chips as plain values, so the sheet is not left holding cached models that a
+    /// sync can delete while it is open.
+    private var summaries: [ReactionSummary] {
+        sorted.map { ReactionSummary(emoji: $0.emoji, count: $0.count) }
+    }
+
+    private func showReactors(for reaction: CachedReaction) {
+        reactorsShownFor = ReactionSummary(emoji: reaction.emoji, count: reaction.count)
     }
 
     private func chip(for reaction: CachedReaction) -> some View {
@@ -58,6 +84,14 @@ struct ReactionBar: View {
             "\(reaction.emoji), \(reaction.count) reaction\(reaction.count == 1 ? "" : "s")"
                 + (reaction.reactedByMe ? ", including yours" : "")
         )
+        .contextMenu {
+            Button("See Who Reacted") { showReactors(for: reaction) }
+            Divider()
+            Button(reaction.reactedByMe ? "Remove Your Reaction" : "React with \(reaction.emoji)") {
+                onToggle(reaction.emoji)
+            }
+        }
+        .accessibilityAction(named: "See who reacted") { showReactors(for: reaction) }
     }
 
     private var addButton: some View {

@@ -2,6 +2,46 @@ import Foundation
 import OSLog
 import SwiftData
 
+/// One person behind one emoji on one message.
+///
+/// `displayName` is nil for anyone the directory could not name — a former colleague,
+/// an account outside the workspace — which the UI shows as an unknown reactor rather
+/// than dropping. See ``SyncEngine/reactors(on:emoji:selfChatName:)``.
+nonisolated struct Reactor: Sendable, Hashable, Identifiable {
+    let userID: String
+    let displayName: String?
+    let photoURL: String?
+    let isApp: Bool
+    /// The signed-in user, listed first and labelled "You".
+    let isSelf: Bool
+
+    var id: String { userID }
+
+    var label: String {
+        if isSelf { return "You" }
+        return displayName ?? "Unknown user"
+    }
+
+    /// Unnamed people sort last: their placeholder is not a name, and letting "Unknown"
+    /// land under U would interleave them with real ones.
+    var sortKey: String { displayName ?? "\u{10FFFF}" }
+
+    /// The signed-in user first, then everyone else by name.
+    ///
+    /// A stable order matters more here than it looks: the listing comes back in
+    /// whatever order Chat stored the reactions, so without this the same chip shows
+    /// the same people in a different sequence every time it is opened.
+    static func ordered(_ reactors: [Reactor]) -> [Reactor] {
+        reactors.sorted { lhs, rhs in
+            if lhs.isSelf != rhs.isSelf { return lhs.isSelf }
+            let comparison = lhs.sortKey.localizedCaseInsensitiveCompare(rhs.sortKey)
+            // Falling back to the ID keeps two same-named people in a fixed order.
+            if comparison != .orderedSame { return comparison == .orderedAscending }
+            return lhs.userID < rhs.userID
+        }
+    }
+}
+
 /// Coordinates the Chat API and the local cache.
 ///
 /// The governing constraint is scale: this account has 762 spaces. Eagerly walking
@@ -525,6 +565,56 @@ nonisolated struct SyncEngine: Sendable {
             selfChatName: selfChatName
         )
         return didAdd
+    }
+
+    /// Who reacted to a message, grouped by emoji.
+    ///
+    /// Chat's per-message summaries carry counts only, so the names come from the
+    /// reactions listing — the same call a toggle makes — and the people in it are
+    /// resolved through the directory exactly like message senders are. Anyone the
+    /// directory cannot name is still returned: a list of reactors that quietly omits
+    /// the ones it failed to look up is worse than one that admits to an unknown.
+    ///
+    /// Every emoji at once rather than the one that was asked about, because the
+    /// listing contains them all regardless — so a reader switching between a message's
+    /// reactions pays for one call, not one per chip.
+    func reactors(
+        on messageName: String,
+        selfChatName: String?
+    ) async throws -> [String: [Reactor]] {
+        let reactions = try await client.allReactions(messageName: messageName)
+
+        var idsByEmoji: [String: Set<String>] = [:]
+        for reaction in reactions {
+            guard let emoji = reaction.emoji?.display, let id = reaction.user?.name else { continue }
+            // A set, so a page boundary crossed while someone was reacting cannot list
+            // the same person twice.
+            idsByEmoji[emoji, default: []].insert(id)
+        }
+        guard !idsByEmoji.isEmpty else { return [:] }
+
+        let everyone = Array(Set(idsByEmoji.values.flatMap { $0 }))
+        let unknown = (try? await store.unknownUserIDs(everyone)) ?? []
+        if !unknown.isEmpty {
+            let directory = (try? await directoryService.people(forChatUserNames: unknown)) ?? [:]
+            if !directory.isEmpty { try? await store.upsertPeople(Array(directory.values)) }
+        }
+
+        let profiles = (try? await store.profiles(for: everyone)) ?? [:]
+        return idsByEmoji.mapValues { ids in
+            Reactor.ordered(
+                ids.map { id in
+                    let profile = profiles[id]
+                    return Reactor(
+                        userID: id,
+                        displayName: profile?.displayName,
+                        photoURL: profile?.photoURL,
+                        isApp: profile?.isApp ?? false,
+                        isSelf: id == selfChatName
+                    )
+                }
+            )
+        }
     }
 
     // MARK: - Attachments

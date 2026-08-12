@@ -295,12 +295,30 @@ nonisolated extension ChatClient {
     /// `Message.emojiReactionSummaries` gives counts but never says whether *you*
     /// reacted, and there is no field that does — so toggling requires this call to
     /// find your own reaction's resource name.
-    func listReactions(messageName: String) async throws -> ListReactionsResponse {
-        try await get(
-            "\(messageName)/reactions",
-            query: [URLQueryItem(name: "pageSize", value: "200")],
-            as: ListReactionsResponse.self
-        )
+    func listReactions(
+        messageName: String,
+        pageToken: String? = nil
+    ) async throws -> ListReactionsResponse {
+        var query = [URLQueryItem(name: "pageSize", value: "200")]
+        if let pageToken { query.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+        return try await get("\(messageName)/reactions", query: query, as: ListReactionsResponse.self)
+    }
+
+    /// Every reaction on a message, across pages.
+    ///
+    /// A toggle only needs the first page — one page holds 200, and finding your own
+    /// reaction among more than that is an edge case not worth two round trips. Naming
+    /// the reactors is the case that needs all of them, because a missing page there
+    /// silently drops people from a list that claims to be complete.
+    func allReactions(messageName: String) async throws -> [ChatReaction] {
+        var collected: [ChatReaction] = []
+        var token: String?
+        repeat {
+            let page = try await listReactions(messageName: messageName, pageToken: token)
+            collected.append(contentsOf: page.reactions ?? [])
+            token = page.nextPageToken.flatMap { $0.isEmpty ? nil : $0 }
+        } while token != nil
+        return collected
     }
 
     // MARK: - Media

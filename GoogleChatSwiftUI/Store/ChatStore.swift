@@ -13,6 +13,17 @@ nonisolated struct ThreadReadState: Sendable {
     let lastReadTime: Date?
 }
 
+/// A cached person, copied out of the store so it can cross back to the main actor.
+///
+/// `CachedUser` itself cannot: SwiftData models belong to the context that fetched
+/// them, and this one was fetched on the store's.
+nonisolated struct UserProfile: Sendable, Hashable {
+    let name: String
+    let displayName: String?
+    let photoURL: String?
+    let isApp: Bool
+}
+
 /// Background writer for the SwiftData cache.
 ///
 /// All mutation happens here, off the main actor, so a 762-space upsert or a long
@@ -229,6 +240,25 @@ actor ChatStore {
             if let displayName = user.displayName { result[user.name] = displayName }
         }
         return result
+    }
+
+    /// Cached profiles for the given Chat user IDs.
+    ///
+    /// The counterpart to ``displayNames(for:)`` for callers that draw a face as well as
+    /// a name. IDs with no row are absent rather than represented by a blank profile, so
+    /// the caller can decide what an unresolvable person looks like.
+    func profiles(for ids: [String]) throws -> [String: UserProfile] {
+        guard !ids.isEmpty else { return [:] }
+        let wanted = Set(ids)
+        let users = try modelContext.fetch(
+            FetchDescriptor<CachedUser>(predicate: #Predicate { wanted.contains($0.name) })
+        )
+        return Dictionary(
+            uniqueKeysWithValues: users.map {
+                ($0.name, UserProfile(name: $0.name, displayName: $0.displayName,
+                                      photoURL: $0.photoURL, isApp: $0.isApp))
+            }
+        )
     }
 
     func setResolvedTitle(_ title: String?, peers: [String] = [], for spaceName: String) throws {

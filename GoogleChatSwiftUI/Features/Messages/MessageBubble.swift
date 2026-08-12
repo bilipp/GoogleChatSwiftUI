@@ -103,6 +103,7 @@ struct MessageBubble: View {
                 // The hover-only actions live in the context menu instead.
                 if !message.reactions.isEmpty {
                     ReactionBar(
+                        messageName: message.name,
                         reactions: message.reactions,
                         suggestions: session.recentEmoji.suggestions
                     ) { emoji in

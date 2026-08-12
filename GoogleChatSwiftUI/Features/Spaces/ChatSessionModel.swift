@@ -751,6 +751,18 @@ final class ChatSessionModel {
         }
     }
 
+    /// Who reacted to a message, keyed by emoji.
+    ///
+    /// Fetched on demand rather than cached with the reaction counts: the names are only
+    /// ever wanted while a reader has the list open, and keeping them current would mean
+    /// a listing call per message per sync pass.
+    /// - Throws: rethrown so the sheet asking can show its own failure. `messageError`
+    ///   is deliberately not set — a lookup that fails is not a failed write, and it
+    ///   should not raise the banner that one does.
+    func reactors(on messageName: String) async throws -> [String: [Reactor]] {
+        try await sync.reactors(on: messageName, selfChatName: profile?.chatUserName)
+    }
+
     func downloadAttachment(resourceName: String) async throws -> Data {
         try await sync.downloadAttachment(resourceName: resourceName)
     }
