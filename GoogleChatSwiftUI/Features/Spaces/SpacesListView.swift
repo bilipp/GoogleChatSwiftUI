@@ -636,6 +636,21 @@ private struct SidebarSpaceList: View {
             }
             .disabled(position == nil || position == 0)
         }
+
+        // Absent rather than disabled where the name is not one a link can be built
+        // from, the same way a message still in flight offers no link to copy.
+        if let link = ChatDeepLink.spaceURL(
+            for: space.name,
+            spaceURI: space.spaceUri,
+            spaceType: space.spaceType
+        ) {
+            Divider()
+            Button("Copy Link", systemImage: "link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(link.absoluteString, forType: .string)
+            }
+            .help("Copy a chat.google.com link to this conversation")
+        }
     }
 
     @ViewBuilder

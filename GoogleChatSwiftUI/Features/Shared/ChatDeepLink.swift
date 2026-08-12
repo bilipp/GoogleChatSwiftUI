@@ -105,20 +105,56 @@ nonisolated struct ChatDeepLink: Equatable, Sendable {
         let ids = parts[3].split(separator: ".")
         guard ids.count == 2 else { return nil }
 
+        guard
+            var components = conversationURL(
+                spaceID: String(parts[1]),
+                spaceURI: spaceURI,
+                spaceType: spaceType
+            )
+        else { return nil }
+        components.path += "/\(ids[0])/\(ids[1])"
+        return components.url
+    }
+
+    /// The link to hand someone else for a whole conversation, by the same rules as
+    /// ``messageURL(for:spaceURI:spaceType:)`` — a message link with its last two
+    /// segments left off, which is exactly what the web client copies for a space.
+    static func spaceURL(
+        for spaceName: String,
+        spaceURI: String?,
+        spaceType: ChatSpace.SpaceType?
+    ) -> URL? {
+        let parts = spaceName.split(separator: "/")
+        guard parts.count == 2, parts[0] == "spaces", isIdentifier(String(parts[1]))
+        else { return nil }
+        return conversationURL(spaceID: String(parts[1]), spaceURI: spaceURI, spaceType: spaceType)?
+            .url
+    }
+
+    /// The conversation half of a link — everything up to and including the space id,
+    /// which a message link then names a thread and a message under.
+    private static func conversationURL(
+        spaceID: String,
+        spaceURI: String?,
+        spaceType: ChatSpace.SpaceType?
+    ) -> URLComponents? {
         var components = URLComponents()
         components.scheme = "https"
         components.host = "chat.google.com"
-        var base = "/\(spaceType == .directMessage ? "dm" : "room")/\(parts[1])"
+        var path = "/\(spaceType == .directMessage ? "dm" : "room")/\(spaceID)"
 
         if let spaceURI, let uri = URLComponents(string: spaceURI), !uri.path.isEmpty {
             if let scheme = uri.scheme { components.scheme = scheme }
             if let host = uri.host { components.host = host }
-            base = uri.path
+            path = uri.path
         }
 
-        while base.hasSuffix("/") { base.removeLast() }
-        components.path = "\(base)/\(ids[0])/\(ids[1])"
-        return components.url
+        // A query on the stored URI is dropped with it: `?cls=` tags where a click came
+        // from, and one copied from this account's sidebar would be claiming the reader's
+        // click came from here.
+        while path.hasSuffix("/") { path.removeLast() }
+        components.path = path
+        return components
     }
 }
 

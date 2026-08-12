@@ -184,6 +184,53 @@ struct ChatDeepLinkTests {
         #expect(ChatDeepLink.messageURL(for: name, spaceURI: nil, spaceType: .space) == nil)
     }
 
+    // MARK: - Writing a link to a conversation
+
+    /// A conversation link is a message link with the thread and message left off, and
+    /// picks its word the same way — the group chat again being the one that has to be
+    /// checked rather than reasoned about.
+    @Test(arguments: [
+        (ChatSpace.SpaceType.space, "room"),
+        (ChatSpace.SpaceType.groupChat, "room"),
+        (ChatSpace.SpaceType.directMessage, "dm"),
+    ])
+    func buildsAConversationLink(_ type: ChatSpace.SpaceType, _ word: String) throws {
+        let built = try #require(
+            ChatDeepLink.spaceURL(for: "spaces/AAQAA_vg0rg", spaceURI: nil, spaceType: type)
+        )
+        #expect(built.absoluteString == "https://chat.google.com/\(word)/AAQAA_vg0rg")
+        // And reads back as the conversation it was built for, naming nothing narrower.
+        let read = try #require(ChatDeepLink(url: built))
+        #expect(read.spaceName == "spaces/AAQAA_vg0rg")
+        #expect(read.threadName == nil)
+        #expect(read.messageName == nil)
+    }
+
+    /// The stored URI outranks the type here too, and is tidied the same way: no
+    /// trailing slash, and no `?cls=` claiming the reader's click came from this app.
+    @Test func tidiesTheStoredURIForAConversation() throws {
+        let built = try #require(
+            ChatDeepLink.spaceURL(
+                for: "spaces/AAAAW0-4CC4",
+                spaceURI: "https://chat.google.com/dm/AAAAW0-4CC4/?cls=7",
+                spaceType: .space
+            )
+        )
+        #expect(built.absoluteString == "https://chat.google.com/dm/AAAAW0-4CC4")
+    }
+
+    @Test(arguments: [
+        "spaces/AAQAmGXKxuo/threads/5SkDl31Qz-E",
+        "spaces/AAQAmGXKxuo/messages/5SkDl31Qz-E.5SkDl31Qz-E",
+        "AAQAmGXKxuo",
+        "spaces/",
+        "spaces",
+        "",
+    ])
+    func refusesWhatIsNotASpaceName(_ name: String) {
+        #expect(ChatDeepLink.spaceURL(for: name, spaceURI: nil, spaceType: .space) == nil)
+    }
+
     private func url(_ text: String) -> URL {
         URL(string: text)!
     }
