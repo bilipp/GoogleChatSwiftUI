@@ -2,9 +2,9 @@ import Foundation
 
 /// Finds the `@fragment` a composer's text ends in.
 ///
-/// The sibling of ``EmojiShortcodeTrigger``, and trailing-only for the same reason:
-/// `TextField` publishes no caret position, so the end of the string is the one place
-/// the caret is known to be. Editing a name back in the middle of a finished sentence
+/// The sibling of ``EmojiShortcodeTrigger``, and trailing-only for the same reason: the
+/// composer's editor publishes no caret position, so the end of the string is the one
+/// place the caret is known to be. Editing a name back in the middle of a finished sentence
 /// gets no suggestions.
 ///
 /// The one real difference is spaces. A shortcode is a single word; a display name is

@@ -2,13 +2,13 @@ import Foundation
 
 /// Finds the `:shortcode` fragment a composer's text ends in.
 ///
-/// Only the trailing fragment is considered. `TextField` does not publish its caret
-/// position, so the end of the string is the one place the caret is known to be — and
-/// it is where it sits for the case this exists to serve, typing a shortcode as part
-/// of writing a message. Editing a shortcode back in the middle of a finished sentence
-/// gets no suggestions. ``MentionTrigger`` accepts the same limit for the same reason;
-/// should the composer ever move to an `NSTextView`, both become a caret offset and
-/// nothing else about either type changes.
+/// Only the trailing fragment is considered. The composer's editor keeps its caret
+/// position to itself, so the end of the string is the one place the caret is known to
+/// be — and it is where it sits for the case this exists to serve, typing a shortcode as
+/// part of writing a message. Editing a shortcode back in the middle of a finished
+/// sentence gets no suggestions. ``MentionTrigger`` accepts the same limit for the same
+/// reason; should the composer ever bind a text selection, both become a caret offset
+/// and nothing else about either type changes.
 nonisolated enum EmojiShortcodeTrigger {
     /// A fragment being typed, and where it sits in the text.
     struct Match: Equatable {

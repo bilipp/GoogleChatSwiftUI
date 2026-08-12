@@ -16,13 +16,17 @@ struct ComposedMessage {
 
 /// Message input with file attachment.
 ///
-/// Uses `TextField` with `.vertical` axis rather than `TextEditor`: it grows with
-/// content, respects the send-on-Return convention — Shift+Return breaks the line
-/// instead — and does not need an `NSViewRepresentable` wrapper.
+/// The field is a `TextEditor` rather than a vertical-axis `TextField`. A text field
+/// stops at its line limit and clips: a draft longer than that cannot be scrolled, only
+/// walked through with the arrow keys. A text editor is an `NSTextView` in a scroll
+/// view, so the wheel, the scroller, and a caret the view keeps in sight all come for
+/// free. What does not come for free is a placeholder, a height, or Return meaning
+/// "send" — see ``placeholderLabel``, ``ruler``, and ``input`` for the three small
+/// things that buys back.
 ///
 /// Typing `:smile` offers inline emoji completion and `@ada` offers the people in the
 /// room; see ``EmojiShortcodeTrigger`` and ``MentionTrigger`` for what both cost while
-/// the input is still a `TextField`.
+/// the caret position stays private to the editor.
 struct MessageComposer: View {
     let placeholder: String
     let isSending: Bool
@@ -55,9 +59,11 @@ struct MessageComposer: View {
     /// would be neither. Deleting the name from the text is what un-mentions someone:
     /// the encoder only rewrites names it still finds.
     @State private var resolvedMentions: [MentionCandidate] = []
-    /// Whether the Return being handled right now is a line break rather than a send.
-    /// See ``submit()`` for why the two paths cannot be told apart any later than this.
-    @State private var returnIsLineBreak = false
+    /// The height this draft needs, and the height of one line at this text size, both
+    /// measured off ``ruler``. A `TextEditor` has no opinion about its own height — left
+    /// alone it takes every point on offer — so the composer has to hand it one.
+    @State private var textHeight: CGFloat = 0
+    @State private var lineHeight: CGFloat = 0
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -163,26 +169,40 @@ struct MessageComposer: View {
         }
     }
 
-    /// The keys the composer answers to, layered onto ``textField``.
+    /// The keys the composer answers to, layered onto ``textEditor``.
     ///
-    /// Split from the field itself only because one chain holding both the styling and
+    /// Split from the editor itself only because one chain holding both the styling and
     /// every key handler took the type checker past its budget.
     private var input: some View {
-        textField
+        textEditor
             // Shift+Return breaks the line instead of sending, the convention every
             // other chat client shares. Matched through `keys:` rather than as a single
             // key because that is the overload reporting which modifiers came with it.
+            // The line break needs no help: reporting the key `.ignored` leaves the
+            // editor to insert one itself, which is what a text view does with Return.
             .onKeyPress(keys: [.return]) { press in
-                // Recorded on every Return, including the plain one, so a line break
-                // can never leave the flag standing for the send that follows it.
-                returnIsLineBreak = press.modifiers.contains(.shift)
-                guard returnIsLineBreak else { return .ignored }
-                insertLineBreak()
+                guard !press.modifiers.contains(.shift) else { return .ignored }
+                // ⌘↩ is the send that does not stop for a suggestion. It reaches this
+                // handler before the send button's shortcut and is answered here, so
+                // the message goes out once rather than twice.
+                guard !press.modifiers.contains(.command) else {
+                    sendNow()
+                    return .handled
+                }
+                submit()
                 return .handled
             }
             .onKeyPress(.upArrow) { moveSelection(by: -1) }
             .onKeyPress(.downArrow) { moveSelection(by: 1) }
-            .onKeyPress(.tab) { completeSelection() ? .handled : .ignored }
+            // A text editor keeps Tab for itself and would type it into the draft, so
+            // with no completion to take it the key gives up focus instead — near enough
+            // to what the field used to do, and it keeps Tab from being a dead end for
+            // anyone working from the keyboard.
+            .onKeyPress(.tab) {
+                guard !completeSelection() else { return .handled }
+                isFocused = false
+                return .handled
+            }
             // Escape unwinds one thing at a time, innermost first: the completion
             // list, then the reply this message was aimed at.
             .onKeyPress(.escape) {
@@ -196,17 +216,70 @@ struct MessageComposer: View {
             }
     }
 
-    private var textField: some View {
-        TextField(placeholder, text: $text, axis: .vertical)
-            .textFieldStyle(.plain)
-            .lineLimit(1...12)
+    /// The editor, sized to its content up to twelve lines and scrolling past that:
+    /// enough to hold a paragraph in view without the input eating the transcript.
+    ///
+    /// The 3 points of horizontal padding land the text 8 from the edge, since a
+    /// `TextEditor` already insets its own text by 5 — the same 8 the field had.
+    private var textEditor: some View {
+        TextEditor(text: $text)
+            .font(.body)
+            .scrollContentBackground(.hidden)
+            // A scroller only once there is something to scroll. Left to itself it shows
+            // for every draft on a Mac set to display scroll bars always, which puts a
+            // knob in an empty one-line field with nowhere to go.
+            .scrollIndicators(isScrollable ? .automatic : .never)
+            .frame(height: min(max(textHeight, lineHeight), lineHeight * 12))
+            .background(alignment: .topLeading) { ruler }
+            .overlay(alignment: .topLeading) { placeholderLabel }
             .focused($isFocused)
-            .padding(8)
+            .padding(.horizontal, 3)
+            .padding(.vertical, 8)
             .background(.quaternary, in: .rect(cornerRadius: 8))
-            .onSubmit(submit)
             .onChange(of: text) { refreshSuggestions() }
             .onChange(of: isFocused) { if !isFocused { suggestions = [] } }
     }
+
+    /// A `TextEditor` shows no placeholder of its own, so this stands in until the
+    /// first character, inset to sit exactly where that character will appear.
+    @ViewBuilder
+    private var placeholderLabel: some View {
+        if text.isEmpty {
+            Text(placeholder)
+                .font(.body)
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 5)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Measures the draft at the editor's own width, which is the only way to know how
+    /// tall a view with no intrinsic height should be made.
+    ///
+    /// Hidden behind the editor: same font, same width, same wrap points, so the height
+    /// it reports is the height the text really occupies. `fixedSize` is what stops the
+    /// measurement collapsing to the capped height it is being taken for.
+    private var ruler: some View {
+        ZStack(alignment: .topLeading) {
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { textHeight = $0 }
+            // One line, which is both the floor for an empty draft and — twelve of them
+            // — the ceiling. Measured rather than assumed, so both follow the text size
+            // instead of a number that was right on one machine.
+            Text("A")
+                .fixedSize()
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { lineHeight = $0 }
+        }
+        .font(.body)
+        .padding(.horizontal, 5)
+        .hidden()
+    }
+
+    /// Whether the draft has outgrown the editor, which is the only state in which a
+    /// scroller means anything.
+    private var isScrollable: Bool { textHeight > lineHeight * 12 }
 
     private var canSend: Bool {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -215,31 +288,11 @@ struct MessageComposer: View {
 
     /// Return: takes the highlighted suggestion if the list is open, sends otherwise.
     ///
-    /// Return is not intercepted through `onKeyPress` like the other completion keys,
-    /// because `onSubmit` would still be reached and the message would go out behind
-    /// the completion. Branching in one place keeps the key doing exactly one thing.
-    /// A Shift+Return is turned away here for the same reason. Whether reporting that
-    /// key `.handled` is enough on its own to keep `onSubmit` away has gone both ways
-    /// in this file, and a message sent by accident cannot be recalled, so the line
-    /// break says so outright instead of trusting the event to have been consumed.
+    /// One key, one decision, in one place. Sending is the branch that cannot be undone,
+    /// so it is the one that has to be reached deliberately rather than fallen into.
     private func submit() {
-        guard !returnIsLineBreak else { return }
         guard !completeSelection() else { return }
         sendNow()
-    }
-
-    /// Types a line break into the field by hand.
-    ///
-    /// Nothing inserts one for us: to a text field Return means "end editing", which is
-    /// the very thing `onSubmit` reports. Going through the field editor puts the break
-    /// at the caret — a plain `TextField` publishes no selection, so the fallback for an
-    /// unexpected responder can only add the break at the end.
-    private func insertLineBreak() {
-        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else {
-            text.append("\n")
-            return
-        }
-        editor.insertText("\n", replacementRange: editor.selectedRange())
     }
 
     private func sendNow() {
