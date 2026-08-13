@@ -100,6 +100,12 @@ struct TranscriptScrollView<Content: View>: View {
                 Task { await returnToEnd() }
             }
             .onChange(of: oldestID) { _, _ in
+                // History arrived, from the cache or from the server. Either way the ask
+                // this view made has been answered and it may make another — and only
+                // this can say so for the cached case, where the transcript simply drew
+                // more of what it already had and no request was ever in flight for
+                // `isLoadingOlder` to report on.
+                hasAskedForOlder = false
                 guard let anchor = historyAnchor.wrappedValue else { return }
                 historyAnchor.wrappedValue = nil
                 Task { await hold(anchor, in: proxy) }

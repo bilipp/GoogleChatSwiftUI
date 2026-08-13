@@ -3,40 +3,45 @@ import SwiftUI
 
 /// Message history for one space, read from the cache.
 ///
-/// `@Query` is rebuilt per space via `init`, so SwiftData does the filtering and
-/// sorting in the store rather than the view loading everything and discarding most.
+/// Split into a shell and a transcript, and the split is load-bearing: a `@Query`
+/// descriptor can only be built in `init`, so the window this view moves over the
+/// conversation — which is state, and changes while the view is on screen — cannot live
+/// in the same view as the query it sizes. The shell holds the window and the chrome;
+/// ``ConversationTranscript`` below owns the queries built from it. See
+/// ``TranscriptWindow`` for why the transcript is windowed at all.
+///
+/// Both this view and its state are per conversation: `SpacesListView` gives the detail
+/// pane an identity tied to the space, so switching conversations builds this afresh
+/// rather than carrying the last one's window into it.
 struct MessageListView: View {
     @Environment(ChatSessionModel.self) private var session
-    @Query private var messages: [CachedMessage]
-    /// Sender identity lives in `CachedUser`, not on the message, so one directory
-    /// fetch names every message that person has ever sent — including ones already
-    /// cached before the lookup happened.
-    @Query private var users: [CachedUser]
-    /// Thread index rows for this space, carrying the per-thread unread counts the
-    /// space's own read mark cannot express.
-    @Query private var threads: [CachedThread]
+    /// For the two counts the window is sized by. Both are counts rather than fetches:
+    /// the answers are numbers, and every row would be thrown away.
+    @Environment(\.modelContext) private var modelContext
 
     private let spaceName: String
     private let spaceTitle: String
     private let isThreaded: Bool
     /// Threads here with unread replies, for the toolbar badge.
     private let unreadThreadCount: Int
-    /// Whether the conversation has history the cache has not walked back to yet. False
-    /// at the first message ever sent here, which is where reaching the top stops asking
-    /// for more.
+    /// Whether the conversation has history the *cache* has not walked back to yet. False
+    /// at the first message ever sent here, which is where asking Chat for more stops.
+    /// Says nothing about the window, which can have plenty left to show in a space that
+    /// has been backfilled to its beginning.
     private let hasOlderHistory: Bool
 
-    /// The message to keep still while older history loads in above it, captured as
-    /// the request is made rather than after — by the time it returns, the row that
-    /// was at the top is no longer the one to hold onto.
+    /// How far back the transcript is drawn.
+    @State private var window = TranscriptWindow()
+    /// The message to keep still while older history loads in above it, captured as the
+    /// request is made rather than after — by the time it returns, the row that was at
+    /// the top is no longer the one to hold onto.
     @State private var historyAnchor: String?
-    /// Bumped on send, which is the one moment the transcript should return to the
-    /// end whether or not the reader was there.
-    @State private var sendCount = 0
-    /// The message the next send will quote, when the reader has chosen to reply to
-    /// one. Held here rather than in the composer because the choice is made in the
-    /// transcript and the send is aimed from here.
-    @State private var replyTarget: ReplyTarget?
+    /// A jump the transcript has not made yet.
+    ///
+    /// Taken from `session.scrollTarget` here rather than handed straight to the scroll
+    /// view, because a target older than the window is in no transcript to be scrolled
+    /// to: the window has to open past it first, and only then is there a row to aim at.
+    @State private var pendingJump: String?
 
     init(
         spaceName: String,
@@ -50,10 +55,198 @@ struct MessageListView: View {
         self.isThreaded = isThreaded
         self.unreadThreadCount = unreadThreadCount
         self.hasOlderHistory = hasOlderHistory
-        _messages = Query(
-            filter: #Predicate<CachedMessage> { $0.space?.name == spaceName },
-            sort: [SortDescriptor(\CachedMessage.createTime, order: .forward)]
+    }
+
+    var body: some View {
+        ConversationTranscript(
+            spaceName: spaceName,
+            spaceTitle: spaceTitle,
+            isThreaded: isThreaded,
+            limit: window.limit,
+            hasOlderHistory: hasOlderHistory,
+            historyAnchor: $historyAnchor,
+            jumpTarget: $pendingJump,
+            onReachStart: loadOlder
         )
+        .navigationTitle(spaceTitle)
+        .toolbar {
+            // Only where threads are a place of their own. In grouped and unthreaded
+            // spaces replies are already in the transcript, so a thread index would
+            // just be a second copy of what is on screen.
+            if isThreaded {
+                ToolbarItem(placement: .primaryAction) { threadsButton }
+                // Separates this view's own items from the account control. Only where
+                // there is something to separate it from — leading a toolbar with a
+                // spacer just indents the one button that is left.
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
+            // Last of this view's own items, and declared here rather than on the
+            // split view, because that is what puts it after them — see
+            // `AccountToolbarButton`. The search field lands to its right whatever
+            // any of this says: SwiftUI pins it to the trailing end of the toolbar.
+            ToolbarItem(placement: .primaryAction) {
+                AccountToolbarButton()
+            }
+        }
+        // Members are fetched per space and only once per launch, so this is one call
+        // the first time a conversation is opened rather than anything the sidebar
+        // pays for — at 762 spaces, a members lookup each would dwarf the whole app.
+        .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
+        // `initial` because a jump routinely arrives before this view does: following a
+        // link or opening a search hit selects the conversation first, and the target is
+        // set while the transcript for it is still being built.
+        .onChange(of: session.scrollTarget, initial: true) { _, target in
+            guard let target else { return }
+            session.scrollTarget = nil
+            window.reach(pastNewerMessages: messagesNewer(than: target))
+            pendingJump = target
+        }
+    }
+
+    /// Opens the thread index, and says how much is waiting in it.
+    ///
+    /// Carries a count rather than a plain icon because the count is the whole point:
+    /// an unread reply is invisible everywhere else in this window once the space has
+    /// been opened, so this is the only thing that can tell the user to look.
+    private var threadsButton: some View {
+        Button {
+            if session.isThreadListOpen {
+                session.closeThreadInspector()
+            } else {
+                session.openThreadList()
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                if unreadThreadCount > 0 {
+                    Text("\(unreadThreadCount)")
+                        .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor, in: .capsule)
+                }
+            }
+        }
+        .help(threadsHelp)
+        .accessibilityLabel(threadsHelp)
+    }
+
+    private var threadsHelp: String {
+        guard unreadThreadCount > 0 else { return "Threads" }
+        let noun = unreadThreadCount == 1 ? "thread" : "threads"
+        return "Threads — \(unreadThreadCount) unread \(noun)"
+    }
+
+    // MARK: - Reaching the top
+
+    /// Fetches whatever is above the transcript, which is two different things.
+    ///
+    /// Cached history below the window is shown by widening it: no request, no wait, and
+    /// the rows are already on disk. Only a window that has reached the oldest cached
+    /// message asks Chat for a page — and widens as well, so that the page has somewhere
+    /// to land when it arrives.
+    ///
+    /// The row to keep still is the one that is oldest *now*, captured before either
+    /// happens rather than after: by the time history lands, the top of the transcript is
+    /// what just arrived, and holding that would leave the reader where they already were
+    /// rather than where they were reading.
+    private func loadOlder(holding anchor: String?) {
+        historyAnchor = anchor
+        let isCacheExhausted = window.coversEverythingCached(cachedMessageCount())
+        window.widen()
+        guard isCacheExhausted else { return }
+        Task { await session.loadOlderMessages(in: spaceName) }
+    }
+
+    /// How many messages this space has cached in total — what says whether widening the
+    /// window would reveal anything. See ``TranscriptWindow/coversEverythingCached(_:)``.
+    private func cachedMessageCount() -> Int {
+        let descriptor = TranscriptQueries.allMessages(in: spaceName)
+        return (try? modelContext.fetchCount(descriptor)) ?? 0
+    }
+
+    /// How many cached messages in this space are newer than the named one — which is
+    /// exactly how far the window has to open for it to be in the transcript at all.
+    ///
+    /// Zero for a message this account has never cached, which leaves the window as it
+    /// was: there is no row to reach, and `ChatSessionModel.reveal(_:)` has already said
+    /// so in the banner above the composer.
+    private func messagesNewer(than messageName: String) -> Int {
+        let lookup = TranscriptQueries.message(named: messageName)
+        guard let target = try? modelContext.fetch(lookup).first,
+              let created = target.createTime
+        else { return 0 }
+
+        let descriptor = TranscriptQueries.messages(in: spaceName, after: created)
+        return (try? modelContext.fetchCount(descriptor)) ?? 0
+    }
+}
+
+/// The conversation itself: the windowed transcript, the composer beneath it, and the
+/// queries both read from.
+///
+/// A view of its own for `@Query`'s one constraint — a descriptor is built in `init`, so
+/// anything that sizes one has to arrive as a parameter rather than be read from state.
+/// Here that is `limit`, the window ``MessageListView`` above moves.
+private struct ConversationTranscript: View {
+    @Environment(ChatSessionModel.self) private var session
+    /// The newest `limit` messages in this space, newest first.
+    ///
+    /// The order is not the transcript's — ``days`` buckets and sorts regardless of what
+    /// arrives. It is sorted this way so that the limit means *the newest*, which is the
+    /// only end of a conversation worth opening on.
+    @Query private var messages: [CachedMessage]
+    /// Sender identity lives in `CachedUser`, not on the message, so one directory
+    /// fetch names every message that person has ever sent — including ones already
+    /// cached before the lookup happened.
+    @Query private var users: [CachedUser]
+    /// Thread index rows for this space, carrying the per-thread reply and unread counts
+    /// the transcript cannot count for itself once it is windowed.
+    @Query private var threads: [CachedThread]
+
+    private let spaceName: String
+    private let spaceTitle: String
+    private let isThreaded: Bool
+    private let limit: Int
+    private let hasOlderHistory: Bool
+
+    @Binding private var historyAnchor: String?
+    @Binding private var jumpTarget: String?
+    /// Asks for whatever is above the transcript, holding the given row still while it
+    /// arrives. See ``MessageListView/loadOlder(holding:)``.
+    private let onReachStart: (String?) -> Void
+
+    /// Bumped on send, which is the one moment the transcript should return to the
+    /// end whether or not the reader was there.
+    @State private var sendCount = 0
+    /// The message the next send will quote, when the reader has chosen to reply to
+    /// one. Held here rather than in the composer because the choice is made in the
+    /// transcript and the send is aimed from here.
+    @State private var replyTarget: ReplyTarget?
+
+    init(
+        spaceName: String,
+        spaceTitle: String,
+        isThreaded: Bool,
+        limit: Int,
+        hasOlderHistory: Bool,
+        historyAnchor: Binding<String?>,
+        jumpTarget: Binding<String?>,
+        onReachStart: @escaping (String?) -> Void
+    ) {
+        self.spaceName = spaceName
+        self.spaceTitle = spaceTitle
+        self.isThreaded = isThreaded
+        self.limit = limit
+        self.hasOlderHistory = hasOlderHistory
+        _historyAnchor = historyAnchor
+        _jumpTarget = jumpTarget
+        self.onReachStart = onReachStart
+
+        _messages = Query(TranscriptQueries.window(in: spaceName, limit: limit))
+
         _threads = Query(
             filter: #Predicate<CachedThread> { $0.space?.name == spaceName },
             sort: [SortDescriptor(\CachedThread.lastActivityTime, order: .reverse)]
@@ -78,31 +271,7 @@ struct MessageListView: View {
                 transcript(index)
             }
         }
-        .navigationTitle(spaceTitle)
-        .toolbar {
-            // Only where threads are a place of their own. In grouped and unthreaded
-            // spaces replies are already in the transcript, so a thread index would
-            // just be a second copy of what is on screen.
-            if isThreaded {
-                ToolbarItem(placement: .primaryAction) { threadsButton }
-                // Separates this view's own items from the account control. Only where
-                // there is something to separate it from — leading a toolbar with a
-                // spacer just indents the one button that is left.
-                ToolbarSpacer(.fixed, placement: .primaryAction)
-            }
-            // Last of this view's own items, and declared here rather than on the
-            // split view, because that is what puts it after them — see
-            // `AccountToolbarButton`. The search field lands to its right whatever
-            // any of this says: SwiftUI pins it to the trailing end of the toolbar.
-            ToolbarItem(placement: .primaryAction) {
-                AccountToolbarButton()
-            }
-        }
         .safeAreaInset(edge: .bottom, spacing: 0) { composerArea(index) }
-        // Members are fetched per space and only once per launch, so this is one call
-        // the first time a conversation is opened rather than anything the sidebar
-        // pays for — at 762 spaces, a members lookup each would dwarf the whole app.
-        .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
     }
 
     @ViewBuilder
@@ -180,42 +349,6 @@ struct MessageListView: View {
         .background(.quaternary)
     }
 
-    /// Opens the thread index, and says how much is waiting in it.
-    ///
-    /// Carries a count rather than a plain icon because the count is the whole point:
-    /// an unread reply is invisible everywhere else in this window once the space has
-    /// been opened, so this is the only thing that can tell the user to look.
-    private var threadsButton: some View {
-        Button {
-            if session.isThreadListOpen {
-                session.closeThreadInspector()
-            } else {
-                session.openThreadList()
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "bubble.left.and.bubble.right")
-                if unreadThreadCount > 0 {
-                    Text("\(unreadThreadCount)")
-                        .font(.caption2.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.accentColor, in: .capsule)
-                }
-            }
-        }
-        .help(threadsHelp)
-        .accessibilityLabel(threadsHelp)
-    }
-
-    private var threadsHelp: String {
-        guard unreadThreadCount > 0 else { return "Threads" }
-        let noun = unreadThreadCount == 1 ? "thread" : "threads"
-        return "Threads — \(unreadThreadCount) unread \(noun)"
-    }
-
     /// The conversation, positioned by `TranscriptScrollView`.
     ///
     /// Every scroll decision lives there rather than being spread across anchors and
@@ -225,7 +358,6 @@ struct MessageListView: View {
     /// over, since they are needed both as content and as the two identities that tell
     /// the scroll view which end moved.
     private func transcript(_ index: TranscriptIndex) -> some View {
-        @Bindable var session = session
         let groups = days
         let oldestID = groups.first?.entries.first?.message.name
 
@@ -234,13 +366,13 @@ struct MessageListView: View {
             oldestID: oldestID,
             horizontalPadding: 16,
             verticalPadding: 12,
-            jumpTarget: $session.scrollTarget,
+            jumpTarget: $jumpTarget,
             historyAnchor: $historyAnchor,
             followTrigger: sendCount,
             isLoadingOlder: session.isLoading(spaceName),
-            // Nothing to ask for at the beginning of the conversation, and saying so is
-            // what stops the transcript asking every time the reader rests there.
-            onReachStart: hasOlderHistory ? { loadOlder(holding: oldestID) } : nil
+            // Nothing above the transcript at the beginning of the conversation, and
+            // saying so is what stops it asking every time the reader rests there.
+            onReachStart: hasMoreAbove ? { onReachStart(oldestID) } : nil
         ) {
             ForEach(groups, id: \.day) { group in
                 DayDivider(day: group.day)
@@ -264,15 +396,16 @@ struct MessageListView: View {
         }
     }
 
-    /// Fetches the page above the transcript.
+    /// Whether reaching the top has anything to reach for: history the window has not
+    /// opened onto yet, or a page still on the server.
     ///
-    /// The row to keep still is the one that is oldest *now*, captured before the request
-    /// rather than after it: by the time the page lands, the top of the transcript is the
-    /// history that just arrived, and holding that would leave the reader where they
-    /// already were rather than where they were reading.
-    private func loadOlder(holding anchor: String?) {
-        historyAnchor = anchor
-        Task { await session.loadOlderMessages(in: spaceName) }
+    /// A full window is the signal for the first, since a query that returns everything
+    /// it was allowed to may well have been holding more back. It can be wrong once, in
+    /// the space whose cache ends exactly at the window's edge — and being wrong once
+    /// costs a widening that reveals nothing and then answers false, rather than a
+    /// transcript that refuses to page.
+    private var hasMoreAbove: Bool {
+        hasOlderHistory || messages.count >= limit
     }
 
     /// One message, with everything the bubble cannot work out for itself.
@@ -309,7 +442,9 @@ struct MessageListView: View {
     /// Goes to the message a reply is quoting.
     ///
     /// In a threaded space a quoted reply is not in the transcript at all, so the way
-    /// to it is its thread rather than a scroll position that does not exist.
+    /// to it is its thread rather than a scroll position that does not exist. A quote of
+    /// something older than the window is not in the transcript either — but that one is
+    /// reachable, and asking for the jump is what opens the window onto it.
     private func openQuoted(_ preview: QuotedMessagePreview, index: TranscriptIndex) {
         let original = index.quoted.messagesByName[preview.messageName]
         if isThreaded, original?.isThreadReply == true, let threadName = original?.threadName {
@@ -431,10 +566,11 @@ private struct TranscriptIndex {
     let quoted: QuotedMessageResolver
     /// Who the composer's `@` can reach in this conversation.
     let mentionCandidates: [MentionCandidate]
-    /// Replies per thread, and how many of them are unread — the second read from the
-    /// thread rows rather than recomputed, since the store already maintains it and the
-    /// read marks it depends on live there. Both empty where replies are already in the
-    /// transcript, and the counts would describe nothing.
+    /// Replies per thread, and how many of them are unread. Both read from the thread
+    /// rows: the store maintains them over the whole space, where the transcript can only
+    /// see its own window, and a reply count that shrank as the reader scrolled would be
+    /// worse than no count at all. Empty where replies are already in the transcript and
+    /// the numbers would describe nothing.
     private let replyCounts: [String: Int]
     private let unreadReplyCounts: [String: Int]
     private let usersByID: [String: CachedUser]
@@ -450,8 +586,10 @@ private struct TranscriptIndex {
             users.map { ($0.name, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        // Every cached message in this space, replies included — a quote can point at
-        // one even in a threaded space, where replies are not in the transcript.
+        // Every message the transcript has in hand, replies included — a quote can point
+        // at one even in a threaded space, where replies are not in the transcript. A
+        // quote reaching past the window falls back to the snapshot the server sent with
+        // it; see ``QuotedMessageResolver``.
         let messagesByName = Dictionary(
             messages.map { ($0.name, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -468,16 +606,12 @@ private struct TranscriptIndex {
         }
 
         var replies: [String: Int] = [:]
-        for message in messages where message.isThreadReply {
-            guard let thread = message.threadName else { continue }
-            replies[thread, default: 0] += 1
+        var unread: [String: Int] = [:]
+        for thread in threads {
+            if thread.replyCount > 0 { replies[thread.name] = thread.replyCount }
+            if thread.unreadReplyCount > 0 { unread[thread.name] = thread.unreadReplyCount }
         }
         replyCounts = replies
-
-        var unread: [String: Int] = [:]
-        for thread in threads where thread.unreadReplyCount > 0 {
-            unread[thread.name] = thread.unreadReplyCount
-        }
         unreadReplyCounts = unread
     }
 
