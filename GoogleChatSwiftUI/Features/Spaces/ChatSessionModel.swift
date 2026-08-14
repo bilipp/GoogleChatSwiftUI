@@ -210,6 +210,20 @@ final class ChatSessionModel {
         linkNotice = nil
     }
 
+    /// Says that a conversation this app was asked to go to is not one this account is in.
+    ///
+    /// The case a forward creates and a pasted link does not: a link to a space nobody here
+    /// is a member of is handed to the browser, which can at least ask the reader to sign in.
+    /// A forward's source has no URL to hand anywhere — Chat names the space but never says
+    /// whether it is a room or a DM, and the two take different paths — so the honest answer
+    /// is to say so where the click happened.
+    func reportUnreachableSpace() {
+        linkNotice = """
+            That message was forwarded out of a conversation this account isn't in, so \
+            there's nothing here to open. What was forwarded is shown in full above.
+            """
+    }
+
     // MARK: - Going to a message
 
     /// Sends the transcript to a message and marks it once it is there.

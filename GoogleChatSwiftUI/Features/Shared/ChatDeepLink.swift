@@ -66,6 +66,19 @@ nonisolated struct ChatDeepLink: Equatable, Sendable {
         }
     }
 
+    /// A destination named by resource names rather than by a URL.
+    ///
+    /// For the places that are handed Chat's own names and never a link: a forwarded
+    /// message says where it came from as `spaces/…` and `spaces/…/messages/…` — see
+    /// ``ForwardedMessage`` — and building a `chat.google.com` URL only to parse it
+    /// straight back would mean guessing `room` or `dm` for a space whose type is not
+    /// known, and getting it wrong wherever the guess was wrong.
+    init(spaceName: String, threadName: String? = nil, messageName: String? = nil) {
+        self.spaceName = spaceName
+        self.threadName = threadName
+        self.messageName = messageName
+    }
+
     /// Chat ids are URL-safe base64: letters, digits, `-`, `_`. Anything else is a
     /// route this app does not recognise rather than something to navigate to.
     private static func isIdentifier(_ segment: String) -> Bool {

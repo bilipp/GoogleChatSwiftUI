@@ -411,7 +411,7 @@ private struct ConversationTranscript: View {
     /// One message, with everything the bubble cannot work out for itself.
     private func row(for entry: Entry, index: TranscriptIndex) -> some View {
         let message = entry.message
-        let quotedPreview = index.quoted.preview(for: message)
+        let quoted = index.quoted.content(for: message)
 
         return MessageBubble(
             message: message,
@@ -425,10 +425,13 @@ private struct ConversationTranscript: View {
             spaceName: spaceName,
             threadReplyCount: index.replyCount(of: message),
             newReplyCount: index.unreadReplyCount(of: message),
-            quotedPreview: quotedPreview,
+            quoted: quoted,
             onOpenThread: isThreaded ? { openThread(message) } : nil,
             onReply: { startReply(to: message, index: index) },
-            onOpenQuoted: quotedPreview.map { preview in { openQuoted(preview, index: index) } }
+            // A reply's original is somewhere in this conversation, so the transcript can
+            // reach it itself. A forward's is not, and the block draws its own way there.
+            onOpenQuoted: quoted?.replyPreview
+                .map { preview in { openQuoted(preview, index: index) } }
         )
     }
 

@@ -278,8 +278,40 @@ final class CachedMessage {
     /// The fallback for when `quotedMessageName` points at something not in the cache:
     /// a reply can quote a message older than the history backfilled for this space,
     /// and without the snapshot the quote would be an empty box.
+    ///
+    /// For a forward it is not a fallback but the content itself — see ``isForwarded``.
     var quotedMessageSender: String?
     var quotedMessageText: String?
+
+    /// `REPLY` or `FORWARD`, as Chat reported it. Nil for a plain reply, which Chat
+    /// leaves unset, and for rows cached before this column existed.
+    var quoteTypeRaw: String?
+
+    /// The conversation a forwarded message was taken out of, and what it was called at
+    /// the time — see ``ForwardedMetadata``. Both nil unless this is a forward, and
+    /// `forwardedFromSpace` can be a space this account is not a member of.
+    var forwardedFromSpace: String?
+    var forwardedFromSpaceTitle: String?
+
+    /// The forwarded message's body with its markup still in it, and the mentions and
+    /// rich links Chat parsed out of it, kept as raw JSON for the same reason
+    /// ``richLinksJSON`` is.
+    ///
+    /// Populated for forwards only: Chat sends a reply's snapshot as bare text, because a
+    /// reply shows one flattened line of it, while a forward *is* the original and is
+    /// rendered as fully as the message that carries it.
+    var quotedMessageFormattedText: String?
+    var quotedAnnotationsJSON: Data?
+
+    /// Copies of the forwarded message's attachment metadata.
+    ///
+    /// Stored as JSON rather than as ``CachedAttachment`` rows, and that is not a
+    /// shortcut: an attachment row is keyed uniquely by its resource name, and these name
+    /// attachments belonging to a message in *another* space. Two people forwarding the
+    /// same picture, or a forward of something this account already has cached, would
+    /// collide on that key and the row would be handed to whichever message was written
+    /// last — quietly moving an attachment off the message it belongs to.
+    var quotedAttachmentsJSON: Data?
 
     /// Lowercased message text, kept non-optional purely so it can be queried.
     ///
@@ -340,6 +372,37 @@ final class CachedMessage {
 
     var hasCards: Bool { cardsJSON != nil && !isDeleted }
 
+    /// Whether this message carries another one forwarded into the conversation, rather
+    /// than quoting one that is already in it.
+    ///
+    /// The distinction decides how the quote is rendered and where its original lives, so
+    /// it is asked in one place. Only an explicit `FORWARD` counts: Chat omits the field
+    /// for a reply, and rows cached before the column existed have nothing in it.
+    var isForwarded: Bool {
+        quoteTypeRaw == QuotedMessageMetadata.forwardQuoteType && quotedMessageName != nil
+    }
+
+    /// Attachments that came with a forwarded message. Decoded on demand, like cards, and
+    /// read through the same memo — see ``DecodedMessageContent``.
+    var quotedAttachments: [ChatAttachment] {
+        guard let quotedAttachmentsJSON, !isDeleted else { return [] }
+        guard let decoded = try? JSONDecoder().decode(
+            [ChatAttachment].self,
+            from: quotedAttachmentsJSON
+        ) else { return [] }
+        return decoded
+    }
+
+    /// Annotations Chat parsed out of a forwarded message's own body.
+    var quotedAnnotations: [ChatAnnotation] {
+        guard let quotedAnnotationsJSON, !isDeleted else { return [] }
+        guard let decoded = try? JSONDecoder().decode(
+            [ChatAnnotation].self,
+            from: quotedAnnotationsJSON
+        ) else { return [] }
+        return decoded
+    }
+
     /// Smart chips Chat recognised in the text — Drive files, Calendar events, Meet
     /// links. Decoded on demand, like cards, and read through the same memo.
     var richLinks: [RichLinkMetadata] {
@@ -351,10 +414,14 @@ final class CachedMessage {
 
     /// Text to show in the bubble. Empty when a card carries the whole message, so
     /// the bubble can be omitted entirely rather than showing a stub above the card.
+    ///
+    /// Empty for a forward with no comment on it too, and for the same reason: the
+    /// forwarded message renders as its own block beneath, and a bubble saying
+    /// "Attachment" above it would be describing the block rather than the message.
     var displayText: String {
         if isDeleted { return "Message deleted" }
         if let text, !text.isEmpty { return text }
-        if hasCards { return "" }
+        if hasCards || isForwarded { return "" }
         if attachmentCount > 0 { return "Attachment" }
         return ""
     }
@@ -366,14 +433,28 @@ final class CachedMessage {
         if let text, !text.isEmpty { return text }
         if let fallbackText, !fallbackText.isEmpty { return fallbackText }
         if hasCards { return "Card message" }
+        // Before the attachment fallback: a forward's own attachment count is zero, and
+        // what a banner should say about one is what was forwarded, not that something
+        // was. Prefixed because the notification is the only place that says so —
+        // there is no forwarded block out here to make it obvious.
+        if isForwarded, let quoted = quotedMessageText, !quoted.isEmpty {
+            return "Forwarded: \(quoted)"
+        }
         if attachmentCount > 0 { return "Attachment" }
+        if isForwarded { return "Forwarded message" }
         return "Message"
     }
 
     /// Builds the search column from every text-bearing field, so a card message is
     /// findable by its fallback text even though it has no body of its own.
-    static func searchIndex(text: String?, fallback: String?) -> String {
-        [text, fallback]
+    ///
+    /// - Parameter forwarded: the body of a message forwarded into this one, which is
+    ///   included for the same reason: it is this message's content, and a forward with no
+    ///   comment on it has no other text to be found by. A *reply*'s quoted text is
+    ///   deliberately left out — indexing it would make every reply a hit for the message
+    ///   it answers.
+    static func searchIndex(text: String?, fallback: String?, forwarded: String? = nil) -> String {
+        [text, fallback, forwarded]
             .compactMap { $0 }
             .joined(separator: " ")
             .lowercased()
@@ -383,7 +464,12 @@ final class CachedMessage {
         text = remote.text
         formattedText = remote.formattedText
         fallbackText = remote.fallbackText
-        searchableText = Self.searchIndex(text: remote.text, fallback: remote.fallbackText)
+        let quote = remote.quotedMessageMetadata
+        searchableText = Self.searchIndex(
+            text: remote.text,
+            fallback: remote.fallbackText,
+            forwarded: quote?.isForward == true ? quote?.quotedMessageSnapshot?.text : nil
+        )
         // Re-encoded rather than carrying the original bytes: the wire payload is not
         // retained after decoding, and round-tripping through our own models keeps the
         // stored shape in step with what the renderer expects.
@@ -405,9 +491,7 @@ final class CachedMessage {
         threadName = remote.thread?.name
         isThreadReply = remote.threadReply ?? false
         attachmentCount = remote.attachment?.count ?? 0
-        quotedMessageName = remote.quotedMessageMetadata?.name
-        quotedMessageSender = remote.quotedMessageMetadata?.quotedMessageSnapshot?.sender
-        quotedMessageText = remote.quotedMessageMetadata?.quotedMessageSnapshot?.text
+        applyQuote(remote.quotedMessageMetadata)
         // Written as a loop: the equivalent filter/compactMap chain over an optional
         // array of nested optionals exceeds the type checker's budget.
         var mentions: [String] = []
@@ -417,6 +501,37 @@ final class CachedMessage {
             }
         }
         mentionedUserIDs = mentions
+    }
+
+    /// Stores what this message quotes, whichever of Chat's two kinds of quote it is.
+    ///
+    /// The forward-only half is written unconditionally rather than only for forwards, so
+    /// that a payload arriving without it — an edit of a forward, a message that stopped
+    /// being one — clears the columns instead of leaving a stale block behind.
+    private func applyQuote(_ remote: QuotedMessageMetadata?) {
+        quotedMessageName = remote?.name
+        quoteTypeRaw = remote?.quoteType
+        let snapshot = remote?.quotedMessageSnapshot
+        quotedMessageSender = snapshot?.sender
+        quotedMessageText = snapshot?.text
+        quotedMessageFormattedText = snapshot?.formattedText
+        forwardedFromSpace = remote?.forwardedMetadata?.space
+        forwardedFromSpaceTitle = remote?.forwardedMetadata?.spaceDisplayName
+
+        let attachments = snapshot?.attachments ?? []
+        quotedAttachmentsJSON = attachments.isEmpty
+            ? nil
+            : try? JSONEncoder().encode(attachments)
+
+        // Mentions and rich links only. The rest of what Chat annotates — slash commands,
+        // the marker on someone being added to a thread — describes an action taken in the
+        // original conversation, and there is nothing to do with it here.
+        let annotations = (snapshot?.annotations ?? []).filter {
+            $0.type == "USER_MENTION" || $0.richLinkMetadata != nil
+        }
+        quotedAnnotationsJSON = annotations.isEmpty
+            ? nil
+            : try? JSONEncoder().encode(annotations)
     }
 }
 
@@ -517,22 +632,10 @@ final class CachedAttachment {
         self.name = name
     }
 
-    var displayName: String { contentName ?? "Attachment" }
-
-    var isImage: Bool { contentType?.hasPrefix("image/") ?? false }
-
-    /// Drive-hosted attachments have no media resource and must open in a browser.
-    var isDownloadable: Bool { dataResourceName != nil }
-
-    var symbol: String {
-        guard let type = contentType else { return "doc" }
-        if type.hasPrefix("image/") { return "photo" }
-        if type.hasPrefix("video/") { return "film" }
-        if type.hasPrefix("audio/") { return "waveform" }
-        if type.contains("pdf") { return "doc.richtext" }
-        if type.contains("zip") || type.contains("compressed") { return "doc.zipper" }
-        return "doc"
-    }
+    /// What the transcript renders this as. The name, the icon and whether the bytes can
+    /// be fetched at all live on ``AttachmentDisplay``, which a forwarded attachment can
+    /// reach too — it has no row here to hang them off.
+    var display: AttachmentDisplay { AttachmentDisplay(self) }
 }
 
 @Model

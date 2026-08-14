@@ -173,10 +173,12 @@ struct ThreadPane: View {
                     isLastInGroup: true,
                     isHighlighted: session.highlightedMessage == message.name,
                     spaceName: spaceName,
-                    quotedPreview: index.quoted.preview(for: message),
+                    quoted: index.quoted.content(for: message),
                     onReply: { startReply(to: message, index: index) },
-                    // No jump to the quoted message: everything a reply here can
-                    // quote is in this thread, already on screen.
+                    // No jump to the quoted message: everything a *reply* here can quote is
+                    // in this thread, already on screen. A forward is the exception — it can
+                    // carry a message in from anywhere — and its own block offers the way
+                    // there rather than relying on this.
                     isCompact: true
                 )
                 .id(message.name)

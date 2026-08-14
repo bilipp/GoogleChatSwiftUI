@@ -9,6 +9,7 @@ import SwiftUI
 struct MessageBubble: View {
     @Environment(ChatSessionModel.self) private var session
     @Environment(\.openDirectMessage) private var openDirectMessage
+    @Environment(\.openChatMessage) private var openChatMessage
 
     let message: CachedMessage
     /// Directory profile for the sender, when one has been resolved.
@@ -33,14 +34,18 @@ struct MessageBubble: View {
     var threadReplyCount: Int = 0
     /// How many of those replies are unread.
     var newReplyCount: Int = 0
-    /// The message this one quotes, resolved by the caller. Nil unless it is a reply.
-    var quotedPreview: QuotedMessagePreview?
+    /// The message this one quotes, resolved by the caller — a reply's line of context or a
+    /// message forwarded in from elsewhere. Nil when it quotes nothing.
+    var quoted: QuotedContent?
     /// Non-nil only in threaded spaces, where a thread pane makes sense.
     var onOpenThread: (() -> Void)?
     /// Starts an inline reply to this message. Nil where the surface has no composer
     /// to aim one at.
     var onReply: (() -> Void)?
-    /// Jumps to the quoted message. Nil where it is not reachable from here.
+    /// Jumps to the message a *reply* quotes. Nil where it is not reachable from here.
+    ///
+    /// A forward does not use this: its original is in another conversation, which only the
+    /// sidebar can open — see ``OpenChatMessageAction``.
     var onOpenQuoted: (() -> Void)?
     /// Set in the thread inspector, which is far narrower than the main transcript.
     var isCompact: Bool = false
@@ -76,8 +81,20 @@ struct MessageBubble: View {
 
                 if isEditing {
                     editor
-                } else if !message.displayText.isEmpty || quotedPreview != nil {
+                } else if !message.displayText.isEmpty || replyPreview != nil {
                     bubble
+                }
+
+                // Outside the bubble for the reason cards are, and immediately after the
+                // comment the forwarder wrote: what they said comes first, then what they
+                // sent on. See ``ForwardedMessageCard``.
+                if let forwarded = quoted?.forwarded {
+                    ForwardedMessageCard(
+                        forwarded: forwarded,
+                        onOpenOriginal: openForwardedOriginal(forwarded),
+                        isCompact: isCompact
+                    )
+                    .contextMenu { contextMenu }
                 }
 
                 // Cards render outside the bubble: they carry their own surface and
@@ -98,7 +115,10 @@ struct MessageBubble: View {
                 }
 
                 if !message.attachments.isEmpty {
-                    AttachmentList(attachments: message.attachments, isOwn: isOwn)
+                    AttachmentList(
+                        attachments: message.attachments.map(\.display),
+                        isOwn: isOwn
+                    )
                 }
 
                 // Everything below is height-stable: nothing appears on hover, because
@@ -200,6 +220,22 @@ struct MessageBubble: View {
     }
 
     // MARK: - Pieces
+
+    /// The quote drawn inside the bubble, which is a reply's and only a reply's. A forward
+    /// gets a block of its own beneath — see ``QuotedContent``.
+    private var replyPreview: QuotedMessagePreview? { quoted?.replyPreview }
+
+    /// Where a click on the forwarded block's header should go, or nil where the forward
+    /// named no source space and there is therefore nothing to aim at.
+    ///
+    /// Whether the space is one this account can *reach* is settled later, by the sidebar:
+    /// only it can look, and looking per row while scrolling would be a fetch per frame.
+    /// So the action is offered on the strength of a named source and declines out loud if
+    /// it turns out to lead nowhere.
+    private func openForwardedOriginal(_ forwarded: ForwardedMessage) -> (() -> Void)? {
+        guard let space = forwarded.sourceSpaceName else { return nil }
+        return { openChatMessage(forwarded.messageName, in: space) }
+    }
 
     /// Who posted, by the rules in ``SenderIdentity`` — which are not obvious, and have
     /// to match the thread list, search and quotes.
@@ -303,9 +339,9 @@ struct MessageBubble: View {
         VStack(alignment: .leading, spacing: 6) {
             // Above the reply's own text, as in the web client: the quote is what the
             // message is answering, so it has to be read first.
-            if let quotedPreview {
+            if let replyPreview {
                 QuotedMessageChip(
-                    preview: quotedPreview,
+                    preview: replyPreview,
                     isOwn: isOwn,
                     onOpen: onOpenQuoted
                 )

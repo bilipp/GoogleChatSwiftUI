@@ -379,9 +379,14 @@ actor ChatStore {
         var indexed = 0
 
         for message in all {
+            // The forwarded body has to be passed here as well as at merge time. This pass
+            // rewrites any row whose index differs from what the formula now produces —
+            // which is what makes it self-healing, and what would silently strip a forward's
+            // text back out again on the next launch if the two calls disagreed.
             let expected = CachedMessage.searchIndex(
                 text: message.text,
-                fallback: message.fallbackText
+                fallback: message.fallbackText,
+                forwarded: message.isForwarded ? message.quotedMessageText : nil
             )
             guard !expected.isEmpty, message.searchableText != expected else { continue }
             message.searchableText = expected

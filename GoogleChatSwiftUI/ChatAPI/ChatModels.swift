@@ -77,7 +77,11 @@ nonisolated struct ChatThread: Decodable, Sendable, Hashable {
     let threadKey: String?
 }
 
-nonisolated struct ChatAttachment: Decodable, Sendable, Hashable {
+/// Encodable as well as decodable because a forwarded message's attachments are stored
+/// as a JSON blob on the row that forwarded them — see
+/// ``CachedMessage/quotedAttachmentsJSON``. Nothing sends one of these to Chat; the
+/// upload path uses ``CreateMessageBody/AttachmentRef`` and its ``DataRef`` instead.
+nonisolated struct ChatAttachment: Codable, Sendable, Hashable {
     /// Pointer used by `media.download`, and the token returned by `media.upload`.
     /// Codable in both directions because an upload's ref is sent straight back in
     /// the message create request.
@@ -178,29 +182,75 @@ nonisolated struct RichLinkMetadata: Codable, Sendable, Hashable {
     let meetSpaceLinkData: MeetSpaceLinkData?
 }
 
-/// The message another message quotes — Chat's inline reply.
+/// Where a forwarded message came from.
 ///
-/// This is the same field the web client sets when you answer one message in the main
-/// conversation rather than opening a thread. `name` and `lastUpdateTime` are the pair
-/// a create request has to carry; the snapshot is the server's own copy of what was
-/// quoted, and is filled in on read only.
+/// The source conversation is named as it looked *at the time of forwarding*, which is
+/// the only name available for it: a forward can cross out of a space the reader is not
+/// a member of, and then nothing else in this app can say what that space is called.
+nonisolated struct ForwardedMetadata: Decodable, Sendable, Hashable {
+    /// Resource name of the source space, e.g. `spaces/AAAA1111`.
+    let space: String?
+    /// For a space, its name. For a DM, the other participant's name. For a group chat,
+    /// a name generated from up to five members' first names.
+    let spaceDisplayName: String?
+}
+
+/// The message another message quotes — Chat's inline reply, and its forward.
+///
+/// One field carries both, told apart by ``quoteType``. A `REPLY` is what the web client
+/// sets when you answer one message in the main conversation rather than opening a
+/// thread; a `FORWARD` is what it sets when you send a message on to somewhere else, and
+/// may reach across spaces or across threads, which a reply may not.
+///
+/// `name` and `lastUpdateTime` are the pair a create request has to carry; everything
+/// else is the server's own account of what was quoted, and is filled in on read only.
 nonisolated struct QuotedMessageMetadata: Decodable, Sendable, Hashable {
     /// What the quoted message said when it was quoted.
     ///
     /// Worth keeping even though the app caches messages of its own: a reply can quote
     /// something older than the history that has been backfilled, and then this is the
-    /// only description of it available.
+    /// only description of it available. For a forward it is more than a fallback — it is
+    /// the *whole* of the forwarded message, since the original lives in a conversation
+    /// the reader may have no access to at all.
+    ///
+    /// Which is why four of these five fields are documented as `FORWARD`-only: a reply
+    /// needs one line of context, and a forward needs the message.
     nonisolated struct Snapshot: Decodable, Sendable, Hashable {
         /// The quoted message's author. Documented as an author *name*, without saying
         /// whether that means a display name or a `users/123` resource name — so
         /// callers have to be ready for either.
         let sender: String?
         let text: String?
+        /// The same body with its markup still in it — see ``ChatTextSource``.
+        let formattedText: String?
+        /// Mentions and rich links parsed out of the snapshot's own body. Needed because
+        /// `formattedText` names mentioned people as `<users/123>` and nothing else here
+        /// says who they are.
+        let annotations: [ChatAnnotation]?
+        /// Copies of the original's attachment metadata.
+        let attachments: [ChatAttachment]?
     }
 
     let name: String?
     let lastUpdateTime: Date?
+    /// `REPLY` or `FORWARD`.
+    ///
+    /// Left as the raw string rather than modelled as an enum, like `richLinkType` and
+    /// `spaceThreadingState` and unlike `Space.spaceType`: a `RawRepresentable` enum
+    /// throws on a value it does not know, and the throw would fail the decode of the
+    /// whole *message*, so a fourth quote type would not degrade — it would make messages
+    /// disappear.
+    ///
+    /// Chat documents the field as defaulting to `REPLY` when unset, on read as well as
+    /// on write, so absence means reply rather than "not known".
+    let quoteType: String?
     let quotedMessageSnapshot: Snapshot?
+    /// The source conversation. Populated for forwards only.
+    let forwardedMetadata: ForwardedMetadata?
+
+    static let forwardQuoteType = "FORWARD"
+
+    var isForward: Bool { quoteType == Self.forwardQuoteType }
 }
 
 nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {

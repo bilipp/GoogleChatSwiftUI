@@ -45,6 +45,40 @@ import Foundation
         return decoded
     }
 
+    /// Attachments that came with a forwarded message, and the mentions and rich links
+    /// Chat parsed out of its body.
+    ///
+    /// Both memoised for the reason the two above are: they are read while building a
+    /// bubble's body, which re-runs on every unrelated change to the transcript around it.
+    /// Forwards are rare, so these tables stay nearly empty in most conversations — but a
+    /// space where people forward a lot would otherwise re-decode on every frame.
+    static func forwardedAttachments(of message: CachedMessage) -> [ChatAttachment] {
+        guard let payload = message.quotedAttachmentsJSON, !message.isDeleted else { return [] }
+        if let cached = forwardedAttachmentEntries[payload] { return cached }
+
+        let decoded = message.quotedAttachments
+        if forwardedAttachmentEntries.count >= capacity {
+            forwardedAttachmentEntries.removeAll(keepingCapacity: true)
+        }
+        forwardedAttachmentEntries[payload] = decoded
+        return decoded
+    }
+
+    static func forwardedAnnotations(of message: CachedMessage) -> [ChatAnnotation] {
+        guard let payload = message.quotedAnnotationsJSON, !message.isDeleted else { return [] }
+        if let cached = forwardedAnnotationEntries[payload] { return cached }
+
+        let decoded = message.quotedAnnotations
+        if forwardedAnnotationEntries.count >= capacity {
+            forwardedAnnotationEntries.removeAll(keepingCapacity: true)
+        }
+        forwardedAnnotationEntries[payload] = decoded
+        return decoded
+    }
+
+    private static var forwardedAttachmentEntries: [Data: [ChatAttachment]] = [:]
+    private static var forwardedAnnotationEntries: [Data: [ChatAnnotation]] = [:]
+
     /// Drive links that Chat did not annotate, found in the message text.
     ///
     /// Chat annotates most Drive URLs, but not all: a link pasted into a space where the

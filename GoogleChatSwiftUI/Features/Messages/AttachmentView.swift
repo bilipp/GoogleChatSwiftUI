@@ -4,13 +4,16 @@ import UniformTypeIdentifiers
 /// Attachment chips under a message: image previews inline, other files as a row
 /// with a save action.
 struct AttachmentList: View {
-    let attachments: [CachedAttachment]
+    let attachments: [AttachmentDisplay]
     let isOwn: Bool
+    /// How wide an image preview may be drawn. Narrowed inside a forwarded message, whose
+    /// block is already inset from the transcript.
+    var previewLimit: CGSize = AttachmentChip.defaultPreviewLimit
 
     var body: some View {
         VStack(alignment: isOwn ? .trailing : .leading, spacing: 4) {
-            ForEach(attachments, id: \.name) { attachment in
-                AttachmentChip(attachment: attachment, isOwn: isOwn)
+            ForEach(attachments) { attachment in
+                AttachmentChip(attachment: attachment, isOwn: isOwn, previewLimit: previewLimit)
             }
         }
     }
@@ -32,13 +35,16 @@ enum AttachmentSavePanel {
     }
 }
 
-private struct AttachmentChip: View {
+struct AttachmentChip: View {
     @Environment(ChatSessionModel.self) private var session
 
-    let attachment: CachedAttachment
+    static let defaultPreviewLimit = CGSize(width: 320, height: 240)
+
+    let attachment: AttachmentDisplay
     /// Decides which edge the preview and the file row hang from, so an attachment
     /// lines up with the bubble above it instead of drifting into the transcript.
     let isOwn: Bool
+    var previewLimit: CGSize = Self.defaultPreviewLimit
     @State private var preview: NSImage?
     /// The bytes behind `preview`, kept so the viewer can copy and save the original
     /// file without downloading it a second time.
@@ -63,7 +69,7 @@ private struct AttachmentChip: View {
                     .textSelection(.enabled)
             }
         }
-        .task(id: attachment.name) { await loadPreview() }
+        .task(id: attachment.id) { await loadPreview() }
     }
 
     @ViewBuilder
@@ -119,7 +125,7 @@ private struct AttachmentChip: View {
     /// picture inside it, which left a portrait image floating in the middle of the
     /// transcript rather than sitting against its sender's edge.
     private func previewSize(of image: NSImage) -> CGSize {
-        let limit = CGSize(width: 320, height: 240)
+        let limit = previewLimit
         let size = image.size
         guard size.width > 0, size.height > 0 else { return limit }
         // Capped at 1: blowing a small image up to the limit only makes it blurry.

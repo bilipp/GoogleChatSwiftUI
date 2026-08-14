@@ -62,7 +62,7 @@ struct QuotedMessagePreview: Equatable {
     }
 }
 
-/// Resolves what a reply quotes, given the rows a view already has to hand.
+/// Resolves what a message quotes, given the rows a view already has to hand.
 ///
 /// A separate type because both the transcript and the thread pane need the same
 /// answer from the same two dictionaries they each already build.
@@ -70,6 +70,28 @@ struct QuotedMessageResolver {
     let messagesByName: [String: CachedMessage]
     let usersByID: [String: CachedUser]
 
+    /// What this message carries of another one, and which of Chat's two kinds of quote it
+    /// is — see ``QuotedContent``.
+    ///
+    /// - Returns: nil when `message` quotes nothing, and for a forward that arrived with
+    ///   nothing in it: there is no block to draw and no line to show, so the message is
+    ///   rendered as the message it is.
+    func content(for message: CachedMessage) -> QuotedContent? {
+        guard message.quotedMessageName != nil else { return nil }
+        guard message.isForwarded else {
+            return preview(for: message).map(QuotedContent.reply)
+        }
+        guard let forwarded = forwarded(in: message), !forwarded.isEmpty else { return nil }
+        return .forward(forwarded)
+    }
+
+    /// The line of context a reply shows above its own text.
+    ///
+    /// Answers for a forward too, since the fields are the same ones — but a forward's
+    /// original is in another space and so never in `messagesByName`, which makes the answer
+    /// the snapshot flattened to a line. That is not how a forward should be drawn; go
+    /// through ``content(for:)``, which sends each kind where it belongs.
+    ///
     /// - Returns: nil when `message` is not a reply at all.
     func preview(for message: CachedMessage) -> QuotedMessagePreview? {
         guard let quotedName = message.quotedMessageName else { return nil }
@@ -88,6 +110,48 @@ struct QuotedMessageResolver {
             authorName: displayName(for: message.quotedMessageSender)
                 ?? SenderIdentity.unnamedPerson,
             text: message.quotedMessageText.map(RenderedChatText.plainText) ?? "Quoted message"
+        )
+    }
+
+    /// The message forwarded into this one, assembled from the snapshot Chat sent with it.
+    ///
+    /// Read entirely from the snapshot, and never from the cache — the opposite of what
+    /// ``preview(for:)`` does, on purpose. A forward's original lives in another
+    /// conversation, so a cached copy of it would only exist by coincidence, and preferring
+    /// one would mean the same forwarded message read differently depending on which spaces
+    /// this account happens to have open. The snapshot is also what the sender chose to pass
+    /// on: an edit made to the original afterwards is not part of what was forwarded.
+    private func forwarded(in message: CachedMessage) -> ForwardedMessage? {
+        guard let quotedName = message.quotedMessageName else { return nil }
+
+        let annotations = DecodedMessageContent.forwardedAnnotations(of: message)
+        var mentions: [String: String] = [:]
+        for annotation in annotations where annotation.type == "USER_MENTION" {
+            guard let id = annotation.userMention?.user?.name else { continue }
+            guard let name = usersByID[id]?.displayName, !name.isEmpty else { continue }
+            mentions[id] = name
+        }
+
+        let attachments = DecodedMessageContent.forwardedAttachments(of: message)
+
+        return ForwardedMessage(
+            messageName: quotedName,
+            sourceSpaceName: message.forwardedFromSpace,
+            sourceTitle: message.forwardedFromSpaceTitle,
+            authorName: displayName(for: message.quotedMessageSender),
+            // The same choice every other body goes through: the formatted copy when every
+            // mention in it can be named, and the plain one when it cannot — see
+            // ``ChatTextRenderer/body(formatted:plain:mentions:)``. People mentioned in a
+            // space this account is not in are exactly the ones the directory has no reason
+            // to have answered for, so the fallback earns its keep here more than anywhere.
+            body: ChatTextRenderer.body(
+                formatted: message.quotedMessageFormattedText,
+                plain: message.quotedMessageText,
+                mentions: mentions
+            ),
+            mentions: mentions,
+            attachments: attachments.enumerated().map { AttachmentDisplay($1, position: $0) },
+            richLinks: annotations.compactMap(\.richLinkMetadata)
         )
     }
 

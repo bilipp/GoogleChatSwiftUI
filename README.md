@@ -29,6 +29,7 @@ It is written for one person's Workspace account and distributed as source. Poin
 - Transcript as chat bubbles with day separators, sender grouping, and avatars resolved through the People API
 - Chat's own text markup rendered properly — bold, italic, strikethrough, inline code, code blocks, quotes, and bullets
 - Threads get their own index, their own unread marks, and an inspector pane
+- Forwarded messages shown in full — the original's text, formatting, files, and which conversation it came from, with a way through to it where this account can reach it
 - `cardsV2` messages from Chat apps rendered natively; images open in a zoomable in-app viewer
 - Local full-text search over cached history, scoped to one conversation or all of them
 - `chat.google.com` links open in the app, not a browser tab — landing on the message, or in its thread

@@ -68,6 +68,14 @@ struct SpacesListView: View {
                 Task { await openDirectMessage(with: userID) }
             }
         )
+        // And again for the same reason: a forwarded message names the one it was taken
+        // from, in a space the transcript showing it has no way to select.
+        .environment(
+            \.openChatMessage,
+            OpenChatMessageAction { messageName, spaceName in
+                openMessage(messageName, in: spaceName)
+            }
+        )
         .task {
             // First, because this is a click that landed before the view existed —
             // the one that launched the app — and the loaders below run in bounded
@@ -214,6 +222,26 @@ struct SpacesListView: View {
     /// request — and without this the transcript opens with no matching sidebar row,
     /// leaving no sense of where you are. The search field needs no handling: opening a
     /// conversation clears it.
+    /// Goes to a message in another conversation, by the same route a pasted link takes.
+    ///
+    /// Declines when the space is not one this account knows, which for a forward is a real
+    /// outcome rather than an error: a message can be forwarded out of a space the recipient
+    /// was never in, and there is then nothing here to open. The caller only offers the
+    /// action when a source space was named at all, so this is the second of two checks —
+    /// this one is the one that can only be made here, against the cached space list.
+    private func openMessage(_ messageName: String, in spaceName: String) {
+        guard isCached(spaceName) else {
+            session.reportUnreachableSpace()
+            return
+        }
+        unhide(spaceName)
+        Task {
+            await session.reveal(
+                ChatDeepLink(spaceName: spaceName, messageName: messageName)
+            )
+        }
+    }
+
     private func unhide(_ spaceName: String) {
         guard let space = space(named: spaceName) else { return }
         if !session.kind.matches(space) { session.kind = .all }
