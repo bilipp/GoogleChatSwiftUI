@@ -10,7 +10,7 @@
       "layers" : [
         {
           "blend-mode" : "normal",
-          "glass" : false,
+          "glass" : true,
           "hidden" : false,
           "image-name" : "Front.svg",
           "name" : "Front",
@@ -37,14 +37,11 @@
     {
       "layers" : [
         {
-          "blend-mode" : "normal",
-          "glass" : false,
-          "hidden" : false,
-          "image-name" : "Back1.svg",
-          "name" : "Back1",
-          "opacity" : 0.45000000000000001,
+          "image-name" : "Back1 2.svg",
+          "name" : "Back",
+          "opacity" : 0.64,
           "position" : {
-            "scale" : 1.2427184466019416,
+            "scale" : 1.24,
             "translation-in-points" : [
               0,
               0

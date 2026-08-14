@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="Design/AppIcon/preview.png" width="120" alt="App icon">
+<img src="Design/AppIcon/preview.webp" width="120" alt="App icon">
 
 # Google Chat for macOS
 
