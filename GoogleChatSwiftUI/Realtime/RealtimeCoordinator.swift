@@ -319,7 +319,13 @@ actor RealtimeCoordinator {
                 logger.error("Renewal failed: \(error.localizedDescription)")
                 // A subscription that cannot be renewed is likely expired or
                 // suspended; re-establish from scratch on the next loop.
-                subscriptionName = try? await events.ensureSubscription().name
+                //
+                // Only overwritten on success: assigning the failure would clear the
+                // name, and the guard above then skips every later pass — one bad
+                // network moment would end renewal for the life of the process.
+                if let replacement = try? await events.ensureSubscription().name {
+                    subscriptionName = replacement
+                }
             }
         }
     }

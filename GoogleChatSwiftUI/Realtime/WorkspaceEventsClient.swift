@@ -20,6 +20,28 @@ nonisolated struct ListSubscriptionsResponse: Decodable, Sendable {
     let nextPageToken: String?
 }
 
+/// The long-running-operation envelope that `create`, `patch` and `delete` return.
+///
+/// Those three do not answer with a `Subscription` — they answer with an `Operation`
+/// wrapping one. This type has to exist rather than being decoded away, because the
+/// two shapes overlap: every field of `EventSubscription` is optional, so decoding a
+/// `Subscription` straight out of an operation body *succeeds* and quietly yields
+/// `name` = `operations/…` with a nil state and expiry. A renewal aimed at that path
+/// then fails on every attempt, and the subscription it was supposed to extend runs
+/// out its clock and stops delivering.
+private nonisolated struct SubscriptionOperation: Decodable, Sendable {
+    nonisolated struct Failure: Decodable, Sendable {
+        let code: Int?
+        let message: String?
+    }
+
+    let name: String?
+    let done: Bool?
+    /// Present once `done` is true and the operation succeeded.
+    let response: EventSubscription?
+    let error: Failure?
+}
+
 private nonisolated struct CreateSubscriptionBody: Encodable, Sendable {
     nonisolated struct NotificationEndpoint: Encodable, Sendable { let pubsubTopic: String }
     nonisolated struct PayloadOptions: Encodable, Sendable { let includeResource: Bool }
@@ -35,6 +57,27 @@ private nonisolated struct RenewSubscriptionBody: Encodable, Sendable {
     /// independent of whatever the current maximum TTL happens to be — Google's docs
     /// are vague on the exact value and it differs with `includeResource`.
     let ttl: String
+}
+
+// MARK: - Errors
+
+nonisolated enum WorkspaceEventsError: LocalizedError, Sendable {
+    /// A renewal was handed something other than a subscription resource name.
+    ///
+    /// Worth failing loudly on: the API accepts the request and reports a plain 404,
+    /// which reads as "the subscription is gone" rather than "we asked about the wrong
+    /// kind of thing".
+    case notASubscriptionName(String)
+    case operationCarriedNoSubscription(String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .notASubscriptionName(let name):
+            "Expected a subscriptions/… resource name, but got '\(name)'."
+        case .operationCarriedNoSubscription(let operation):
+            "Operation \(operation ?? "?") finished without naming a subscription."
+        }
+    }
 }
 
 // MARK: - Client
@@ -62,6 +105,10 @@ nonisolated struct WorkspaceEventsClient: Sendable {
         "google.workspace.chat.space.v1.updated",
     ]
 
+    /// Prefix of every subscription resource name, and the one thing that
+    /// distinguishes one from the operation that acted on it.
+    static let namePrefix = "subscriptions/"
+
     init(transport: GoogleTransport) {
         self.transport = transport
     }
@@ -79,6 +126,12 @@ nonisolated struct WorkspaceEventsClient: Sendable {
         return response.subscriptions ?? []
     }
 
+    /// Reads one subscription back. Unlike create and renew, this really does answer
+    /// with a `Subscription`.
+    func subscription(named name: String) async throws -> EventSubscription {
+        try await transport.get(Self.baseURL.appending(path: name), as: EventSubscription.self)
+    }
+
     func createSubscription() async throws -> EventSubscription {
         let body = CreateSubscriptionBody(
             targetResource: Self.targetResource,
@@ -88,33 +141,79 @@ nonisolated struct WorkspaceEventsClient: Sendable {
             // round-trip just to learn what changed.
             payloadOptions: .init(includeResource: true)
         )
-        let created = try await transport.post(
+        let operation = try await transport.post(
             Self.baseURL.appending(path: "subscriptions"),
             body: body,
-            as: EventSubscription.self
+            as: SubscriptionOperation.self
         )
+        let created = try await subscription(fromOperation: operation)
         logger.info("Created subscription \(created.name ?? "?")")
         return created
     }
 
     /// Extends a subscription to its maximum expiry.
+    ///
+    /// - Parameter name: A `subscriptions/…` name. Passing the name of the operation
+    ///   that last touched the subscription is the mistake this guards against.
     func renew(_ name: String) async throws -> EventSubscription {
+        guard name.hasPrefix(Self.namePrefix) else {
+            throw WorkspaceEventsError.notASubscriptionName(name)
+        }
+
         var components = URLComponents(
             url: Self.baseURL.appending(path: name),
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [URLQueryItem(name: "updateMask", value: "ttl")]
-        let renewed = try await transport.patch(
+        let operation = try await transport.patch(
             components.url!,
             body: RenewSubscriptionBody(ttl: "0s"),
-            as: EventSubscription.self
+            as: SubscriptionOperation.self
         )
+        let renewed = try await subscription(fromOperation: operation, fallingBackTo: name)
         logger.info("Renewed \(name) until \(renewed.expireTime?.description ?? "?")")
         return renewed
     }
 
     func delete(_ name: String) async throws {
         try await transport.delete(Self.baseURL.appending(path: name))
+    }
+
+    /// Pulls the subscription out of the operation that produced it.
+    ///
+    /// - Parameter fallbackName: A subscription already known to the caller, read back
+    ///   directly when the operation is still running and so carries no resource yet.
+    ///   A create has no such name, and there the list is the only route to it.
+    private func subscription(
+        fromOperation operation: SubscriptionOperation,
+        fallingBackTo fallbackName: String? = nil
+    ) async throws -> EventSubscription {
+        if let failure = operation.error {
+            throw ChatAPIError(
+                status: failure.code ?? 0,
+                googleStatus: nil,
+                message: failure.message
+            )
+        }
+
+        // The name is checked, not just the presence of a response: it is the field
+        // everything downstream renews against.
+        if let response = operation.response,
+           let name = response.name,
+           name.hasPrefix(Self.namePrefix) {
+            return response
+        }
+
+        if let fallbackName {
+            return try await subscription(named: fallbackName)
+        }
+
+        guard let created = try await listSubscriptions().first(where: {
+            $0.targetResource == Self.targetResource
+        }) else {
+            throw WorkspaceEventsError.operationCarriedNoSubscription(operation.name)
+        }
+        return created
     }
 
     /// Finds a reusable subscription or creates one.
@@ -129,6 +228,8 @@ nonisolated struct WorkspaceEventsClient: Sendable {
         }) {
             logger.info("Reusing subscription \(reusable.name ?? "?")")
             // Renew on adoption: it may be close to expiry after the app was closed.
+            // The listed row is what gets returned if that fails, because it is the
+            // one that is certain to carry a usable resource name.
             if let name = reusable.name {
                 return (try? await renew(name)) ?? reusable
             }
