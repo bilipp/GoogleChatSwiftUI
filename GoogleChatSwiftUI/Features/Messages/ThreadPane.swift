@@ -54,11 +54,25 @@ struct ThreadPane: View {
             MessageComposer(
                 placeholder: "Reply in thread",
                 isSending: session.isSending(spaceName),
+                isStartingMeeting: session.isStartingMeeting(spaceName),
                 replyTarget: replyTarget,
                 onCancelReply: { replyTarget = nil },
                 mentionCandidates: index.mentionCandidates,
                 recentEmoji: session.recentEmoji.recents,
-                onUseEmoji: { session.recentEmoji.record($0) }
+                onUseEmoji: { session.recentEmoji.record($0) },
+                // Into the thread, not the room: a meeting that came out of one
+                // conversation belongs where that conversation is, and posting it to the
+                // space would take it away from the people discussing it.
+                onStartMeeting: { composed in
+                    let sent = await session.sendMeetLink(
+                        to: spaceName,
+                        threadName: threadName,
+                        comment: composed.text,
+                        mentions: composed.mentions
+                    )
+                    if sent { sendCount += 1 }
+                    return sent
+                }
             ) { composed in
                 let target = replyTarget
                 replyTarget = nil

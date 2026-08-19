@@ -30,6 +30,10 @@ struct ComposedMessage {
 struct MessageComposer: View {
     let placeholder: String
     let isSending: Bool
+    /// Whether a video meeting is being created for this conversation right now. Comes
+    /// from the owner of the send state rather than being held here, so both composers a
+    /// thread can have on screen show the same thing is underway.
+    var isStartingMeeting: Bool = false
     /// The message being answered inline, shown above the field until it is sent or
     /// dropped. The owner of this state is also what `onSend` posts against, so the
     /// composer only has to display it and offer a way out.
@@ -44,6 +48,13 @@ struct MessageComposer: View {
     /// Reports an emoji the user completed here, so the history the next completion —
     /// and the reaction picker — ranks by includes what gets typed, not only reactions.
     var onUseEmoji: (String) -> Void = { _ in }
+    /// Creates a video meeting and posts its link, carrying the draft along with it.
+    ///
+    /// Reports whether the message went out, which is what decides the fate of that
+    /// draft: unlike a send, this can fail with nothing posted and nothing kept, and the
+    /// field is then the only place the typed text still exists. Nil where there is no
+    /// meeting to offer, and the button is left out entirely.
+    var onStartMeeting: ((ComposedMessage) async -> Bool)?
     let onSend: (ComposedMessage) -> Void
 
     @State private var text: String = ""
@@ -97,9 +108,11 @@ struct MessageComposer: View {
                         .font(.body)
                 }
                 .buttonStyle(.borderless)
-                .disabled(isSending)
+                .disabled(isBusy)
                 .help("Attach files")
                 .accessibilityLabel("Attach files")
+
+                meetingButton
 
                 input
 
@@ -166,6 +179,31 @@ struct MessageComposer: View {
                 onHighlight: { selectedSuggestion = $0 },
                 onPick: { complete(withEmoji: $0) }
             )
+        }
+    }
+
+    /// Starts a video meeting and sends the link, in one click.
+    ///
+    /// Absent where the surface offers no meetings, rather than present and disabled: a
+    /// permanently dead button is a worse answer than no button.
+    @ViewBuilder
+    private var meetingButton: some View {
+        if onStartMeeting != nil {
+            Button(action: startMeeting) {
+                if isStartingMeeting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "video.badge.plus")
+                        .font(.body)
+                }
+            }
+            .buttonStyle(.borderless)
+            .disabled(isBusy)
+            // Both halves stated, because the click does something irreversible: this
+            // posts to the conversation immediately rather than putting a link in the
+            // field to be sent deliberately.
+            .help("Start a video meeting and send the link")
+            .accessibilityLabel("Start a video meeting")
         }
     }
 
@@ -283,8 +321,12 @@ struct MessageComposer: View {
 
     private var canSend: Bool {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (hasText || !attachments.isEmpty) && !isSending
+        return (hasText || !attachments.isEmpty) && !isBusy
     }
+
+    /// Whether something already has a claim on this draft. A meeting being created
+    /// carries the typed text with it, so sending in the meantime would post it twice.
+    private var isBusy: Bool { isSending || isStartingMeeting }
 
     /// Return: takes the highlighted suggestion if the list is open, sends otherwise.
     ///
@@ -309,6 +351,38 @@ struct MessageComposer: View {
         resolvedMentions = []
         errorMessage = nil
         onSend(ComposedMessage(text: trimmed, attachments: staged, mentions: mentions))
+    }
+
+    /// Hands the draft to the meeting action and clears it only if the link went out.
+    ///
+    /// The opposite of ``sendNow()``, which clears optimistically — it can afford to,
+    /// because a failed send survives as a placeholder in the transcript that still holds
+    /// the text. Creating a meeting has no such landing place: until Meet answers there
+    /// is nothing anywhere but this field.
+    ///
+    /// Staged attachments stay staged. They belong to the message the user is still
+    /// writing, not to a link posted from under it.
+    private func startMeeting() {
+        guard let onStartMeeting, !isBusy else { return }
+        let draft = text
+        let composed = ComposedMessage(
+            text: draft,
+            attachments: [],
+            mentions: resolvedMentions
+        )
+        suggestions = []
+        errorMessage = nil
+
+        Task {
+            guard await onStartMeeting(composed) else { return }
+            // Only if the field still holds what was sent. Someone who kept typing while
+            // the meeting was being made is left with their own text — including the part
+            // that has now gone out, which reads oddly but loses nothing. Clearing
+            // regardless would delete the words they added.
+            guard text == draft else { return }
+            text = ""
+            resolvedMentions = []
+        }
     }
 
     // MARK: - Completion
@@ -585,8 +659,22 @@ private struct AttachmentTray: View {
 }
 
 #Preview {
-    MessageComposer(placeholder: "Message Engineering", isSending: false) { _ in }
-        .frame(width: 600)
+    MessageComposer(
+        placeholder: "Message Engineering",
+        isSending: false,
+        onStartMeeting: { _ in true }
+    ) { _ in }
+    .frame(width: 600)
+}
+
+#Preview("Starting a meeting") {
+    MessageComposer(
+        placeholder: "Message Engineering",
+        isSending: false,
+        isStartingMeeting: true,
+        onStartMeeting: { _ in true }
+    ) { _ in }
+    .frame(width: 600)
 }
 
 #Preview("Replying") {

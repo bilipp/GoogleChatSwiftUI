@@ -56,6 +56,13 @@ nonisolated enum OAuthConfiguration {
         // chip. The title, kind, owner and edit date this returns are what the preview
         // actually shows.
         "https://www.googleapis.com/auth/drive.metadata.readonly",
+        // Starting a video meeting from the composer. The narrowest scope Meet has: it
+        // covers the spaces this app creates itself and nothing else — not meetings made
+        // in Calendar or the Meet app, not conference records, not recordings. Adding it
+        // is also why an install that predates this feature asks the user to sign in
+        // again: a grant cannot be widened in place, and `TokenProvider.restore()`
+        // notices the shortfall rather than failing the first Meet call.
+        "https://www.googleapis.com/auth/meetings.space.created",
     ]
 
     static var scopeString: String { scopes.joined(separator: " ") }

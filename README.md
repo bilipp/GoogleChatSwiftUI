@@ -42,6 +42,7 @@ It is written for one person's Workspace account and distributed as source. Poin
 - Reactions, including a full emoji picker, recent-emoji suggestions, and `:shortcode` completion while typing
 - `@mention` completion over the space's members — and `@all` — posted as real mentions that notify, not as plain text
 - Attachments by file picker, drag-and-drop, or paste
+- Start a video meeting from the composer: one click creates a Meet space and posts the link, in the room or in the thread you are reading
 
 **Around the app**
 
@@ -321,7 +322,8 @@ Config/
 
 GoogleChatSwiftUI/
 ├── GoogleAuth/     OAuth + PKCE, keychain storage, token refresh
-├── ChatAPI/        Typed Chat REST v1 client, DTOs, transport, directory lookup
+├── ChatAPI/        Typed Chat REST v1 client, DTOs, transport, directory,
+│                   Drive metadata, and Meet link creation
 ├── Realtime/       Workspace Events subscription, Pub/Sub pull, event decoding
 ├── Store/          SwiftData schema, ChatStore actor, SyncEngine
 └── Features/

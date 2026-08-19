@@ -34,7 +34,8 @@ gcloud services enable \
   pubsub.googleapis.com \
   people.googleapis.com \
   admin.googleapis.com \
-  drive.googleapis.com
+  drive.googleapis.com \
+  meet.googleapis.com
 ```
 
 | API | Why |
@@ -45,6 +46,7 @@ gcloud services enable \
 | `people.googleapis.com` | Resolving sender names and avatars |
 | `admin.googleapis.com` | Directory fallback for org user lookup |
 | `drive.googleapis.com` | Titles for linked Drive files |
+| `meet.googleapis.com` | Creating the video meeting the composer posts a link to |
 
 ## 2. Provision Pub/Sub
 
@@ -146,6 +148,7 @@ https://www.googleapis.com/auth/chat.users.sections
 https://www.googleapis.com/auth/chat.customemojis.readonly
 https://www.googleapis.com/auth/directory.readonly
 https://www.googleapis.com/auth/drive.metadata.readonly
+https://www.googleapis.com/auth/meetings.space.created
 https://www.googleapis.com/auth/pubsub
 https://www.googleapis.com/auth/userinfo.profile
 https://www.googleapis.com/auth/userinfo.email
@@ -159,6 +162,12 @@ ceiling — Drive returns a thumbnail image only to apps that can read file *con
 showing one would mean holding `drive.readonly` over the whole account to decorate a
 chip. Without this scope Drive links still render and still open; they just read "Google
 Drive" and the URL, as they did before.
+`meetings.space.created` is what the composer's video button uses. It is the narrowest
+scope Meet publishes: it covers the meetings this app creates itself and nothing else —
+not meetings made in Calendar or the Meet app, not conference records, not recordings or
+transcripts. Note that adding any scope to an app that is already installed invalidates
+the grants people gave it, so everyone is asked to sign in once after picking up this
+version; nothing else about their install changes.
 `pubsub` is what lets the app pull events directly instead of standing up a server.
 `userinfo.email` names the subscription that person pulls from (§2) — without it the app
 cannot tell which queue is theirs, and says so instead of guessing.

@@ -98,6 +98,12 @@ final class ChatSessionModel {
     }
 
     private(set) var sendingSpaceNames: Set<String> = []
+    /// Conversations with a meeting being created for them right now.
+    ///
+    /// Separate from `sendingSpaceNames` because it covers a different stretch of time:
+    /// the round-trip to Meet happens before there is any message to echo locally, so
+    /// there is nothing on screen saying anything is underway except the button itself.
+    private(set) var startingMeetingSpaceNames: Set<String> = []
     private(set) var realtimeStatus: RealtimeCoordinator.Status = .stopped
     private(set) var totalUnread = 0
     /// The user's own reaction history, driving the quick-pick row.
@@ -572,6 +578,11 @@ final class ChatSessionModel {
         sendingSpaceNames.contains(spaceName)
     }
 
+    /// Whether a video meeting is being created for this conversation.
+    func isStartingMeeting(_ spaceName: String) -> Bool {
+        startingMeetingSpaceNames.contains(spaceName)
+    }
+
     // MARK: - Writes
 
     /// Opens a thread in the inspector. Selecting a different space closes it, since
@@ -686,6 +697,48 @@ final class ChatSessionModel {
         } catch {
             messageError = error.localizedDescription
         }
+    }
+
+    /// Creates a video meeting and posts its link, as one action.
+    ///
+    /// Two steps that fail differently, which is why the result is reported rather than
+    /// just the error being surfaced. Creating the meeting can fail with nothing sent and
+    /// nothing recoverable — so a caller that handed over a draft still holds the only
+    /// copy of it. Once the link is on its way the ordinary send path has taken over, and
+    /// that path keeps a failed message as a flagged placeholder with a retry, so from
+    /// there on there is nothing left for the composer to hold on to.
+    ///
+    /// - Parameter comment: what was already typed in the composer, sent above the link.
+    /// - Returns: whether the message was handed to the send path. `false` means no
+    ///   meeting exists and nothing was posted.
+    @discardableResult
+    func sendMeetLink(
+        to spaceName: String,
+        threadName: String? = nil,
+        comment: String = "",
+        mentions: [MentionCandidate] = []
+    ) async -> Bool {
+        messageError = nil
+        startingMeetingSpaceNames.insert(spaceName)
+
+        let meeting: MeetSpace
+        do {
+            meeting = try await sync.createMeetSpace()
+        } catch {
+            logger.error("Meet space creation failed: \(error.localizedDescription)")
+            messageError = error.localizedDescription
+            startingMeetingSpaceNames.remove(spaceName)
+            return false
+        }
+        startingMeetingSpaceNames.remove(spaceName)
+
+        await send(
+            MeetInvitation.messageText(joinURL: meeting.joinURL, comment: comment),
+            to: spaceName,
+            threadName: threadName,
+            mentions: mentions
+        )
+        return true
     }
 
     func retrySend(messageName: String, text: String, in spaceName: String) async {

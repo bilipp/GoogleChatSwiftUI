@@ -53,6 +53,7 @@ nonisolated struct SyncEngine: Sendable {
     private let directoryService: DirectoryService
     /// Shared per engine rather than per chip, because its cache is the whole point.
     private let driveMetadataService: DriveMetadataService
+    private let meetSpaceService: MeetSpaceService
     private let logger = AppLog.logger("sync")
 
     /// One screenful plus margin. Small enough to render fast, large enough that
@@ -64,6 +65,7 @@ nonisolated struct SyncEngine: Sendable {
         self.store = store
         directoryService = DirectoryService(transport: client.transport)
         driveMetadataService = DriveMetadataService(transport: client.transport)
+        meetSpaceService = MeetSpaceService(transport: client.transport)
     }
 
     /// Refreshes the space list. Cheap — a handful of paginated calls — so it runs
@@ -357,6 +359,23 @@ nonisolated struct SyncEngine: Sendable {
 
         logger.info("Resolved \(ids.count) mentionable member(s) in \(spaceName)")
         return ids
+    }
+
+    // MARK: - Meetings
+
+    /// Creates a video meeting and returns the link to it.
+    ///
+    /// Nothing is stored. A Meet space is not part of the conversation the way a message
+    /// is — once its link has been posted, the message *is* the record, and Meet's own
+    /// resource name buys nothing this app can use: the API grants an app only the spaces
+    /// it created, and none of what it could then read (participants, conference records)
+    /// is on screen anywhere here.
+    ///
+    /// Posting the link is a separate step, deliberately: creating the meeting is the part
+    /// that can fail on its own, and the caller has to know it failed *before* clearing
+    /// the draft it was going to send with it.
+    func createMeetSpace() async throws -> MeetSpace {
+        try await meetSpaceService.createSpace()
     }
 
     // MARK: - Writes

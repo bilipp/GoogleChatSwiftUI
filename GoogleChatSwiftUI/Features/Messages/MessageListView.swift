@@ -309,11 +309,25 @@ private struct ConversationTranscript: View {
             MessageComposer(
                 placeholder: replyTarget == nil ? "Message \(spaceTitle)" : "Reply",
                 isSending: session.isSending(spaceName),
+                isStartingMeeting: session.isStartingMeeting(spaceName),
                 replyTarget: replyTarget,
                 onCancelReply: { replyTarget = nil },
                 mentionCandidates: index.mentionCandidates,
                 recentEmoji: session.recentEmoji.recents,
-                onUseEmoji: { session.recentEmoji.record($0) }
+                onUseEmoji: { session.recentEmoji.record($0) },
+                // Bumped after the link is posted rather than before, unlike the send
+                // below: the message only exists once Meet has answered, and a
+                // "take me to the end" that fires before it lands has nothing to
+                // travel to.
+                onStartMeeting: { composed in
+                    let sent = await session.sendMeetLink(
+                        to: spaceName,
+                        comment: composed.text,
+                        mentions: composed.mentions
+                    )
+                    if sent { sendCount += 1 }
+                    return sent
+                }
             ) { composed in
                 let target = replyTarget
                 replyTarget = nil
