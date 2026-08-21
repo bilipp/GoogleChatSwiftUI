@@ -81,11 +81,7 @@ struct AttachmentChip: View {
             Button {
                 isViewerPresented = true
             } label: {
-                Image(nsImage: preview)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: size.width, height: size.height)
-                    .clipShape(.rect(cornerRadius: 8))
+                InlinePicture(image: preview, size: size)
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
@@ -119,18 +115,11 @@ struct AttachmentChip: View {
         }
     }
 
-    /// The picture's own size, scaled down to fit the preview cap.
-    ///
-    /// A flexible `maxWidth` frame would instead claim the full 320pt and centre the
-    /// picture inside it, which left a portrait image floating in the middle of the
-    /// transcript rather than sitting against its sender's edge.
+    /// The picture's own size, scaled down to fit the preview cap — see
+    /// ``CoreFoundation/CGSize/scaledToFit(_:)``, which an attached GIF measures itself by
+    /// too so that the same picture is the same size whichever route it arrived by.
     private func previewSize(of image: NSImage) -> CGSize {
-        let limit = previewLimit
-        let size = image.size
-        guard size.width > 0, size.height > 0 else { return limit }
-        // Capped at 1: blowing a small image up to the limit only makes it blurry.
-        let scale = min(limit.width / size.width, limit.height / size.height, 1)
-        return CGSize(width: size.width * scale, height: size.height * scale)
+        image.size.scaledToFit(previewLimit)
     }
 
     /// Fetches image bytes through the authenticated media endpoint.

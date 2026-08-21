@@ -114,6 +114,15 @@ struct MessageBubble: View {
                     DriveLinkChip(fileID: link.fileID, url: link.url)
                 }
 
+                // A GIF-only message has no bubble — `displayText` is empty for one, the
+                // same as for a card — so the context menu is attached here as well. It is
+                // otherwise unreachable, and with it goes every way to reply to, react to
+                // or delete a message that is nothing but a GIF.
+                if !message.attachedGifURIs.isEmpty {
+                    AttachedGifList(uris: message.attachedGifURIs, isOwn: isOwn)
+                        .contextMenu { contextMenu }
+                }
+
                 if !message.attachments.isEmpty {
                     AttachmentList(
                         attachments: message.attachments.map(\.display),

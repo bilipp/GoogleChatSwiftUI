@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Where the viewer gets its bytes from.
 enum ImageViewerSource {
@@ -74,14 +75,11 @@ struct ImageViewer: View {
         let displayed = displaySize(image)
 
         return ScrollView([.horizontal, .vertical]) {
-            Image(nsImage: image)
-                .resizable()
-                .interpolation(.high)
+            picture(image)
                 .frame(width: displayed.width, height: displayed.height)
                 // Centres the image while it is smaller than the viewport, and lets
                 // the scroll view take over once zooming pushes it past the edges.
                 .frame(minWidth: viewport.width, minHeight: viewport.height)
-                .accessibilityLabel(title)
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
         .background(.background.secondary)
@@ -92,6 +90,22 @@ struct ImageViewer: View {
         )
         // The usual macOS shorthand: double-click flips between fit and 1:1.
         .onTapGesture(count: 2) { toggleActualSize(image) }
+    }
+
+    /// A GIF plays here regardless of Reduce Motion, unlike the still it may have been
+    /// inline: getting to this sheet took a deliberate click on the picture, and what that
+    /// click asks for is to see the thing move.
+    @ViewBuilder
+    private func picture(_ image: NSImage) -> some View {
+        if image.isAnimated {
+            AnimatedImage(image: image)
+                .accessibilityLabel(title)
+        } else {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .accessibilityLabel(title)
+        }
     }
 
     private func displaySize(_ image: NSImage) -> CGSize {
@@ -247,9 +261,18 @@ struct ImageViewer: View {
         }
     }
 
+    /// Copies the original bytes for an animated GIF and the image itself otherwise.
+    ///
+    /// `writeObjects([image])` puts a TIFF on the pasteboard, which is one flattened frame:
+    /// pasting a GIF copied that way into a document or back into Chat would hand over a
+    /// still. The encoded bytes paste as the GIF that was copied.
     private func copy(_ image: NSImage) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([image])
+        if image.isAnimated, let data {
+            NSPasteboard.general.setData(data, forType: .init(UTType.gif.identifier))
+        } else {
+            NSPasteboard.general.writeObjects([image])
+        }
     }
 
     /// Writes the original bytes when we have them; re-encoding a PNG as TIFF just to

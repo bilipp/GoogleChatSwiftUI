@@ -243,6 +243,15 @@ final class CachedMessage {
     var isThreadReply: Bool = false
     var attachmentCount: Int = 0
 
+    /// URLs of the GIFs attached to this message — see ``AttachedGif``.
+    ///
+    /// Kept apart from `attachments` because Chat keeps them apart, and the difference is
+    /// not cosmetic: a GIF from the picker was never uploaded to the space, so it has no
+    /// media resource to fetch and no filename to save it under. A public URL is the whole
+    /// of what the API says about one, which is why these are stored as strings rather
+    /// than as rows of their own.
+    var attachedGifURIs: [String] = []
+
     /// Set while a locally-composed message is in flight. The row is rendered
     /// immediately so sending feels instant, then either confirmed by the server
     /// response or rolled back.
@@ -372,6 +381,9 @@ final class CachedMessage {
 
     var hasCards: Bool { cardsJSON != nil && !isDeleted }
 
+    /// Whether this message carries GIFs from Chat's picker.
+    var hasGifs: Bool { !attachedGifURIs.isEmpty && !isDeleted }
+
     /// Whether this message carries another one forwarded into the conversation, rather
     /// than quoting one that is already in it.
     ///
@@ -421,7 +433,10 @@ final class CachedMessage {
     var displayText: String {
         if isDeleted { return "Message deleted" }
         if let text, !text.isEmpty { return text }
-        if hasCards || isForwarded { return "" }
+        // GIFs join cards and forwards here rather than falling through to the
+        // attachment stub below: all three render as their own block beneath the bubble,
+        // and a bubble reading "GIF" above a GIF describes the block, not the message.
+        if hasCards || isForwarded || hasGifs { return "" }
         if attachmentCount > 0 { return "Attachment" }
         return ""
     }
@@ -441,6 +456,7 @@ final class CachedMessage {
             return "Forwarded: \(quoted)"
         }
         if attachmentCount > 0 { return "Attachment" }
+        if hasGifs { return "GIF" }
         if isForwarded { return "Forwarded message" }
         return "Message"
     }
@@ -491,6 +507,7 @@ final class CachedMessage {
         threadName = remote.thread?.name
         isThreadReply = remote.threadReply ?? false
         attachmentCount = remote.attachment?.count ?? 0
+        attachedGifURIs = (remote.attachedGifs ?? []).compactMap(\.uri)
         applyQuote(remote.quotedMessageMetadata)
         // Written as a loop: the equivalent filter/compactMap chain over an optional
         // array of nested optionals exceeds the type checker's budget.

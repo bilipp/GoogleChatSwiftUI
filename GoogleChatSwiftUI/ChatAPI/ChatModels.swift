@@ -100,6 +100,24 @@ nonisolated struct ChatAttachment: Codable, Sendable, Hashable {
     let source: String?
 }
 
+/// A GIF attached to a message.
+///
+/// Read-only, and not for want of a field to write: Chat documents `attachedGifs` as
+/// output only, so a GIF chosen in the web client's picker arrives here as a URL and there
+/// is no way to send one back the same way. Attaching a `.gif` *file* is a different thing
+/// entirely and goes through ``ChatAttachment``.
+///
+/// The URI is public and unauthenticated — Google serves these from Tenor's CDN — so
+/// unlike an attachment it needs no credentialed fetch.
+///
+/// Absent from `QuotedMessageSnapshot`, which carries `attachments` but not this, so a
+/// forwarded GIF arrives as a forward of nothing. Not an omission here: there is no field
+/// to read it out of.
+nonisolated struct AttachedGif: Decodable, Sendable, Hashable {
+    /// The URL hosting the GIF image.
+    let uri: String?
+}
+
 nonisolated struct ChatEmoji: Codable, Sendable, Hashable {
     nonisolated struct CustomEmoji: Codable, Sendable, Hashable {
         let uid: String?
@@ -267,6 +285,8 @@ nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
     let thread: ChatThread?
     let threadReply: Bool?
     let attachment: [ChatAttachment]?
+    /// GIFs picked from Chat's own picker, which are not attachments — see ``AttachedGif``.
+    let attachedGifs: [AttachedGif]?
     let emojiReactionSummaries: [EmojiReactionSummary]?
     let annotations: [ChatAnnotation]?
     let cardsV2: [ChatCardWithID]?
@@ -288,6 +308,7 @@ nonisolated struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
         if let text, !text.isEmpty { return text }
         if let fallbackText, !fallbackText.isEmpty { return fallbackText }
         if attachment?.isEmpty == false { return "Attachment" }
+        if attachedGifs?.isEmpty == false { return "GIF" }
         if hasCards { return "Card message" }
         return ""
     }
