@@ -41,6 +41,13 @@ enum ChatMigrationPlan: SchemaMigrationPlan {
 
 @Model
 final class CachedSpace {
+    /// The sidebar's sort order, and the only column it sorts by.
+    ///
+    /// Without it every sidebar refetch was `SCAN ZCACHEDSPACE` plus a temp b-tree over
+    /// 786 rows — and `@Query` refetches on every write to the store. See
+    /// ``SpaceQueries`` for what the row count costs.
+    #Index<CachedSpace>([\.lastActiveTime])
+
     /// Chat resource name, e.g. `spaces/AAAA1111`. Stable across everything.
     @Attribute(.unique) var name: String
 
@@ -130,6 +137,17 @@ final class CachedSpace {
     /// `unreadCount`.
     var unreadThreadReplyCount: Int = 0
 
+    /// Which version of the thread-tally rules the two counts above were computed by.
+    ///
+    /// The tallies are maintained incrementally — one thread's change applied to the
+    /// space totals as a difference — which is only sound if the totals and every
+    /// thread's stored contribution came from the same rules. This is the check that
+    /// makes that safe: a space stamped with anything but
+    /// ``ChatStore/threadTallyVersion`` gets one full recount and is then stamped, so
+    /// a store written by an older build converges on first touch rather than drifting.
+    /// Bump the constant, not this, when the formula changes.
+    var threadTallyVersion: Int = 0
+
     /// Only claimed when read state is actually known.
     var hasUnread: Bool {
         guard didFetchReadState, let lastReadTime, let lastActiveTime else { return false }
@@ -208,6 +226,17 @@ final class CachedSpace {
 
 @Model
 final class CachedMessage {
+    /// The transcript's one query: a space's messages, newest first, limited to the
+    /// window — see ``TranscriptQueries/window(in:limit:)``.
+    ///
+    /// Compound, and the order of the two matters. CoreData indexes the `space`
+    /// relationship on its own already, but that index says nothing about time, so the
+    /// window fetch had to read every message in the space and sort them in a temp
+    /// b-tree before it could take the newest 150. In the busiest space here — 2,555
+    /// messages — that was 58ms of SQLite per fetch, cold; with this it is a covering
+    /// index scan that stops after 150 rows.
+    #Index<CachedMessage>([\.space, \.createTime])
+
     /// Chat resource name, e.g. `spaces/AAAA/messages/BBBB`.
     /// This is the dedupe key that makes pagination and the event stream converge.
     @Attribute(.unique) var name: String
@@ -565,6 +594,11 @@ final class CachedMessage {
 /// thinks you are but never tell it where you got to here.
 @Model
 final class CachedThread {
+    /// A space's threads, most recently active first — the thread list's order, and the
+    /// order the transcript's bounded thread query depends on being cheap. See
+    /// ``TranscriptQueries/threads(in:limit:)`` for why that query is bounded at all.
+    #Index<CachedThread>([\.space, \.lastActivityTime])
+
     /// Chat resource name, e.g. `spaces/AAAA/threads/BBBB`.
     @Attribute(.unique) var name: String
 
@@ -592,6 +626,18 @@ final class CachedThread {
 
     /// Replies newer than `lastReadTime`. Zero until the read mark is seeded.
     var unreadReplyCount: Int = 0
+
+    /// This thread's share of ``CachedSpace/unreadThreadReplyCount`` — the unread
+    /// replies at or before the *space's* read mark, which the space's own count
+    /// cannot see.
+    ///
+    /// Stored rather than derived because it is what makes the space totals adjustable
+    /// by difference. `ChatStore.refreshThreadState` used to recompute them by walking
+    /// every thread in the space and every message in each, on every incoming message;
+    /// keeping each thread's contribution here lets one thread's change be applied as a
+    /// delta instead. Spaces whose tallies predate this column get one full walk — see
+    /// ``CachedSpace/threadTallyVersion``.
+    var hiddenUnreadReplyCount: Int = 0
 
     /// Nullify, not cascade: this is an index over messages the space owns, and
     /// dropping a thread row must never take the conversation with it.

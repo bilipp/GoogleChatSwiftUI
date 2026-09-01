@@ -359,6 +359,33 @@ actor ChatStore {
         try space(named: spaceName)?.isMuted ?? false
     }
 
+    // MARK: - History
+
+    /// How long the persistent-history log is kept.
+    ///
+    /// Long enough to be obviously safe, short enough that the log stops growing. Nothing
+    /// in this app reads history at all — cross-context change propagation inside a
+    /// process does not go through it — so the only reason for a window rather than
+    /// "everything" is that the store's own machinery is entitled to the recent end of it.
+    static let historyRetention: TimeInterval = 24 * 60 * 60
+
+    /// Drops history older than ``historyRetention``.
+    ///
+    /// SwiftData tracks persistent history whether or not anyone reads it, and nothing
+    /// prunes it by itself. This store had 37,577 transactions and 77,219 changes logged
+    /// over three weeks — roughly 6MB of a 32MB cache, spread over five indexes on the
+    /// transaction table, every one of them written to on every save. That is pure
+    /// overhead on the writes the sync engine makes constantly, and it grows without
+    /// bound.
+    func pruneHistory(now: Date = Date()) throws {
+        let cutoff = now.addingTimeInterval(-Self.historyRetention)
+        try modelContext.deleteHistory(
+            HistoryDescriptor<DefaultHistoryTransaction>(
+                predicate: #Predicate { $0.timestamp < cutoff }
+            )
+        )
+    }
+
     // MARK: - Search index
 
     /// Fills `searchableText` for rows cached before the column existed.
@@ -421,11 +448,11 @@ actor ChatStore {
         guard let space = try space(named: spaceName) else { return }
         space.lastReadTime = lastReadTime
         space.didFetchReadState = true
-        space.unreadCount = Self.countUnread(in: space, after: lastReadTime)
-        // Threads cached before this arrived had nothing to measure against. This is
-        // the first moment they can be told where the user had got to.
-        Self.seedThreadReadMarks(in: space, at: lastReadTime)
-        Self.refreshThreadState(in: space)
+        space.unreadCount = try countUnread(in: spaceName, after: lastReadTime)
+        // Threads cached before this arrived had nothing to measure against. This is the
+        // first moment they can be told where the user had got to, which is why the mark
+        // is passed to the recount rather than seeded in a pass of its own.
+        try recountThreadTotals(in: space, seedingAt: lastReadTime)
         try modelContext.save()
     }
 
@@ -434,12 +461,25 @@ actor ChatStore {
     /// This is a floor, not a truth: a space whose history has not been backfilled
     /// reports zero even when unread. `hasUnread` covers that case from timestamps
     /// alone, so the badge shows a dot rather than a wrong number.
-    private static func countUnread(in space: CachedSpace, after mark: Date?) -> Int {
+    /// Counted in SQLite rather than by walking `space.messages`, which materialized
+    /// every cached message in the room — 4,685 of them in the busiest space here — to
+    /// arrive at one number.
+    ///
+    /// The optional timestamp is compared through `flatMap` for the reason
+    /// ``TranscriptQueries/messages(in:after:)`` is: SwiftData rejects a force-unwrap
+    /// inside `#Predicate`, and `??` on anything but an optional `Bool` is not an
+    /// expression it accepts.
+    private func countUnread(in spaceName: String, after mark: Date?) throws -> Int {
         guard let mark else { return 0 }
-        return space.messages.count { message in
-            guard let created = message.createTime, !message.isDeleted else { return false }
-            return created > mark
-        }
+        return try modelContext.fetchCount(
+            FetchDescriptor<CachedMessage>(
+                predicate: #Predicate<CachedMessage> { message in
+                    message.space?.name == spaceName
+                        && message.deleteTime == nil
+                        && (message.createTime.flatMap { $0 > mark } ?? false)
+                }
+            )
+        )
     }
 
     /// Clears unread locally after the server has accepted a read update.
@@ -454,8 +494,7 @@ actor ChatStore {
         space.lastReadTime = time
         space.didFetchReadState = true
         space.unreadCount = 0
-        Self.seedThreadReadMarks(in: space, at: time)
-        Self.refreshThreadState(in: space)
+        try recountThreadTotals(in: space, seedingAt: time)
         try modelContext.save()
     }
 
@@ -479,11 +518,18 @@ actor ChatStore {
     ///   there is then nothing to be unread about.
     func unreadMark(spaceName: String) throws -> Date? {
         guard let space = try space(named: spaceName) else { return nil }
-        let newest = space.messages
-            // A message still in flight is not something to come back and read.
-            .filter { !$0.isDeleted && !$0.isPending }
-            .compactMap(\.createTime)
-            .max()
+        // One row, ordered by the fetch. Filtering `space.messages` in memory pulled every
+        // cached message in the room across to find the largest timestamp among them.
+        // A message still in flight is not something to come back and read.
+        var descriptor = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate<CachedMessage> { message in
+                message.space?.name == spaceName
+                    && (message.deleteTime == nil && !message.isPending)
+            },
+            sortBy: [SortDescriptor(\CachedMessage.createTime, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        let newest = try modelContext.fetch(descriptor).first?.createTime
         guard let anchor = newest ?? space.lastActiveTime else { return nil }
         return anchor.addingTimeInterval(Self.unreadMarkGap)
     }
@@ -500,8 +546,8 @@ actor ChatStore {
         guard let space = try space(named: spaceName) else { return }
         space.lastReadTime = time
         space.didFetchReadState = true
-        space.unreadCount = Self.countUnread(in: space, after: time)
-        Self.refreshThreadState(in: space)
+        space.unreadCount = try countUnread(in: spaceName, after: time)
+        try recountThreadTotals(in: space)
         try modelContext.save()
     }
 
@@ -516,19 +562,33 @@ actor ChatStore {
         let previous = thread.didSeedReadState ? thread.lastReadTime : nil
         thread.lastReadTime = time
         thread.didSeedReadState = true
-        if let space = thread.space { Self.refreshThreadState(in: space) }
+        if let space = thread.space { try refreshThreadState(of: thread, in: space) }
         try modelContext.save()
         return previous
     }
 
     /// Clears every thread in a space at once, for "mark all as read".
+    ///
+    /// The only operation here that genuinely has to write to every thread in the room —
+    /// but it needs no message access to do it. Each mark moves to `time`, and every
+    /// cached reply is older than that, so every thread ends with nothing unread and
+    /// nothing hidden. Asking the messages would be asking a question whose answer is
+    /// already known.
+    ///
+    /// `replyCount` and the activity timestamps are left alone deliberately: they describe
+    /// the thread's contents, not the user's position in it, and reading a room does not
+    /// change what is in it.
     func markAllThreadsRead(spaceName: String, at time: Date = Date()) throws {
         guard let space = try space(named: spaceName) else { return }
         for thread in space.threads {
             thread.lastReadTime = time
             thread.didSeedReadState = true
+            thread.unreadReplyCount = 0
+            thread.hiddenUnreadReplyCount = 0
         }
-        Self.refreshThreadState(in: space)
+        space.unreadThreadCount = 0
+        space.unreadThreadReplyCount = 0
+        space.threadTallyVersion = Self.threadTallyVersion
         try modelContext.save()
     }
 
@@ -543,16 +603,14 @@ actor ChatStore {
 
     /// The same, for a batch of threads answered together.
     ///
-    /// A batch rather than a loop over the single-thread call, because recomputing a
-    /// space's tallies means walking every thread in it and every message in each of
-    /// those — see ``refreshThreadState(in:)``. Applied one at a time, opening the
-    /// thread pane of a busy space paid for that walk once per thread checked, and the
-    /// answers arrive twenty-five at a time. The marks all land first; the tallies they
-    /// invalidate are recomputed once per space afterwards, which is the same answer for
-    /// a fraction of the work.
+    /// A batch rather than a loop over the single-thread call: the marks all land first,
+    /// and the tallies they invalidate are recomputed once afterwards, so a thread named
+    /// twice in one batch is not counted twice. The answers arrive twenty-five at a time,
+    /// which is what makes the batching worth having.
     func applyThreadReadStates(_ states: [ThreadReadState]) throws {
         guard !states.isEmpty else { return }
-        var touched: [String: CachedSpace] = [:]
+        // Keyed by thread name so a name repeated in one batch is recomputed once.
+        var touched: [String: CachedThread] = [:]
 
         for state in states {
             guard let thread = try thread(named: state.threadName) else { continue }
@@ -562,24 +620,36 @@ actor ChatStore {
             else { continue }
             thread.lastReadTime = serverTime
             thread.didSeedReadState = true
-            if let space = thread.space { touched[space.name] = space }
+            touched[thread.name] = thread
         }
 
-        for space in touched.values {
-            Self.refreshThreadState(in: space)
+        // Then by space, which is the unit the tallies are kept in — one adjustment per
+        // space rather than one per thread.
+        let bySpace = Dictionary(grouping: touched.values) { $0.space?.name ?? "" }
+        for threads in bySpace.values {
+            guard let space = threads.first?.space else { continue }
+            try refreshThreadState(of: threads, in: space)
         }
         try modelContext.save()
     }
 
     /// Unread threads whose read mark has not yet been checked against the server,
     /// newest first — the only ones where the check can change anything.
+    ///
+    /// Narrowed, ordered and limited by the fetch. Reading `space.threads` and doing all
+    /// three in memory materialized every thread in the room to return at most
+    /// twenty-five names — 0.79s in the busiest space here, on the path a conversation
+    /// opens by.
     func threadsNeedingServerReadState(spaceName: String, limit: Int) throws -> [String] {
-        guard let space = try space(named: spaceName) else { return [] }
-        return space.threads
-            .filter { $0.unreadReplyCount > 0 && !$0.didCheckServerReadState }
-            .sorted { ($0.lastReplyTime ?? .distantPast) > ($1.lastReplyTime ?? .distantPast) }
-            .prefix(limit)
-            .map(\.name)
+        var descriptor = FetchDescriptor<CachedThread>(
+            predicate: #Predicate<CachedThread> { thread in
+                thread.space?.name == spaceName
+                    && (thread.unreadReplyCount > 0 && !thread.didCheckServerReadState)
+            },
+            sortBy: [SortDescriptor(\CachedThread.lastReplyTime, order: .reverse)]
+        )
+        descriptor.fetchLimit = limit
+        return try modelContext.fetch(descriptor).map(\.name)
     }
 
     func spacesWithUnreadThreads() throws -> [String] {
@@ -589,58 +659,212 @@ actor ChatStore {
         return try modelContext.fetch(descriptor).map(\.name)
     }
 
-    /// Gives a read mark to threads that have none, without disturbing threads that
-    /// already carry one.
-    private static func seedThreadReadMarks(in space: CachedSpace, at mark: Date?) {
-        for thread in space.threads where !thread.didSeedReadState {
-            thread.lastReadTime = mark
-            thread.didSeedReadState = true
+    /// Which version of the tally rules this build computes. See
+    /// ``CachedSpace/threadTallyVersion`` — bump this whenever anything in
+    /// ``recomputeTallies(of:spaceMark:)`` changes what it counts.
+    static let threadTallyVersion = 1
+
+    /// Recomputes one thread's tallies, and stores its contribution to the space's.
+    ///
+    /// The inner loop is the original whole-space pass, narrowed to a single thread.
+    /// Nothing about it depends on the other threads in the space, which is the fact
+    /// the incremental path below is built on.
+    /// - Parameter messages: the thread's messages, when the caller already has them from
+    ///   a bulk fetch. Defaults to faulting the relationship, which is right for the one
+    ///   or two threads an incremental update touches and ruinous in a loop over
+    ///   thousands — see ``refreshThreadState(in:)``.
+    private static func recomputeTallies(
+        of thread: CachedThread,
+        spaceMark: Date,
+        messages: [CachedMessage]? = nil
+    ) {
+        let messages = messages ?? thread.messages
+        let mark = thread.lastReadTime ?? .distantPast
+        var replies = 0
+        var newestReply: Date?
+        var newestActivity: Date?
+        var unread = 0
+        var hidden = 0
+
+        for message in messages {
+            guard !message.isDeleted else { continue }
+            let created = message.createTime ?? .distantPast
+            if created > (newestActivity ?? .distantPast) { newestActivity = created }
+            guard message.isThreadReply else { continue }
+
+            replies += 1
+            if created > (newestReply ?? .distantPast) { newestReply = created }
+            guard thread.didSeedReadState, created > mark else { continue }
+            unread += 1
+            // Replies at or before the space's own mark are invisible to
+            // `unreadCount`, so only those are the badge's to add.
+            if created <= spaceMark { hidden += 1 }
         }
+
+        thread.replyCount = replies
+        thread.lastReplyTime = newestReply
+        thread.lastActivityTime = newestActivity
+        thread.unreadReplyCount = unread
+        thread.hiddenUnreadReplyCount = hidden
     }
 
     /// Recomputes every thread tally in a space, and the space's own thread totals.
     ///
-    /// One pass over the space's threads rather than incremental bookkeeping at each
-    /// call site: the inputs (replies arriving, marks moving, messages being deleted)
-    /// change from several directions, and a counter nudged from all of them drifts.
-    private static func refreshThreadState(in space: CachedSpace) {
+    /// The honest, expensive answer, and the only one that is correct when the *space's*
+    /// read mark moves: `spaceMark` is an input to every thread's hidden count, so
+    /// moving it invalidates all of them at once. Keep this for those cases, and for the
+    /// recount that brings a space computed by older rules up to date.
+    ///
+    /// Reserved for ``backfillThreads()``, which is the one caller that genuinely has to
+    /// compute every thread's reply count from nothing. Everything else recounts through
+    /// ``recountThreadTotals(in:seedingAt:)``, which reaches the same totals by touching
+    /// only the threads that can contribute to them.
+    ///
+    /// The messages arrive in a single fetch rather than a fault per thread. Faulting
+    /// `thread.messages` in a loop is what made this cost 668ms for 5,106 threads in the
+    /// busiest space here — one SQLite round trip per thread — against 489ms for one
+    /// fetch of the same rows, and the gap widens as the room grows.
+    private func refreshThreadState(in space: CachedSpace) throws {
+        let spaceName = space.name
+        let messages = try modelContext.fetch(
+            FetchDescriptor<CachedMessage>(
+                predicate: #Predicate<CachedMessage> { $0.space?.name == spaceName }
+            )
+        )
+        var byThread: [String: [CachedMessage]] = [:]
+        for message in messages {
+            guard let threadName = message.threadName else { continue }
+            byThread[threadName, default: []].append(message)
+        }
+
         var unreadThreads = 0
         var hiddenUnreadReplies = 0
         let spaceMark = space.lastReadTime ?? .distantPast
 
         for thread in space.threads {
-            let mark = thread.lastReadTime ?? .distantPast
-            var replies = 0
-            var newestReply: Date?
-            var newestActivity: Date?
-            var unread = 0
-            var hidden = 0
-
-            for message in thread.messages {
-                guard !message.isDeleted else { continue }
-                let created = message.createTime ?? .distantPast
-                if created > (newestActivity ?? .distantPast) { newestActivity = created }
-                guard message.isThreadReply else { continue }
-
-                replies += 1
-                if created > (newestReply ?? .distantPast) { newestReply = created }
-                guard thread.didSeedReadState, created > mark else { continue }
-                unread += 1
-                // Replies at or before the space's own mark are invisible to
-                // `unreadCount`, so only those are the badge's to add.
-                if created <= spaceMark { hidden += 1 }
-            }
-
-            thread.replyCount = replies
-            thread.lastReplyTime = newestReply
-            thread.lastActivityTime = newestActivity
-            thread.unreadReplyCount = unread
-            if unread > 0 { unreadThreads += 1 }
-            hiddenUnreadReplies += hidden
+            Self.recomputeTallies(
+                of: thread,
+                spaceMark: spaceMark,
+                messages: byThread[thread.name] ?? []
+            )
+            if thread.unreadReplyCount > 0 { unreadThreads += 1 }
+            hiddenUnreadReplies += thread.hiddenUnreadReplyCount
         }
 
         space.unreadThreadCount = unreadThreads
         space.unreadThreadReplyCount = hiddenUnreadReplies
+        space.threadTallyVersion = Self.threadTallyVersion
+    }
+
+    /// Recomputes the named threads only, and moves the space's totals by the
+    /// difference.
+    ///
+    /// For everything that changes one thread, or a handful: a reply arriving, a thread
+    /// being opened, a message being deleted, a send being confirmed. Each thread's
+    /// tallies depend only on its own messages and its own mark, so recomputing the ones
+    /// that changed and adjusting the space totals by what they used to contribute gives
+    /// the same answer as the full walk for a fraction of the work — bounded by the
+    /// threads touched rather than by the size of the room.
+    ///
+    /// Falls back to a recount when the space's totals were computed by older rules,
+    /// since a delta is only meaningful against a total that agrees with it. That is what
+    /// keeps this from drifting: the one way an incremental counter goes wrong is being
+    /// added to a number that came from somewhere else.
+    private func refreshThreadState(
+        of threads: some Collection<CachedThread>,
+        in space: CachedSpace
+    ) throws {
+        guard space.threadTallyVersion == Self.threadTallyVersion else {
+            try recountThreadTotals(in: space)
+            return
+        }
+        guard !threads.isEmpty else { return }
+
+        let spaceMark = space.lastReadTime ?? .distantPast
+        var unreadThreadDelta = 0
+        var hiddenDelta = 0
+
+        for thread in threads {
+            let wasUnread = thread.unreadReplyCount > 0
+            let wasHidden = thread.hiddenUnreadReplyCount
+            Self.recomputeTallies(of: thread, spaceMark: spaceMark)
+            unreadThreadDelta += (thread.unreadReplyCount > 0 ? 1 : 0) - (wasUnread ? 1 : 0)
+            hiddenDelta += thread.hiddenUnreadReplyCount - wasHidden
+        }
+
+        // Clamped rather than trusted. A delta is arithmetic over a stored number, and a
+        // negative badge is a worse failure than a stale one.
+        space.unreadThreadCount = max(0, space.unreadThreadCount + unreadThreadDelta)
+        space.unreadThreadReplyCount = max(0, space.unreadThreadReplyCount + hiddenDelta)
+    }
+
+    /// The single-thread form, which is what most callers have.
+    private func refreshThreadState(of thread: CachedThread, in space: CachedSpace) throws {
+        try refreshThreadState(of: CollectionOfOne(thread), in: space)
+    }
+
+    /// Threads that a move of the *space's* read mark can affect — far fewer than all of
+    /// them, and the reason opening a busy conversation no longer costs seconds.
+    ///
+    /// A thread's own tallies are a function of its own mark and its own messages, and a
+    /// space-level mark is neither. The single quantity that does depend on it is
+    /// `hiddenUnreadReplyCount`, the unread replies at or before the space's mark — and
+    /// hidden is by definition a subset of unread, so a thread with nothing unread has
+    /// nothing that can change. Threads with no mark of their own join them, because this
+    /// is the moment they get one.
+    ///
+    /// Two clauses plus the relationship traversal is as much as SwiftData's predicate
+    /// solver will take here, which is why the fetch looks like this rather than reading
+    /// `space.threads` and filtering.
+    private func threadsAffectedBySpaceMark(in spaceName: String) throws -> [CachedThread] {
+        try modelContext.fetch(
+            FetchDescriptor<CachedThread>(
+                predicate: #Predicate<CachedThread> { thread in
+                    thread.space?.name == spaceName
+                        && (thread.unreadReplyCount > 0 || !thread.didSeedReadState)
+                }
+            )
+        )
+    }
+
+    /// Recomputes a space's thread totals, and the tallies of the threads that feed them.
+    ///
+    /// Exact rather than approximate, and the argument matters because it is the whole
+    /// saving. Both totals are sums over threads with unread replies —
+    /// `unreadThreadCount` counts them, and `unreadThreadReplyCount` adds up a quantity
+    /// that is zero wherever unread is zero — so a set that contains every thread with
+    /// unread replies is enough to rebuild both from scratch. A thread left out had
+    /// nothing unread and no mark to move, so it still has nothing unread, and it
+    /// contributes zero to a sum computed from nothing.
+    ///
+    /// - Parameter seedingAt: the mark to give threads that have none, when the space's
+    ///   own mark has just moved. Nil leaves them unseeded, which is what a recount that
+    ///   is not itself a read-state change wants.
+    private func recountThreadTotals(
+        in space: CachedSpace,
+        seedingAt seed: Date??  = nil
+    ) throws {
+        let affected = try threadsAffectedBySpaceMark(in: space.name)
+
+        if let seed {
+            for thread in affected where !thread.didSeedReadState {
+                thread.lastReadTime = seed
+                thread.didSeedReadState = true
+            }
+        }
+
+        let spaceMark = space.lastReadTime ?? .distantPast
+        var unreadThreads = 0
+        var hiddenUnreadReplies = 0
+        for thread in affected {
+            Self.recomputeTallies(of: thread, spaceMark: spaceMark)
+            if thread.unreadReplyCount > 0 { unreadThreads += 1 }
+            hiddenUnreadReplies += thread.hiddenUnreadReplyCount
+        }
+
+        space.unreadThreadCount = unreadThreads
+        space.unreadThreadReplyCount = hiddenUnreadReplies
+        space.threadTallyVersion = Self.threadTallyVersion
     }
 
     /// Bumps the unread counter for a message that arrived while elsewhere.
@@ -849,10 +1073,12 @@ actor ChatStore {
         )
         let existing = try modelContext.fetch(descriptor)
         var byName = Dictionary(uniqueKeysWithValues: existing.map { ($0.name, $0) })
-        var threadsByName = Dictionary(
-            space.threads.map { ($0.name, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // Only the threads this batch names, fetched by name. Seeded from `space.threads`
+        // this faulted every thread in the room — 2,555 of them in the busiest space
+        // here — on every merge, the single-message merge an arriving event performs
+        // included.
+        var threadsByName = try threads(named: Set(messages.compactMap(\.thread?.name)))
+        var touchedThreads: [String: CachedThread] = [:]
 
         for message in messages {
             let target: CachedMessage
@@ -868,13 +1094,19 @@ actor ChatStore {
                 target = created
             }
             if space.isThreaded, let threadName = target.threadName {
-                target.thread = thread(named: threadName, in: space, cache: &threadsByName)
+                let row = thread(named: threadName, in: space, cache: &threadsByName)
+                target.thread = row
+                touchedThreads[threadName] = row
             }
             syncReactions(of: message, on: target)
             syncAttachments(of: message, on: target)
         }
 
-        if space.isThreaded { Self.refreshThreadState(in: space) }
+        // Only the threads this batch put a message into can have changed tallies, which
+        // is what keeps an arriving message off the whole-space walk.
+        if space.isThreaded {
+            try refreshThreadState(of: touchedThreads.values, in: space)
+        }
 
         // The sidebar sorts and scopes on `lastActiveTime`, and Chat only revises it
         // on the space record — which the event stream never delivers. Without this a
@@ -887,6 +1119,21 @@ actor ChatStore {
            newest > (space.lastActiveTime ?? .distantPast) {
             space.lastActiveTime = newest
         }
+    }
+
+    /// The index rows for a set of thread names, keyed by name — the cache
+    /// ``thread(named:in:cache:)`` is seeded with.
+    ///
+    /// A fetch by name rather than a walk of `space.threads`, which is the difference
+    /// between reading the handful of threads a merge touches and faulting every thread
+    /// in the room. Names are globally unique (`spaces/AAAA/threads/BBBB`), so no space
+    /// clause is needed to make this exact.
+    private func threads(named names: Set<String>) throws -> [String: CachedThread] {
+        guard !names.isEmpty else { return [:] }
+        let found = try modelContext.fetch(
+            FetchDescriptor<CachedThread>(predicate: #Predicate { names.contains($0.name) })
+        )
+        return Dictionary(found.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Finds or creates the index row for a thread.
@@ -936,7 +1183,7 @@ actor ChatStore {
                 linkedHere += 1
             }
             guard linkedHere > 0 else { continue }
-            Self.refreshThreadState(in: space)
+            try refreshThreadState(in: space)
             linked += linkedHere
         }
 
@@ -991,15 +1238,12 @@ actor ChatStore {
         // Replying to a thread is reading it. Without this your own reply would come
         // straight back as an unread one.
         if space.isThreaded, let threadName {
-            var threadsByName = Dictionary(
-                space.threads.map { ($0.name, $0) },
-                uniquingKeysWith: { first, _ in first }
-            )
+            var threadsByName = try threads(named: [threadName])
             let row = thread(named: threadName, in: space, cache: &threadsByName)
             placeholder.thread = row
             row.lastReadTime = Date()
             row.didSeedReadState = true
-            Self.refreshThreadState(in: space)
+            try refreshThreadState(of: row, in: space)
         }
 
         try modelContext.save()
@@ -1028,7 +1272,7 @@ actor ChatStore {
                created > (thread.lastReadTime ?? .distantPast) {
                 thread.lastReadTime = created
                 thread.didSeedReadState = true
-                Self.refreshThreadState(in: space)
+                try refreshThreadState(of: thread, in: space)
             }
         }
         try modelContext.save()
@@ -1078,7 +1322,9 @@ actor ChatStore {
             }
         }
         // A deleted reply is not one the user still has to go and read.
-        if let space = message.thread?.space { Self.refreshThreadState(in: space) }
+        if let thread = message.thread, let space = thread.space {
+            try refreshThreadState(of: thread, in: space)
+        }
         try modelContext.save()
     }
 

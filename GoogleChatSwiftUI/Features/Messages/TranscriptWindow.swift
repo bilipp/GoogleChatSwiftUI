@@ -84,6 +84,35 @@ nonisolated enum TranscriptQueries {
         return descriptor
     }
 
+    /// The threads the transcript's window can possibly need, most recently active first.
+    ///
+    /// Bounded by the same `limit` as the window, and that bound is exact rather than a
+    /// guess. A thread's `lastActivityTime` is the newest of its messages, so any thread
+    /// holding a message in the window has a `lastActivityTime` at least as recent as the
+    /// oldest message in it — and only `limit` messages are that recent, so at most
+    /// `limit` threads can qualify. Taking the newest `limit` threads therefore contains
+    /// every thread the window can ask about.
+    ///
+    /// Unbounded, this was the transcript's most expensive query by a wide margin: in a
+    /// room where every message starts its own thread — an alert feed, which the busiest
+    /// spaces here are — it materialized one `CachedThread` per message in the *whole*
+    /// space on the main thread, and `@Query` refetches on every write to the store. At
+    /// 2,555 threads that is 23ms of SQLite before CoreData has built an object, and
+    /// ``TranscriptIndex`` then walked all of them again per body evaluation.
+    ///
+    /// Threads with no `lastActivityTime` sort last and fall outside the bound. That
+    /// costs nothing: the field is nil only for a thread whose tallies have never been
+    /// computed or whose every message is deleted, and both have a reply count of zero,
+    /// which is what the transcript reads when a thread is missing anyway.
+    static func threads(in spaceName: String, limit: Int) -> FetchDescriptor<CachedThread> {
+        var descriptor = FetchDescriptor<CachedThread>(
+            predicate: #Predicate<CachedThread> { $0.space?.name == spaceName },
+            sortBy: [SortDescriptor(\CachedThread.lastActivityTime, order: .reverse)]
+        )
+        descriptor.fetchLimit = limit
+        return descriptor
+    }
+
     /// Every message cached for a space, for counting. See
     /// ``TranscriptWindow/coversEverythingCached(_:)`` for what the count decides.
     static func allMessages(in spaceName: String) -> FetchDescriptor<CachedMessage> {

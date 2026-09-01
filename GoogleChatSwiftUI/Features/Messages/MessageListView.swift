@@ -246,11 +246,7 @@ private struct ConversationTranscript: View {
         self.onReachStart = onReachStart
 
         _messages = Query(TranscriptQueries.window(in: spaceName, limit: limit))
-
-        _threads = Query(
-            filter: #Predicate<CachedThread> { $0.space?.name == spaceName },
-            sort: [SortDescriptor(\CachedThread.lastActivityTime, order: .reverse)]
-        )
+        _threads = Query(TranscriptQueries.threads(in: spaceName, limit: limit))
     }
 
     var body: some View {

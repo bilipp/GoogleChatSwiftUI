@@ -89,6 +89,9 @@ struct SpacesListView: View {
             // already exist rather than leaving the cache's threads unseeded.
             await session.prepareThreadIndex()
             await session.loadReadStates()
+            // Last, because it is housekeeping and everything above it is the app
+            // becoming usable.
+            await session.pruneHistory()
         }
         // Subsequent clicks, while the app is already running.
         .onChange(of: NotificationRouter.shared.pendingSpaceName) { _, pending in

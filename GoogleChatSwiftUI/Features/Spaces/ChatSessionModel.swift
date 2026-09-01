@@ -331,10 +331,28 @@ final class ChatSessionModel {
         }
     }
 
+    /// Trims the persistent-history log, which nothing reads and nothing else prunes.
+    ///
+    /// Best-effort and silent: the log is overhead, so failing to trim it is not
+    /// something to tell the user about.
+    func pruneHistory() async {
+        do {
+            try await sync.pruneHistory()
+        } catch {
+            logger.info("History prune skipped: \(error.localizedDescription)")
+        }
+    }
+
     /// Indexes existing cached messages so search covers them.
+    ///
+    /// Once per installation, not once per launch — see ``BackfillLedger``. Every message
+    /// merged since is indexed as it lands, by `CachedMessage.apply(_:)`, so there is
+    /// nothing here for a second run to find.
     func prepareSearchIndex() async {
+        guard !BackfillLedger.isComplete(.searchIndex) else { return }
         do {
             let indexed = try await sync.backfillSearchIndex()
+            BackfillLedger.markComplete(.searchIndex)
             if indexed > 0 { logger.info("Indexed \(indexed) message(s) for search") }
         } catch {
             logger.error("Search index backfill failed: \(error.localizedDescription)")
@@ -655,9 +673,14 @@ final class ChatSessionModel {
     }
 
     /// Builds thread rows over messages cached before threads were tracked.
+    ///
+    /// Once per installation, not once per launch — see ``BackfillLedger``. Messages
+    /// merged since are linked to their thread as they land, by `ChatStore.upsert`.
     func prepareThreadIndex() async {
+        guard !BackfillLedger.isComplete(.threadIndex) else { return }
         do {
             let linked = try await sync.backfillThreads()
+            BackfillLedger.markComplete(.threadIndex)
             if linked > 0 { logger.info("Linked \(linked) message(s) to threads") }
         } catch {
             logger.error("Thread index backfill failed: \(error.localizedDescription)")

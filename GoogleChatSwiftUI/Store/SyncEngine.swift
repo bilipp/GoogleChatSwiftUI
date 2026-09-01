@@ -796,6 +796,12 @@ nonisolated struct SyncEngine: Sendable {
         try await store.spacesWithUnreadThreads()
     }
 
+    /// Drops the persistent-history log SwiftData keeps and nothing here reads. Local
+    /// only. See ``ChatStore/pruneHistory(now:)``.
+    func pruneHistory() async throws {
+        try await store.pruneHistory()
+    }
+
     /// Indexes cached messages for search. Local only, so it is cheap to run fully.
     @discardableResult
     func backfillSearchIndex() async throws -> Int {
