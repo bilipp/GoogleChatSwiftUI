@@ -687,7 +687,7 @@ actor ChatStore {
     /// change what is in it.
     func markAllThreadsRead(spaceName: String, at time: Date = Date()) throws {
         guard let space = try space(named: spaceName) else { return }
-        for thread in space.threads {
+        for thread in try threads(inSpace: spaceName) {
             thread.lastReadTime = time
             thread.didSeedReadState = true
             thread.unreadReplyCount = 0
@@ -768,7 +768,7 @@ actor ChatStore {
 
     /// Which version of the tally rules this build computes. See
     /// ``CachedSpace/threadTallyVersion`` — bump this whenever anything in
-    /// ``recomputeTallies(of:spaceMark:)`` changes what it counts.
+    /// ``recomputeTallies(of:spaceMark:messages:)`` changes what it counts.
     static let threadTallyVersion = 1
 
     /// Recomputes one thread's tallies, and stores its contribution to the space's.
@@ -776,31 +776,46 @@ actor ChatStore {
     /// The inner loop is the original whole-space pass, narrowed to a single thread.
     /// Nothing about it depends on the other threads in the space, which is the fact
     /// the incremental path below is built on.
-    /// - Parameter messages: the thread's messages, when the caller already has them from
-    ///   a bulk fetch. Defaults to faulting the relationship, which is right for the one
-    ///   or two threads an incremental update touches and ruinous in a loop over
-    ///   thousands — see ``refreshThreadState(in:)``.
+    /// - Parameter messages: the thread's messages, from the caller's bulk fetch. Required
+    ///   rather than defaulting to `thread.messages`, and that is the point: faulting the
+    ///   relationship here was both a SQLite round trip per thread and a deferred to-many
+    ///   fault per thread, and the latter is what crashed build 21 against a main context
+    ///   faulting a relationship of its own. Every caller now goes through
+    ///   ``messagesByThread(named:)``, so there is no path left that faults.
     private static func recomputeTallies(
         of thread: CachedThread,
         spaceMark: Date,
-        messages: [CachedMessage]? = nil
+        messages: [CachedMessage]
     ) {
-        let messages = messages ?? thread.messages
         let mark = thread.lastReadTime ?? .distantPast
         var replies = 0
         var newestReply: Date?
         var newestActivity: Date?
         var unread = 0
         var hidden = 0
+        // The two columns the thread list reads instead of walking `messages` — see
+        // ``CachedThread/rootMessageName``. Tracked here because this is already the one
+        // pass over a thread's messages, so they cost nothing to carry.
+        var root: CachedMessage?
+        var newestReplyName: String?
 
         for message in messages {
-            guard !message.isDeleted else { continue }
             let created = message.createTime ?? .distantPast
+
+            // Before the deleted guard: `root` has never excluded deleted messages, and
+            // must not start to — a thread whose opening message was deleted still shows
+            // "Message deleted" as its snippet rather than losing its starter entirely.
+            if isRoot(message, betterThan: root) { root = message }
+
+            guard !message.isDeleted else { continue }
             if created > (newestActivity ?? .distantPast) { newestActivity = created }
             guard message.isThreadReply else { continue }
 
             replies += 1
-            if created > (newestReply ?? .distantPast) { newestReply = created }
+            if created > (newestReply ?? .distantPast) {
+                newestReply = created
+                newestReplyName = message.name
+            }
             guard thread.didSeedReadState, created > mark else { continue }
             unread += 1
             // Replies at or before the space's own mark are invisible to
@@ -813,6 +828,20 @@ actor ChatStore {
         thread.lastActivityTime = newestActivity
         thread.unreadReplyCount = unread
         thread.hiddenUnreadReplyCount = hidden
+        thread.rootMessageName = root?.name
+        thread.lastReplyMessageName = newestReplyName
+    }
+
+    /// Whether `candidate` is a better answer for the thread's root than `incumbent`.
+    ///
+    /// Mirrors ``CachedThread/root``: a non-reply beats a reply, and among equals the
+    /// earliest wins. The relationship's own `first` is used there for want of an order —
+    /// a to-many relationship has none — so this is the same rule made deterministic
+    /// rather than a different one.
+    private static func isRoot(_ candidate: CachedMessage, betterThan incumbent: CachedMessage?) -> Bool {
+        guard let incumbent else { return true }
+        if candidate.isThreadReply != incumbent.isThreadReply { return !candidate.isThreadReply }
+        return (candidate.createTime ?? .distantPast) < (incumbent.createTime ?? .distantPast)
     }
 
     /// Recomputes every thread tally in a space, and the space's own thread totals.
@@ -848,7 +877,7 @@ actor ChatStore {
         var hiddenUnreadReplies = 0
         let spaceMark = space.lastReadTime ?? .distantPast
 
-        for thread in space.threads {
+        for thread in try threads(inSpace: spaceName) {
             Self.recomputeTallies(
                 of: thread,
                 spaceMark: spaceMark,
@@ -888,13 +917,18 @@ actor ChatStore {
         guard !threads.isEmpty else { return }
 
         let spaceMark = space.lastReadTime ?? .distantPast
+        let byThread = try messagesByThread(named: threads.map(\.name))
         var unreadThreadDelta = 0
         var hiddenDelta = 0
 
         for thread in threads {
             let wasUnread = thread.unreadReplyCount > 0
             let wasHidden = thread.hiddenUnreadReplyCount
-            Self.recomputeTallies(of: thread, spaceMark: spaceMark)
+            Self.recomputeTallies(
+                of: thread,
+                spaceMark: spaceMark,
+                messages: byThread[thread.name] ?? []
+            )
             unreadThreadDelta += (thread.unreadReplyCount > 0 ? 1 : 0) - (wasUnread ? 1 : 0)
             hiddenDelta += thread.hiddenUnreadReplyCount - wasHidden
         }
@@ -961,10 +995,15 @@ actor ChatStore {
         }
 
         let spaceMark = space.lastReadTime ?? .distantPast
+        let byThread = try messagesByThread(named: affected.map(\.name))
         var unreadThreads = 0
         var hiddenUnreadReplies = 0
         for thread in affected {
-            Self.recomputeTallies(of: thread, spaceMark: spaceMark)
+            Self.recomputeTallies(
+                of: thread,
+                spaceMark: spaceMark,
+                messages: byThread[thread.name] ?? []
+            )
             if thread.unreadReplyCount > 0 { unreadThreads += 1 }
             hiddenUnreadReplies += thread.hiddenUnreadReplyCount
         }
@@ -1157,7 +1196,11 @@ actor ChatStore {
             }
         }
 
-        for row in message.reactions {
+        for row in try modelContext.fetch(
+            FetchDescriptor<CachedReaction>(
+                predicate: #Predicate<CachedReaction> { $0.message?.name == messageName }
+            )
+        ) {
             modelContext.delete(row)
         }
         for (emoji, count) in counts {
@@ -1175,9 +1218,14 @@ actor ChatStore {
         guard !messages.isEmpty else { return }
 
         let names = Set(messages.map(\.name))
-        let descriptor = FetchDescriptor<CachedMessage>(
+        var descriptor = FetchDescriptor<CachedMessage>(
             predicate: #Predicate { names.contains($0.name) }
         )
+        // `syncReactions` and `syncAttachments` read both relationships on every message
+        // below. Prefetched, that is one batched fault for the page; left deferred it was
+        // two per message, each one a lock-free read of the store's row cache while the
+        // main context was writing to it — see the build 21 crash.
+        descriptor.relationshipKeyPathsForPrefetching = [\.reactions, \.attachments]
         let existing = try modelContext.fetch(descriptor)
         var byName = Dictionary(uniqueKeysWithValues: existing.map { ($0.name, $0) })
         // Only the threads this batch names, fetched by name. Seeded from `space.threads`
@@ -1243,6 +1291,47 @@ actor ChatStore {
         return Dictionary(found.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// Every thread row in a space.
+    ///
+    /// A fetch rather than `space.threads`. The relationship gives the same rows, but it
+    /// gives them as a deferred to-many fault — the read that crashed build 21 when the
+    /// main context happened to be faulting a relationship of its own against the same
+    /// store cache. One fetch is one trip through the SQL queue instead.
+    private func threads(inSpace spaceName: String) throws -> [CachedThread] {
+        try modelContext.fetch(
+            FetchDescriptor<CachedThread>(
+                predicate: #Predicate<CachedThread> { $0.space?.name == spaceName }
+            )
+        )
+    }
+
+    /// The messages of the named threads, grouped by thread name.
+    ///
+    /// The bulk form of `thread.messages`, and the reason ``recomputeTallies(of:spaceMark:messages:)``
+    /// takes its messages as an argument: faulting the relationship once per thread is a
+    /// SQLite round trip per thread, and — the point here — a deferred to-many fault per
+    /// thread. One fetch answers for the whole batch.
+    ///
+    /// Keyed on `threadName` rather than the relationship, which is how
+    /// ``refreshThreadState(in:)`` has always grouped them.
+    private func messagesByThread(named names: [String]) throws -> [String: [CachedMessage]] {
+        guard !names.isEmpty else { return [:] }
+        // `[String?]`, not `Set<String>`: `threadName` is optional, and SwiftData will
+        // only translate `contains` where the element type matches the column exactly.
+        let wanted: [String?] = names
+        let messages = try modelContext.fetch(
+            FetchDescriptor<CachedMessage>(
+                predicate: #Predicate<CachedMessage> { wanted.contains($0.threadName) }
+            )
+        )
+        var byThread: [String: [CachedMessage]] = [:]
+        for message in messages {
+            guard let threadName = message.threadName else { continue }
+            byThread[threadName, default: []].append(message)
+        }
+        return byThread
+    }
+
     /// Finds or creates the index row for a thread.
     ///
     /// A new thread inherits the space's read mark, so history the space already
@@ -1279,12 +1368,26 @@ actor ChatStore {
         var linked = 0
 
         for space in spaces where space.isThreaded {
+            let spaceName = space.name
             var threadsByName = Dictionary(
-                space.threads.map { ($0.name, $0) },
+                try threads(inSpace: spaceName).map { ($0.name, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
+            // Fetched rather than read off `space.messages`, and narrowed to the rows
+            // this actually links: the walk materialized every message in the room to
+            // find the unlinked ones, and did it as a to-many fault. Messages with no
+            // `threadName` are skipped by SQLite instead of by the loop.
+            let unlinked = try modelContext.fetch(
+                FetchDescriptor<CachedMessage>(
+                    predicate: #Predicate<CachedMessage> { message in
+                        message.space?.name == spaceName
+                            && message.thread == nil
+                            && message.threadName != nil
+                    }
+                )
+            )
             var linkedHere = 0
-            for message in space.messages where message.thread == nil {
+            for message in unlinked {
                 guard let threadName = message.threadName else { continue }
                 message.thread = thread(named: threadName, in: space, cache: &threadsByName)
                 linkedHere += 1
@@ -1424,9 +1527,17 @@ actor ChatStore {
         guard let message = try message(named: name) else { return }
         tombstone(message)
         if includingThreadReplies, let thread = message.thread {
-            for reply in thread.messages where reply.isThreadReply && !reply.isDeleted {
-                tombstone(reply)
-            }
+            let threadName = thread.name
+            let replies = try modelContext.fetch(
+                FetchDescriptor<CachedMessage>(
+                    predicate: #Predicate<CachedMessage> { reply in
+                        reply.threadName == threadName
+                            && reply.isThreadReply
+                            && reply.deleteTime == nil
+                    }
+                )
+            )
+            for reply in replies { tombstone(reply) }
         }
         // A deleted reply is not one the user still has to go and read.
         if let thread = message.thread, let space = thread.space {
@@ -1505,7 +1616,14 @@ actor ChatStore {
     /// Backfill state for a space: the cursor to resume from, and whether to bother.
     func backfillState(for spaceName: String) throws -> (token: String?, complete: Bool, hasMessages: Bool) {
         guard let space = try space(named: spaceName) else { return (nil, false, false) }
-        return (space.backfillPageToken, space.backfillComplete, !space.messages.isEmpty)
+        // `fetchCount`, not `!space.messages.isEmpty`: the relationship answers the same
+        // question by faulting every message in the space into memory.
+        let cached = try modelContext.fetchCount(
+            FetchDescriptor<CachedMessage>(
+                predicate: #Predicate<CachedMessage> { $0.space?.name == spaceName }
+            )
+        )
+        return (space.backfillPageToken, space.backfillComplete, cached > 0)
     }
 }
 

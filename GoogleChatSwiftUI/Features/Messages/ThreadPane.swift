@@ -21,10 +21,7 @@ struct ThreadPane: View {
     init(spaceName: String, threadName: String) {
         self.spaceName = spaceName
         self.threadName = threadName
-        _messages = Query(
-            filter: #Predicate<CachedMessage> { $0.threadName == threadName },
-            sort: [SortDescriptor(\CachedMessage.createTime, order: .forward)]
-        )
+        _messages = Query(TranscriptQueries.threadMessages(named: threadName))
     }
 
     var body: some View {

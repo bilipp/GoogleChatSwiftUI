@@ -235,7 +235,22 @@ final class CachedMessage {
     /// b-tree before it could take the newest 150. In the busiest space here — 2,555
     /// messages — that was 58ms of SQLite per fetch, cold; with this it is a covering
     /// index scan that stops after 150 rows.
-    #Index<CachedMessage>([\.space, \.createTime])
+    ///
+    /// The second entry covers the lookups that go through `threadName` rather than
+    /// the `thread` relationship — the thread pane's transcript,
+    /// `ChatStore.messagesByThread`, and the cascade in `ChatStore.deleteMessage`.
+    ///
+    /// The relationship has had an index since CoreData made one for it, so faulting
+    /// `thread.messages` was always a b-tree seek. Reading the same rows by name was
+    /// not: `threadName` is a plain column, and every one of those fetches scanned the
+    /// whole message table. Measured on this cache — 31,427 messages — that is 18ms a
+    /// lookup against 0.02ms through the relationship, and the fetches run per sync
+    /// batch, so the scans arrive continuously rather than once.
+    ///
+    /// Compound with `createTime` for the thread pane, which asks for one thread's
+    /// messages oldest first: the second column makes that a covering index scan
+    /// instead of a sort into a temp b-tree.
+    #Index<CachedMessage>([\.space, \.createTime], [\.threadName, \.createTime])
 
     /// Chat resource name, e.g. `spaces/AAAA/messages/BBBB`.
     /// This is the dedupe key that makes pagination and the event stream converge.
@@ -638,6 +653,24 @@ final class CachedThread {
     /// delta instead. Spaces whose tallies predate this column get one full walk — see
     /// ``CachedSpace/threadTallyVersion``.
     var hiddenUnreadReplyCount: Int = 0
+
+    /// The root message's resource name, and the sender of the newest reply.
+    ///
+    /// Denormalized out of `messages` because the thread list reads both once per row,
+    /// and reading them through the relationship is a deferred to-many fault per row —
+    /// the pattern that crashed build 21 when the store actor happened to be faulting a
+    /// relationship of its own at the same moment. See ``ChatStore/recomputeTallies``,
+    /// which maintains them, and ``CachedThread/root``.
+    ///
+    /// `rootMessageName` doubles as the flag for whether either has been computed: both
+    /// are written together, and a thread that has never been through a tally recompute
+    /// has neither. Readers fall back to the relationship when it is nil.
+    var rootMessageName: String?
+    /// Resource name of the newest non-deleted reply — whose sender the thread list
+    /// names. The message rather than the sender, so the row resolves it exactly the way
+    /// it resolves the root: through ``SenderIdentity``, which falls back to the name on
+    /// the message itself where the directory has not answered for the sender yet.
+    var lastReplyMessageName: String?
 
     /// Nullify, not cascade: this is an index over messages the space owns, and
     /// dropping a thread row must never take the conversation with it.

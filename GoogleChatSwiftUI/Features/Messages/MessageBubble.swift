@@ -123,7 +123,12 @@ struct MessageBubble: View {
                         .contextMenu { contextMenu }
                 }
 
-                if !message.attachments.isEmpty {
+                // Gated on the stored count rather than on the relationship: the
+                // count comes off the message row already in memory, and the
+                // overwhelming majority of messages have no attachments at all, so this
+                // is the difference between touching the relationship on every row and
+                // touching it only where there is something to draw.
+                if message.attachmentCount > 0, !message.attachments.isEmpty {
                     AttachmentList(
                         attachments: message.attachments.map(\.display),
                         isOwn: isOwn
@@ -213,7 +218,11 @@ struct MessageBubble: View {
     /// Replies that deleting this message would take with it, as far as the cache knows.
     private var cascadingReplyCount: Int {
         guard !message.isThreadReply, let thread = message.thread else { return 0 }
-        return thread.messages.count { $0.isThreadReply && !$0.isDeleted }
+        // The stored tally, which counts exactly this — non-deleted replies, excluding
+        // the root — and is maintained by `ChatStore.recomputeTallies` on every path
+        // that changes a thread's contents. Walking `thread.messages` for it faulted
+        // the whole thread in to produce a number already sitting on the row.
+        return thread.replyCount
     }
 
     private var threadDeleteWarning: String {

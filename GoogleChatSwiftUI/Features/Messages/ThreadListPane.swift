@@ -12,6 +12,7 @@ import SwiftUI
 /// here. The filter is a control, not a mode — the empty state offers the way out.
 struct ThreadListPane: View {
     @Environment(ChatSessionModel.self) private var session
+    @Environment(\.modelContext) private var modelContext
     @Query private var threads: [CachedThread]
 
     private let spaceName: String
@@ -21,8 +22,14 @@ struct ThreadListPane: View {
 
     init(spaceName: String) {
         self.spaceName = spaceName
+        // `replyCount > 0` belongs in the predicate, not in a filter over the result.
+        // A threaded space gives every message a thread name, so most rows here are
+        // one-message threads this list never shows — 20,200 of them in the busiest
+        // space against none with a reply. Filtered in Swift, all 20,200 were
+        // materialized as model objects on the main thread, and again on every save
+        // the store made. Filtered in SQLite, they are never fetched.
         _threads = Query(
-            filter: #Predicate<CachedThread> { $0.space?.name == spaceName },
+            filter: #Predicate<CachedThread> { $0.space?.name == spaceName && $0.replyCount > 0 },
             sort: [SortDescriptor(\CachedThread.lastActivityTime, order: .reverse)]
         )
     }
@@ -133,14 +140,17 @@ struct ThreadListPane: View {
         // main-thread fetch on every write to the store, for three fields per row.
         // See ``DirectoryCache``.
         let usersByID = session.directory.profiles
+        let rows = summaries(users: usersByID)
 
         return ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(visibleThreads) { thread in
+                ForEach(rows) { row in
+                    let thread = row.thread
                     ThreadSummaryRow(
                         thread: thread,
-                        starter: starter(of: thread, users: usersByID),
-                        lastReplierName: lastReplierName(in: thread, users: usersByID)
+                        starter: row.starter,
+                        snippet: row.snippet,
+                        lastReplierName: row.lastReplierName
                     ) {
                         session.openThread(thread.name, fromList: true)
                     }
@@ -157,33 +167,71 @@ struct ThreadListPane: View {
         threads.count(where: \.hasUnread)
     }
 
+    /// Threads whose only message is a root that never got a reply are already
+    /// excluded by the query — that message is in the transcript, and listing it here
+    /// would make this a second, worse copy of the conversation rather than a thread
+    /// index. So this is only the unread filter.
     private var visibleThreads: [CachedThread] {
-        // Threads whose only message is a root that never got a reply are left out:
-        // that message is already in the transcript, and listing it here would make
-        // this a second, worse copy of the conversation rather than a thread index.
-        let withReplies = threads.filter { $0.replyCount > 0 }
-        guard showsUnreadOnly else { return withReplies }
-        return withReplies.filter(\.hasUnread)
+        guard showsUnreadOnly else { return threads }
+        return threads.filter(\.hasUnread)
     }
 
-    /// Who started the thread. Nil only for a thread whose root has not been cached.
-    private func starter(
-        of thread: CachedThread,
-        users usersByID: [String: UserProfile]
-    ) -> SenderIdentity? {
-        guard let root = thread.root else { return nil }
-        return SenderIdentity(message: root, sender: root.senderName.flatMap { usersByID[$0] })
+    /// Everything the visible rows need from messages, in one fetch.
+    ///
+    /// Each row shows two messages: the thread's root — its starter and its snippet —
+    /// and the newest reply, whose sender the row names. Both used to be found by
+    /// filtering `thread.messages`, which faulted an entire thread's history per row to
+    /// read two fields off two of its messages. Worse than slow: a to-many fault per row
+    /// on the main context is one half of the race that crashed build 21, the other half
+    /// being whatever the store actor was faulting at the same moment.
+    ///
+    /// ``CachedThread`` now records the two names, so this resolves both for every
+    /// visible row in a single fetch. Threads whose tallies predate those columns fall
+    /// back to the relationship — see ``root(of:in:)`` — which keeps a cache written by
+    /// an older build readable until its next recompute rather than blank.
+    private func summaries(users usersByID: [String: UserProfile]) -> [ThreadSummary] {
+        let threads = visibleThreads
+        let wanted = Set(threads.flatMap { [$0.rootMessageName, $0.lastReplyMessageName].compactMap { $0 } })
+        var byName: [String: CachedMessage] = [:]
+        if !wanted.isEmpty {
+            let found = (try? modelContext.fetch(
+                FetchDescriptor<CachedMessage>(predicate: #Predicate { wanted.contains($0.name) })
+            )) ?? []
+            byName = Dictionary(found.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        }
+
+        return threads.map { thread in
+            ThreadSummary(
+                thread: thread,
+                starter: root(of: thread, in: byName).map { root in
+                    SenderIdentity(message: root, sender: root.senderName.flatMap { usersByID[$0] })
+                },
+                snippet: snippet(of: root(of: thread, in: byName)),
+                lastReplierName: lastReplierName(
+                    thread.lastReplyMessageName.flatMap { byName[$0] },
+                    users: usersByID
+                )
+            )
+        }
+    }
+
+    /// The thread's opening message, from the batch — or through the relationship for a
+    /// thread whose ``CachedThread/rootMessageName`` has never been computed.
+    private func root(of thread: CachedThread, in byName: [String: CachedMessage]) -> CachedMessage? {
+        if let name = thread.rootMessageName { return byName[name] }
+        return thread.root
+    }
+
+    private func snippet(of root: CachedMessage?) -> String {
+        let text = root?.summaryText ?? ""
+        return text.isEmpty ? "Thread" : text
     }
 
     /// Who spoke last, which is usually why the thread is worth opening.
     private func lastReplierName(
-        in thread: CachedThread,
+        _ newest: CachedMessage?,
         users usersByID: [String: UserProfile]
     ) -> String? {
-        let replies = thread.messages.filter { $0.isThreadReply && !$0.isDeleted }
-        let newest = replies.max { lhs, rhs in
-            (lhs.createTime ?? .distantPast) < (rhs.createTime ?? .distantPast)
-        }
         guard let newest else { return nil }
         let identity = SenderIdentity(
             message: newest,
@@ -197,10 +245,24 @@ struct ThreadListPane: View {
     }
 }
 
+/// One row's worth of resolved data, so ``ThreadListPane/summaries(users:)`` can do the
+/// message lookups once for the list rather than once per row.
+private struct ThreadSummary: Identifiable {
+    let thread: CachedThread
+    let starter: SenderIdentity?
+    let snippet: String
+    let lastReplierName: String?
+
+    var id: PersistentIdentifier { thread.persistentModelID }
+}
+
 /// One thread as a row: who started it, what it says, and how far behind you are.
 private struct ThreadSummaryRow: View {
     let thread: CachedThread
     let starter: SenderIdentity?
+    /// Resolved by the list, not read from `thread.root` here — see
+    /// ``ThreadListPane/summaries(users:)``.
+    let snippet: String
     let lastReplierName: String?
     let open: () -> Void
 
@@ -266,11 +328,6 @@ private struct ThreadSummaryRow: View {
 
     private var starterName: String {
         starter?.name ?? SenderIdentity.unnamedPerson
-    }
-
-    private var snippet: String {
-        let text = thread.root?.summaryText ?? ""
-        return text.isEmpty ? "Thread" : text
     }
 
     private var replyLabel: String {

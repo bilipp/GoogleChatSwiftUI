@@ -119,4 +119,60 @@ struct ReactorTests {
         #expect(profiles["users/webhook"]?.isApp == true)
         #expect(profiles["users/webhook"]?.displayName == nil)
     }
+
+    // MARK: - Replacing a listing
+
+    /// A full listing replaces the cached rows outright, and the rows it replaces are
+    /// found by fetch rather than through `message.reactions`.
+    ///
+    /// Worth a test of its own because that fetch is a `#Predicate` over a relationship,
+    /// and a predicate SwiftData cannot translate does not fail to compile — it throws
+    /// when it runs, or answers nothing and silently leaves the stale rows behind.
+    @Test func aFullListingReplacesTheCachedReactions() async throws {
+        let (store, container) = try makeStore()
+        try await store.upsertSpaces([try space()])
+        try await store.mergeMessages([try message()], into: "spaces/A")
+
+        // A first listing, then a second that drops one emoji and adds another.
+        try await store.applyReactionListing(
+            [try reaction("r1", emoji: "👍", by: "users/1"), try reaction("r2", emoji: "🎉", by: "users/2")],
+            for: "spaces/A/messages/m1",
+            selfChatName: "users/1"
+        )
+        try await store.applyReactionListing(
+            [try reaction("r3", emoji: "🎉", by: "users/2"), try reaction("r4", emoji: "🚀", by: "users/1")],
+            for: "spaces/A/messages/m1",
+            selfChatName: "users/1"
+        )
+
+        let context = ModelContext(container)
+        let rows = try context.fetch(FetchDescriptor<CachedReaction>())
+        #expect(rows.map(\.emoji).sorted() == ["🎉", "🚀"])
+        // The signed-in user's own reaction moved with the listing — the one thing the
+        // summary endpoint never reports, and so the reason this call exists.
+        #expect(rows.first { $0.emoji == "🚀" }?.myReactionName == "spaces/A/messages/m1/reactions/r4")
+        #expect(rows.first { $0.emoji == "🎉" }?.myReactionName == nil)
+    }
+
+    private func space() throws -> ChatSpace {
+        let json = #"{"name":"spaces/A","spaceType":"SPACE"}"#
+        return try GoogleTransport.decoder.decode(ChatSpace.self, from: Data(json.utf8))
+    }
+
+    private func message() throws -> ChatMessage {
+        let json = """
+        {"name":"spaces/A/messages/m1","text":"hi","createTime":"2026-07-01T10:00:00Z",
+         "sender":{"name":"users/1"}}
+        """
+        return try GoogleTransport.decoder.decode(ChatMessage.self, from: Data(json.utf8))
+    }
+
+    private func reaction(_ id: String, emoji: String, by userID: String) throws -> ChatReaction {
+        let json = """
+        {"name":"spaces/A/messages/m1/reactions/\(id)",
+         "user":{"name":"\(userID)"},
+         "emoji":{"unicode":"\(emoji)"}}
+        """
+        return try GoogleTransport.decoder.decode(ChatReaction.self, from: Data(json.utf8))
+    }
 }

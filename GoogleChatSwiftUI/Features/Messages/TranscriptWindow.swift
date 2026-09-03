@@ -81,6 +81,36 @@ nonisolated enum TranscriptQueries {
             sortBy: [SortDescriptor(\CachedMessage.createTime, order: .reverse)]
         )
         descriptor.fetchLimit = limit
+        descriptor.relationshipKeyPathsForPrefetching = bubbleRelationships
+        return descriptor
+    }
+
+    /// The relationships ``MessageBubble`` reads on every row it draws.
+    ///
+    /// Prefetched rather than left to fault, which is a correctness fix and not only a
+    /// speed one. Each is a to-many relationship, so reading it per row was a deferred
+    /// fault per row on the main context — thousands of them across a scroll, every one
+    /// racing whatever the store actor was faulting at the same instant. That race is
+    /// what killed build 21: a lock-free read of the store's shared row cache while the
+    /// SQL queue was rewriting it, crashing in `objc_retain` on a freed entry.
+    ///
+    /// Safe to prefetch only because both descriptors that use it are bounded — the
+    /// transcript by `fetchLimit`, the thread pane by a single thread. A prefetch on an
+    /// unbounded query would trade the faults for materializing the whole room.
+    /// A computed property rather than a `static let`: a `PartialKeyPath` is not
+    /// `Sendable`, so a stored one in a `nonisolated` enum will not compile under strict
+    /// concurrency. Rebuilding two key paths costs nothing.
+    private static var bubbleRelationships: [PartialKeyPath<CachedMessage>] {
+        [\.reactions, \.attachments]
+    }
+
+    /// Every message in one thread, oldest first — the thread pane's transcript.
+    static func threadMessages(named threadName: String) -> FetchDescriptor<CachedMessage> {
+        var descriptor = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate<CachedMessage> { $0.threadName == threadName },
+            sortBy: [SortDescriptor(\CachedMessage.createTime, order: .forward)]
+        )
+        descriptor.relationshipKeyPathsForPrefetching = bubbleRelationships
         return descriptor
     }
 

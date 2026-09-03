@@ -28,12 +28,22 @@ struct ThreadTallyTests {
         /// Per thread name, so a wrong total says which thread it came from.
         var replies: [String: Int] = [:]
         var unreadReplies: [String: Int] = [:]
+        /// The two names the thread list reads instead of walking `thread.messages` —
+        /// see ``CachedThread/rootMessageName``. Checked here rather than in a test of
+        /// their own because they are written by the same pass that writes the tallies,
+        /// so every step of the sequence below is already a case for them: a reply
+        /// arriving moves the last reply, a deletion moves it back, and a root being
+        /// tombstoned must leave the root where it is.
+        var roots: [String: String] = [:]
+        var lastReplies: [String: String] = [:]
 
         var description: String {
             """
             threads unread: \(unreadThreadCount), hidden replies: \(unreadThreadReplyCount)
             replies: \(replies.sorted { $0.key < $1.key })
             unread:  \(unreadReplies.sorted { $0.key < $1.key })
+            roots:   \(roots.sorted { $0.key < $1.key })
+            last:    \(lastReplies.sorted { $0.key < $1.key })
             """
         }
     }
@@ -66,6 +76,21 @@ struct ThreadTallyTests {
             tallies.unreadReplies[thread.name] = unread
             if unread > 0 { tallies.unreadThreadCount += 1 }
             tallies.unreadThreadReplyCount += hidden
+
+            // The opening message: the earliest non-reply, or failing that the earliest
+            // message of any kind. Deleted messages count — a thread whose root was
+            // tombstoned still has that root, and shows "Message deleted" as its snippet.
+            let byAge = thread.messages.sorted {
+                ($0.createTime ?? .distantPast) < ($1.createTime ?? .distantPast)
+            }
+            if let root = byAge.first(where: { !$0.isThreadReply }) ?? byAge.first {
+                tallies.roots[thread.name] = root.name
+            }
+            // The newest reply still standing, which is the one the list names a sender
+            // from. A deletion moves this back to the reply before it.
+            if let newest = byAge.last(where: { $0.isThreadReply && !$0.isDeleted }) {
+                tallies.lastReplies[thread.name] = newest.name
+            }
         }
         return tallies
     }
@@ -84,6 +109,8 @@ struct ThreadTallyTests {
         for thread in space.threads {
             tallies.replies[thread.name] = thread.replyCount
             tallies.unreadReplies[thread.name] = thread.unreadReplyCount
+            tallies.roots[thread.name] = thread.rootMessageName
+            tallies.lastReplies[thread.name] = thread.lastReplyMessageName
         }
         return tallies
     }
