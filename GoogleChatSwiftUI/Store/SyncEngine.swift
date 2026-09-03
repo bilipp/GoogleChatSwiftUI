@@ -198,13 +198,20 @@ nonisolated struct SyncEngine: Sendable {
             try? await store.upsertPeople(Array(directory.values))
         }
 
-        for spaceName in pending {
+        // Assembled first and written once. A write per space here meant 25 store
+        // saves per pass, and every save makes each `@Query` on the main context
+        // refetch — see ``ChatStore/setResolvedTitles(_:)``.
+        let resolved = pending.map { spaceName in
             let peers = peersBySpace[spaceName] ?? []
             let names = peers.compactMap { directory[$0]?.displayName }
             // Group chats read better as "Ana, Ben, Chen" than as a single name.
-            let title = names.isEmpty ? nil : names.joined(separator: ", ")
-            try? await store.setResolvedTitle(title, peers: peers, for: spaceName)
+            return ResolvedSpaceTitle(
+                spaceName: spaceName,
+                title: names.isEmpty ? nil : names.joined(separator: ", "),
+                peers: peers
+            )
         }
+        try? await store.setResolvedTitles(resolved)
 
         logger.info("Resolved \(pending.count) space(s) via \(directory.count) directory profile(s)")
     }
@@ -246,6 +253,30 @@ nonisolated struct SyncEngine: Sendable {
 
         try? await store.upsertPeople(Array(directory.values))
         logger.info("Resolved \(directory.count) sender profile(s)")
+    }
+
+    /// Re-resolves every cached person against the directory.
+    ///
+    /// Everything else here resolves a person once and never again — ``resolveSenders``,
+    /// the mention pass and the reactor listing all ask ``ChatStore/unknownUserIDs(_:)``
+    /// first, which reports anyone already named as known. That is right for what those
+    /// passes are doing and it leaves nothing that can correct a row already written: a
+    /// colleague who changes their photo keeps the old one until the cache is destroyed,
+    /// and a row written from a bad answer stays bad forever. This is that correction.
+    ///
+    /// Affordable to run on launch because it costs one `batchGet` per 100 cached people
+    /// — a handful of requests for a workspace, against the hundreds of calls a space
+    /// list already makes. It writes through ``ChatStore/upsertPeople(_:)`` like every
+    /// other directory pass, so a hand-typed name still survives it.
+    func refreshDirectory() async {
+        let ids = (try? await store.personIDs()) ?? []
+        guard !ids.isEmpty else { return }
+
+        let directory = (try? await directoryService.people(forChatUserNames: ids)) ?? [:]
+        guard !directory.isEmpty else { return }
+
+        try? await store.upsertPeople(Array(directory.values))
+        logger.info("Refreshed \(directory.count) directory profile(s)")
     }
 
     /// Names an app sender by hand.
@@ -702,26 +733,32 @@ nonisolated struct SyncEngine: Sendable {
         )
         guard !pending.isEmpty else { return }
 
-        await withTaskGroup(of: (String, Date?, Bool).self) { group in
+        let fetched = await withTaskGroup(of: SpaceReadState.self) { group in
             for spaceName in pending {
                 group.addTask {
                     do {
                         let state = try await self.client.spaceReadState(spaceName: spaceName)
-                        return (spaceName, state.lastReadTime, true)
+                        return SpaceReadState(
+                            spaceName: spaceName, lastReadTime: state.lastReadTime
+                        )
                     } catch {
                         self.logger.error(
                             "Read state failed for \(spaceName): \(error.localizedDescription)"
                         )
                         // Marked fetched anyway: a space whose read state cannot be
                         // read would otherwise be retried on every pass forever.
-                        return (spaceName, nil, false)
+                        return SpaceReadState(spaceName: spaceName, lastReadTime: nil)
                     }
                 }
             }
-            for await (spaceName, lastRead, _) in group {
-                try? await store.applyReadState(lastRead, for: spaceName)
-            }
+            var collected: [SpaceReadState] = []
+            for await state in group { collected.append(state) }
+            return collected
         }
+
+        // One save for the pass. A write per space made every `@Query` on the main
+        // context refetch 25 times over — see ``ChatStore/applyReadStates(_:)``.
+        try? await store.applyReadStates(fetched)
         logger.info("Fetched read state for \(pending.count) space(s)")
     }
 

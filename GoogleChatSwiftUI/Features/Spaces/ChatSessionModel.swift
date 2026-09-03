@@ -110,6 +110,10 @@ final class ChatSessionModel {
     let recentEmoji = RecentEmojiStore()
     private let notifications = NotificationService()
 
+    /// Names and faces for user IDs, held once for the window rather than fetched by
+    /// every view that draws one. See ``DirectoryCache``.
+    let directory: DirectoryCache
+
     private let sync: SyncEngine
     private let realtime: RealtimeCoordinator
     private let profile: GoogleUserProfile?
@@ -125,7 +129,9 @@ final class ChatSessionModel {
             sync: engine,
             store: store
         )
+        directory = DirectoryCache(store: store)
         self.profile = profile
+        directory.start()
     }
 
     // MARK: - Realtime
@@ -410,6 +416,12 @@ final class ChatSessionModel {
             logger.info("Sections unavailable: \(error.localizedDescription)")
         }
         await resolveTitles()
+        // After the titles, not before: title resolution is what caches most of these
+        // people in the first place, and going second means a first launch refreshes
+        // rows that exist rather than an empty table. See ``SyncEngine/refreshDirectory()``
+        // for why a re-resolution is needed at all — nothing else ever revisits a
+        // profile once it has been written.
+        await sync.refreshDirectory()
     }
 
     // MARK: - Local sidebar preferences

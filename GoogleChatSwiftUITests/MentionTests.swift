@@ -225,22 +225,14 @@ struct MentionTests {
 
     // MARK: - Building the list
 
-    /// Directory rows, as the views hand them over.
-    private func cachedUsers(_ named: [String: String?]) throws -> [String: CachedUser] {
-        let container = try ModelContainer(
-            for: Schema(versionedSchema: ChatSchemaV1.self),
-            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
-        )
-        let context = ModelContext(container)
-
-        var users: [String: CachedUser] = [:]
-        for (id, displayName) in named {
-            let user = CachedUser(name: id)
-            user.displayName = displayName
-            context.insert(user)
-            users[id] = user
+    /// Directory profiles, as ``DirectoryCache`` hands them over. No container needed
+    /// any more: the views pass values rather than `CachedUser` rows.
+    private func cachedUsers(_ named: [String: String?]) throws -> [String: UserProfile] {
+        named.reduce(into: [:]) { result, entry in
+            result[entry.key] = UserProfile(
+                name: entry.key, displayName: entry.value, photoURL: nil, isApp: false
+            )
         }
-        return users
     }
 
     @Test func namesCandidatesFromTheDirectory() throws {

@@ -13,7 +13,6 @@ import SwiftUI
 struct ThreadListPane: View {
     @Environment(ChatSessionModel.self) private var session
     @Query private var threads: [CachedThread]
-    @Query private var users: [CachedUser]
 
     private let spaceName: String
 
@@ -129,13 +128,11 @@ struct ThreadListPane: View {
     }
 
     private var list: some View {
-        // One dictionary for the whole list rather than one per row: `usersByID` was a
-        // computed property reached for twice by every row drawn, so a pane of forty
-        // threads rebuilt a table of every directory row eighty times a pass.
-        let usersByID = Dictionary(
-            users.map { ($0.name, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // The window's one directory snapshot, already keyed. This used to be a
+        // `@Query` of every `CachedUser` plus a dictionary built over it here — a full
+        // main-thread fetch on every write to the store, for three fields per row.
+        // See ``DirectoryCache``.
+        let usersByID = session.directory.profiles
 
         return ScrollView {
             LazyVStack(spacing: 0) {
@@ -172,7 +169,7 @@ struct ThreadListPane: View {
     /// Who started the thread. Nil only for a thread whose root has not been cached.
     private func starter(
         of thread: CachedThread,
-        users usersByID: [String: CachedUser]
+        users usersByID: [String: UserProfile]
     ) -> SenderIdentity? {
         guard let root = thread.root else { return nil }
         return SenderIdentity(message: root, sender: root.senderName.flatMap { usersByID[$0] })
@@ -181,7 +178,7 @@ struct ThreadListPane: View {
     /// Who spoke last, which is usually why the thread is worth opening.
     private func lastReplierName(
         in thread: CachedThread,
-        users usersByID: [String: CachedUser]
+        users usersByID: [String: UserProfile]
     ) -> String? {
         let replies = thread.messages.filter { $0.isThreadReply && !$0.isDeleted }
         let newest = replies.max { lhs, rhs in

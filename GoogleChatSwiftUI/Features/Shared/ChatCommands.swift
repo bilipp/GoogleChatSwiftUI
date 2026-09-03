@@ -60,11 +60,17 @@ struct ChatCommands: Commands {
     }
 }
 
-extension Notification.Name {
+/// `nonisolated` because ``ChatStore`` posts from its own actor: under
+/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` these constants would otherwise be
+/// main-actor isolated and unreachable from there.
+nonisolated extension Notification.Name {
     static let chatRefreshSpaces = Notification.Name("chatRefreshSpaces")
     static let chatMarkAllRead = Notification.Name("chatMarkAllRead")
     static let chatMarkUnread = Notification.Name("chatMarkUnread")
     static let chatFocusSearch = Notification.Name("chatFocusSearch")
     static let chatFocusMessageSearch = Notification.Name("chatFocusMessageSearch")
     static let chatToggleThreads = Notification.Name("chatToggleThreads")
+    /// A `CachedUser` row was written. Posted by ``ChatStore`` beside the save, so a
+    /// new directory writer cannot forget to invalidate ``DirectoryCache``.
+    static let chatDirectoryChanged = Notification.Name("chatDirectoryChanged")
 }

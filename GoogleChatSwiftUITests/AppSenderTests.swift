@@ -57,10 +57,26 @@ struct AppSenderTests {
         ).first
     }
 
-    private func user(_ name: String, in container: ModelContainer) throws -> CachedUser? {
+    /// The stored row, for the two assertions about a flag `UserProfile` does not carry:
+    /// `isLocallyNamed` is the store's own bookkeeping, not something a view draws.
+    private func row(_ name: String, in container: ModelContainer) throws -> CachedUser? {
         try ModelContext(container).fetch(
             FetchDescriptor<CachedUser>(predicate: #Predicate { $0.name == name })
         ).first
+    }
+
+    /// The sender's profile in the shape the views now receive it — from the store's
+    /// own snapshot, which is the path ``DirectoryCache`` takes.
+    private func user(_ name: String, in container: ModelContainer) throws -> UserProfile? {
+        let users = try ModelContext(container).fetch(
+            FetchDescriptor<CachedUser>(predicate: #Predicate { $0.name == name })
+        )
+        return users.first.map {
+            UserProfile(
+                name: $0.name, displayName: $0.displayName,
+                photoURL: $0.photoURL, isApp: $0.isApp
+            )
+        }
     }
 
     // MARK: - Keeping the type Chat does send
@@ -171,7 +187,7 @@ struct AppSenderTests {
         try await store.markAppUsers(["users/webhook"])
         try await store.setLocalName("  Service  ", for: "users/webhook")
 
-        let sender = try #require(try user("users/webhook", in: container))
+        let sender = try #require(try row("users/webhook", in: container))
         #expect(sender.displayName == "Service")
         #expect(sender.isLocallyNamed)
     }
@@ -182,7 +198,7 @@ struct AppSenderTests {
         try await store.setLocalName("Service", for: "users/webhook")
         try await store.setLocalName("   ", for: "users/webhook")
 
-        let sender = try #require(try user("users/webhook", in: container))
+        let sender = try #require(try row("users/webhook", in: container))
         #expect(sender.displayName == nil)
         #expect(!sender.isLocallyNamed)
     }

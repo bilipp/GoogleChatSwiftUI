@@ -198,10 +198,6 @@ private struct ConversationTranscript: View {
     /// arrives. It is sorted this way so that the limit means *the newest*, which is the
     /// only end of a conversation worth opening on.
     @Query private var messages: [CachedMessage]
-    /// Sender identity lives in `CachedUser`, not on the message, so one directory
-    /// fetch names every message that person has ever sent — including ones already
-    /// cached before the lookup happened.
-    @Query private var users: [CachedUser]
     /// Thread index rows for this space, carrying the per-thread reply and unread counts
     /// the transcript cannot count for itself once it is windowed.
     @Query private var threads: [CachedThread]
@@ -253,7 +249,12 @@ private struct ConversationTranscript: View {
         // Built once here and handed down, rather than reached for per row. See
         // ``TranscriptIndex``.
         let index = TranscriptIndex(
-            users: users,
+            // Sender identity lives in the directory, not on the message, so one lookup
+            // names every message that person has ever sent — including history cached
+            // before it landed. Read from the window's one snapshot rather than a
+            // `@Query` here: that fetch was the whole `CachedUser` table, on the main
+            // thread, on every write to the store. See ``DirectoryCache``.
+            users: session.directory.profiles,
             messages: messages,
             threads: threads,
             mentionableIDs: session.mentionableUserIDs(in: spaceName),
@@ -586,19 +587,18 @@ private struct TranscriptIndex {
     /// the numbers would describe nothing.
     private let replyCounts: [String: Int]
     private let unreadReplyCounts: [String: Int]
-    private let usersByID: [String: CachedUser]
+    private let usersByID: [String: UserProfile]
 
     init(
-        users: [CachedUser],
+        users: [String: UserProfile],
         messages: [CachedMessage],
         threads: [CachedThread],
         mentionableIDs: [String],
         isThreaded: Bool
     ) {
-        let usersByID = Dictionary(
-            users.map { ($0.name, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // Already keyed by ``DirectoryCache``, so there is no dictionary to rebuild
+        // here on every body evaluation.
+        let usersByID = users
         // Every message the transcript has in hand, replies included — a quote can point
         // at one even in a threaded space, where replies are not in the transcript. A
         // quote reaching past the window falls back to the snapshot the server sent with
@@ -628,7 +628,7 @@ private struct TranscriptIndex {
         unreadReplyCounts = unread
     }
 
-    func sender(of message: CachedMessage) -> CachedUser? {
+    func sender(of message: CachedMessage) -> UserProfile? {
         guard let id = message.senderName else { return nil }
         return usersByID[id]
     }

@@ -13,6 +13,25 @@ nonisolated struct ThreadReadState: Sendable {
     let lastReadTime: Date?
 }
 
+/// Where the server says the user has read to in one space, for the batch that
+/// ``ChatStore/applyReadStates(_:)`` writes.
+nonisolated struct SpaceReadState: Sendable {
+    let spaceName: String
+    /// Nil where the endpoint would not answer. Recorded as fetched regardless, so a
+    /// space Chat will not report on is not asked about on every pass forever.
+    let lastReadTime: Date?
+}
+
+/// A name worked out for a space Chat does not name itself, for the batch that
+/// ``ChatStore/setResolvedTitles(_:)`` writes.
+nonisolated struct ResolvedSpaceTitle: Sendable {
+    let spaceName: String
+    /// Nil where no name could be produced. Still recorded, so an unnameable space is
+    /// not retried forever.
+    let title: String?
+    let peers: [String]
+}
+
 /// A cached person, copied out of the store so it can cross back to the main actor.
 ///
 /// `CachedUser` itself cannot: SwiftData models belong to the context that fetched
@@ -154,6 +173,7 @@ actor ChatStore {
             target.photoURL = person.photoURL
         }
         try modelContext.save()
+        announceDirectoryChange()
     }
 
     /// Records that these senders are apps — Chat apps or incoming webhooks.
@@ -183,6 +203,7 @@ actor ChatStore {
         }
         guard added > 0 else { return }
         try modelContext.save()
+        announceDirectoryChange()
         logger.info("Marked \(added) sender(s) as apps")
     }
 
@@ -209,6 +230,7 @@ actor ChatStore {
             target.isLocallyNamed = false
         }
         try modelContext.save()
+        announceDirectoryChange()
     }
 
     /// Which of these Chat user IDs have no cached directory profile yet.
@@ -226,6 +248,20 @@ actor ChatStore {
             alreadyNamed.insert(user.name)
         }
         return Array(wanted.subtracting(alreadyNamed))
+    }
+
+    /// Every person the directory has already answered for, apps excluded.
+    ///
+    /// The input to ``SyncEngine/refreshDirectory()``, and the one lookup that is
+    /// deliberately *not* gated on ``unknownUserIDs(_:)``. That gate asks "has this ID
+    /// ever been resolved", which is the right question for naming someone and the wrong
+    /// one for keeping them current: a row resolved once is never revisited, so a name
+    /// that changed, or a photo that was wrong when it was written, stays wrong for as
+    /// long as the cache lives. Apps are left out because People cannot answer for one.
+    func personIDs() throws -> [String] {
+        try modelContext
+            .fetch(FetchDescriptor<CachedUser>(predicate: #Predicate { !$0.isApp }))
+            .map(\.name)
     }
 
     /// Cached display names for the given Chat user IDs.
@@ -253,7 +289,21 @@ actor ChatStore {
         let users = try modelContext.fetch(
             FetchDescriptor<CachedUser>(predicate: #Predicate { wanted.contains($0.name) })
         )
-        return Dictionary(
+        return snapshot(of: users)
+    }
+
+    /// The whole directory, for ``DirectoryCache``.
+    ///
+    /// Unbounded on purpose, and affordable for the same reason the cache exists: this
+    /// runs here, off the main actor, and only when the directory has actually changed.
+    /// The views used to do the equivalent fetch on the main thread, five of them, on
+    /// every write to the store.
+    func allProfiles() throws -> [String: UserProfile] {
+        snapshot(of: try modelContext.fetch(FetchDescriptor<CachedUser>()))
+    }
+
+    private func snapshot(of users: [CachedUser]) -> [String: UserProfile] {
+        Dictionary(
             uniqueKeysWithValues: users.map {
                 ($0.name, UserProfile(name: $0.name, displayName: $0.displayName,
                                       photoURL: $0.photoURL, isApp: $0.isApp))
@@ -261,13 +311,45 @@ actor ChatStore {
         )
     }
 
+    /// Tells ``DirectoryCache`` its snapshot is out of date.
+    ///
+    /// Called beside every save that touches a `CachedUser`, which is what keeps a new
+    /// directory writer from silently leaving the cache stale.
+    private func announceDirectoryChange() {
+        NotificationCenter.default.post(name: .chatDirectoryChanged, object: nil)
+    }
+
+    /// One space's resolved title. See ``setResolvedTitles(_:)``, which this defers to —
+    /// a pass over many spaces must not take one save each.
     func setResolvedTitle(_ title: String?, peers: [String] = [], for spaceName: String) throws {
-        guard let space = try space(named: spaceName) else { return }
-        space.resolvedTitle = title
-        space.peerUserIDs = peers
-        // Marked resolved even on failure, so an unnameable space is not retried
-        // on every launch forever.
-        space.didResolveTitle = true
+        try setResolvedTitles(
+            [ResolvedSpaceTitle(spaceName: spaceName, title: title, peers: peers)]
+        )
+    }
+
+    /// Writes a whole pass of resolved titles under one save.
+    ///
+    /// One save, not one per space, and that is the point of the plural. `@Query`
+    /// refetches on every write to the store, and the views watching it hold several
+    /// unbounded fetches between them — so a save is not a cheap thing to do 25 times
+    /// in a row, which is what a per-space write here amounted to. See
+    /// ``SyncEngine/resolvePendingTitles(excludingUser:)`` for the pass this serves.
+    func setResolvedTitles(_ titles: [ResolvedSpaceTitle]) throws {
+        guard !titles.isEmpty else { return }
+        let wanted = Set(titles.map(\.spaceName))
+        let spaces = try modelContext.fetch(
+            FetchDescriptor<CachedSpace>(predicate: #Predicate { wanted.contains($0.name) })
+        )
+        let byName = Dictionary(uniqueKeysWithValues: spaces.map { ($0.name, $0) })
+
+        for resolved in titles {
+            guard let space = byName[resolved.spaceName] else { continue }
+            space.resolvedTitle = resolved.title
+            space.peerUserIDs = resolved.peers
+            // Marked resolved even on failure, so an unnameable space is not retried
+            // on every launch forever.
+            space.didResolveTitle = true
+        }
         try modelContext.save()
     }
 
@@ -444,15 +526,40 @@ actor ChatStore {
             .map(\.name)
     }
 
+    /// One space's read state. See ``applyReadStates(_:)``, which this defers to.
     func applyReadState(_ lastReadTime: Date?, for spaceName: String) throws {
-        guard let space = try space(named: spaceName) else { return }
-        space.lastReadTime = lastReadTime
-        space.didFetchReadState = true
-        space.unreadCount = try countUnread(in: spaceName, after: lastReadTime)
-        // Threads cached before this arrived had nothing to measure against. This is the
-        // first moment they can be told where the user had got to, which is why the mark
-        // is passed to the recount rather than seeded in a pass of its own.
-        try recountThreadTotals(in: space, seedingAt: lastReadTime)
+        try applyReadStates(
+            [SpaceReadState(spaceName: spaceName, lastReadTime: lastReadTime)]
+        )
+    }
+
+    /// Writes a whole pass of read states under one save.
+    ///
+    /// One save for the batch rather than one per space, for the reason
+    /// ``setResolvedTitles(_:)`` takes a list: every write to the store makes each `@Query`
+    /// on the main context refetch, and a pass of 25 spaces was therefore 25 rounds of
+    /// that. The recounts stay per space — they are reads, and each one needs its own
+    /// space row — but they now happen inside a single transaction.
+    func applyReadStates(_ states: [SpaceReadState]) throws {
+        guard !states.isEmpty else { return }
+        let wanted = Set(states.map(\.spaceName))
+        let spaces = try modelContext.fetch(
+            FetchDescriptor<CachedSpace>(predicate: #Predicate { wanted.contains($0.name) })
+        )
+        let byName = Dictionary(uniqueKeysWithValues: spaces.map { ($0.name, $0) })
+
+        for state in states {
+            guard let space = byName[state.spaceName] else { continue }
+            space.lastReadTime = state.lastReadTime
+            space.didFetchReadState = true
+            space.unreadCount = try countUnread(
+                in: state.spaceName, after: state.lastReadTime
+            )
+            // Threads cached before this arrived had nothing to measure against. This is
+            // the first moment they can be told where the user had got to, which is why
+            // the mark is passed to the recount rather than seeded in a pass of its own.
+            try recountThreadTotals(in: space, seedingAt: state.lastReadTime)
+        }
         try modelContext.save()
     }
 

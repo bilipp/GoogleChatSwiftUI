@@ -68,7 +68,7 @@ struct QuotedMessagePreview: Equatable {
 /// answer from the same two dictionaries they each already build.
 struct QuotedMessageResolver {
     let messagesByName: [String: CachedMessage]
-    let usersByID: [String: CachedUser]
+    let usersByID: [String: UserProfile]
 
     /// What this message carries of another one, and which of Chat's two kinds of quote it
     /// is — see ``QuotedContent``.

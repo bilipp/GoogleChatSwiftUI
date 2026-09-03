@@ -45,13 +45,15 @@ nonisolated struct SenderIdentity: Equatable {
     }
 }
 
-/// Main-actor, unlike the type itself: `CachedMessage` and `CachedUser` are SwiftData
-/// models and so belong to the main actor under `SWIFT_DEFAULT_ACTOR_ISOLATION`, which is
-/// where the views that hold them already are.
+/// Main-actor, unlike the type itself: `CachedMessage` is a SwiftData model and so
+/// belongs to the main actor under `SWIFT_DEFAULT_ACTOR_ISOLATION`, which is where the
+/// views that hold one already are.
 extension SenderIdentity {
-    /// - Parameter sender: the sender's cached row, when one exists.
+    /// - Parameter sender: the sender's cached profile, when the directory has one.
+    ///   A ``UserProfile`` rather than the `CachedUser` row it came from: the row is
+    ///   fetched once for the window by ``DirectoryCache``, not per view.
     @MainActor
-    init(message: CachedMessage, sender: CachedUser?) {
+    init(message: CachedMessage, sender: UserProfile?) {
         self.init(
             // The name on the message covers locally composed ones, which are shown
             // immediately — before there is a server copy, let alone a lookup.

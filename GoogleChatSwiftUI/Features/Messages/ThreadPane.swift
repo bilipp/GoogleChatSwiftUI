@@ -9,7 +9,6 @@ import SwiftUI
 struct ThreadPane: View {
     @Environment(ChatSessionModel.self) private var session
     @Query private var messages: [CachedMessage]
-    @Query private var users: [CachedUser]
 
     private let spaceName: String
     private let threadName: String
@@ -31,7 +30,9 @@ struct ThreadPane: View {
     var body: some View {
         // Once per body evaluation rather than once per row — see ``ThreadIndex``.
         let index = ThreadIndex(
-            users: users,
+            // The window's one directory snapshot, not a `@Query` of this pane's own —
+            // see ``DirectoryCache``.
+            users: session.directory.profiles,
             messages: messages,
             mentionableIDs: session.mentionableUserIDs(in: spaceName)
         )
@@ -242,25 +243,25 @@ private struct ThreadIndex {
     /// so its `@` reaches everyone in the space rather than only those who have posted
     /// in this thread.
     let mentionCandidates: [MentionCandidate]
-    private let usersByID: [String: CachedUser]
+    private let usersByID: [String: UserProfile]
 
-    init(users: [CachedUser], messages: [CachedMessage], mentionableIDs: [String]) {
-        let usersByID = Dictionary(
-            users.map { ($0.name, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        self.usersByID = usersByID
+    init(
+        users: [String: UserProfile],
+        messages: [CachedMessage],
+        mentionableIDs: [String]
+    ) {
+        self.usersByID = users
         quoted = QuotedMessageResolver(
             messagesByName: Dictionary(
                 messages.map { ($0.name, $0) },
                 uniquingKeysWith: { first, _ in first }
             ),
-            usersByID: usersByID
+            usersByID: users
         )
-        mentionCandidates = MentionCandidate.list(for: mentionableIDs, users: usersByID)
+        mentionCandidates = MentionCandidate.list(for: mentionableIDs, users: users)
     }
 
-    func sender(of message: CachedMessage) -> CachedUser? {
+    func sender(of message: CachedMessage) -> UserProfile? {
         guard let id = message.senderName else { return nil }
         return usersByID[id]
     }

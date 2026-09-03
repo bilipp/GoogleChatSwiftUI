@@ -218,8 +218,9 @@ struct InlineReplyTests {
         reply.quotedMessageSender = "users/ada"
         reply.quotedMessageText = "Ship it?"
 
-        let ada = CachedUser(name: "users/ada")
-        ada.displayName = "Ada Lovelace"
+        let ada = UserProfile(
+            name: "users/ada", displayName: "Ada Lovelace", photoURL: nil, isApp: false
+        )
 
         let resolver = QuotedMessageResolver(
             messagesByName: [:],

@@ -26,11 +26,6 @@ nonisolated struct MentionCandidate: Hashable, Identifiable, Sendable {
     )
 }
 
-/// Deliberately *not* `nonisolated`, unlike the type it extends: `CachedUser` is a
-/// SwiftData model and therefore main-actor isolated under
-/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so reading one has to happen where the
-/// views that pass it in already are. The candidate itself stays nonisolated, which is
-/// what lets it travel down to the send path.
 extension MentionCandidate {
     /// Builds a space's candidate list from its member IDs and the directory rows the
     /// view already has to hand.
@@ -41,7 +36,10 @@ extension MentionCandidate {
     /// lands, the same way the transcript fills in its senders.
     ///
     /// - Parameter userIDs: the space's members, the signed-in user already removed.
-    static func list(for userIDs: [String], users: [String: CachedUser]) -> [MentionCandidate] {
+    static func list(
+        for userIDs: [String],
+        users: [String: UserProfile]
+    ) -> [MentionCandidate] {
         var result: [MentionCandidate] = []
         for id in userIDs {
             guard let user = users[id], let displayName = user.displayName, !displayName.isEmpty

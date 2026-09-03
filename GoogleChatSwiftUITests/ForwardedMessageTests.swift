@@ -109,10 +109,10 @@ struct ForwardedMessageTests {
         )
     }
 
-    private func grace() -> CachedUser {
-        let user = CachedUser(name: "users/grace")
-        user.displayName = "Grace Hopper"
-        return user
+    private func grace() -> UserProfile {
+        UserProfile(
+            name: "users/grace", displayName: "Grace Hopper", photoURL: nil, isApp: false
+        )
     }
 
     // MARK: - Telling the two quote types apart

@@ -13,7 +13,7 @@ struct MessageBubble: View {
 
     let message: CachedMessage
     /// Directory profile for the sender, when one has been resolved.
-    let sender: CachedUser?
+    let sender: UserProfile?
     /// Display names of the people this message mentions, keyed by user resource name.
     ///
     /// Both halves are needed: the name is what gets highlighted in Chat's plain copy

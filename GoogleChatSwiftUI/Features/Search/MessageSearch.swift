@@ -24,7 +24,6 @@ nonisolated enum MessageSearchScope: String, CaseIterable, Identifiable, Sendabl
 struct MessageSearchResults: View {
     @Environment(ChatSessionModel.self) private var session
     @Query private var matches: [CachedMessage]
-    @Query private var users: [CachedUser]
 
     private let query: String
 
@@ -79,13 +78,10 @@ struct MessageSearchResults: View {
     }
 
     private var list: some View {
-        // Once for the list rather than once per row: `sender(for:)` was reaching for a
-        // computed dictionary of every directory row, so 200 results meant 200 rebuilds
-        // of it on every pass.
-        let usersByID = Dictionary(
-            users.map { ($0.name, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // The window's one directory snapshot, already keyed. This was a `@Query` of
+        // every `CachedUser` and a dictionary built over it here — a full main-thread
+        // fetch on every write to the store. See ``DirectoryCache``.
+        let usersByID = session.directory.profiles
 
         return List {
             Section {
@@ -130,7 +126,7 @@ struct MessageSearchResults: View {
 
 private struct MessageSearchRow: View {
     let message: CachedMessage
-    let sender: CachedUser?
+    let sender: UserProfile?
     let query: String
 
     var body: some View {

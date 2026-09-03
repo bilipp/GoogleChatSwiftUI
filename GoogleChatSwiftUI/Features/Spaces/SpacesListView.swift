@@ -368,8 +368,6 @@ private struct SidebarSpaceList: View {
     /// Rows the current filter could show — a superset of what is drawn, which
     /// ``SidebarIndex`` then narrows exactly.
     @Query private var spaces: [CachedSpace]
-    /// Directory profiles, for DM avatars. Chat supplies no images of its own.
-    @Query private var users: [CachedUser]
     @FocusState.Binding private var isSearchFocused: Bool
     /// The row the arrow keys are pointing at while the search field has focus.
     /// Deliberately not the list's selection: moving through results must not open
@@ -414,7 +412,11 @@ private struct SidebarSpaceList: View {
         // One pass over the fetched rows for the whole sidebar — see ``SidebarIndex``.
         let index = SidebarIndex(
             spaces: spaces,
-            users: users,
+            // Directory profiles, for DM avatars — Chat supplies no images of its own.
+            // From the window's one snapshot rather than a `@Query` of this view's own:
+            // that fetch was the whole `CachedUser` table, on the main thread, on every
+            // write to the store. See ``DirectoryCache``.
+            users: session.directory.profiles,
             scope: scope,
             kind: kind,
             showsMuted: showsMuted,
@@ -740,20 +742,19 @@ struct SidebarIndex {
     /// Every visible row in the order the sidebar draws it, groups included — so the
     /// arrows walk the list as it looks rather than as it was assembled.
     let orderedSpaceNames: [String]
-    private let usersByID: [String: CachedUser]
+    private let usersByID: [String: UserProfile]
 
     init(
         spaces: [CachedSpace],
-        users: [CachedUser],
+        users: [String: UserProfile],
         scope: SpaceScope,
         kind: SpaceKind,
         showsMuted: Bool,
         searchText: String
     ) {
-        usersByID = Dictionary(
-            users.map { ($0.name, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // Already keyed, so there is no dictionary to build here on every pass —
+        // ``DirectoryCache`` holds it in that shape for the window.
+        usersByID = users
 
         let now = Date()
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -822,7 +823,7 @@ struct SidebarIndex {
 
     /// The single other person in a DM. Group chats intentionally get a tile instead
     /// of one arbitrary member's face.
-    func peer(for space: CachedSpace) -> CachedUser? {
+    func peer(for space: CachedSpace) -> UserProfile? {
         guard space.spaceType == .directMessage,
               let id = space.peerUserIDs.first
         else { return nil }
@@ -857,7 +858,7 @@ struct SidebarIndex {
 
 private struct SpaceRow: View {
     let space: CachedSpace
-    let peer: CachedUser?
+    let peer: UserProfile?
     /// Where the search field's arrow keys are pointing. Drawn as a ring rather than
     /// a fill so it cannot be mistaken for the selected row — the two are frequently
     /// different rows, and the whole point is that this one is not open yet.
