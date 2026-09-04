@@ -1013,26 +1013,46 @@ actor ChatStore {
         space.threadTallyVersion = Self.threadTallyVersion
     }
 
-    /// Bumps the unread counter for a message that arrived while elsewhere.
+    /// Merges a message that arrived over the event stream and counts it as unread where
+    /// it is one, under a single save.
     ///
-    /// - Returns: the space's display title when the message counted as unread, nil
-    ///   when it did not. The title comes back with the verdict because the caller
-    ///   needs it to announce the message and has no other route into the cache.
-    func noteIncomingMessage(
+    /// This used to be ``mergeMessages(_:into:)`` followed by a second call that bumped
+    /// the unread counter — two saves per event. A save is the expensive unit here: every
+    /// `@Query` on the main context refetches on each one, so the sidebar, the transcript
+    /// and the thread inspector were all redrawn twice for every message that arrived, and
+    /// at several events a minute that was a redraw of the whole window every few seconds.
+    ///
+    /// - Returns: the space's display title when the message counted as unread, nil when
+    ///   it did not. The title comes back with the verdict because the caller needs it to
+    ///   announce the message and has no other route into the cache.
+    func mergeIncomingMessage(
         _ message: ChatMessage,
-        in spaceName: String,
+        into spaceName: String,
         selfChatName: String?
     ) throws -> String? {
         guard let space = try space(named: spaceName) else { return nil }
-        // Your own messages are never unread, and neither is anything at or before
-        // the read mark — realtime can redeliver.
-        guard message.sender?.name != selfChatName else { return nil }
-        guard let created = message.createTime else { return nil }
-        if let mark = space.lastReadTime, created <= mark { return nil }
+        try upsert([message], into: space)
+        space.lastSyncedAt = Date()
 
-        space.unreadCount += 1
+        let isUnread = Self.countsAsUnread(message, in: space, selfChatName: selfChatName)
+        if isUnread { space.unreadCount += 1 }
         try modelContext.save()
-        return space.title
+        return isUnread ? space.title : nil
+    }
+
+    /// Whether an arriving message is one the reader has not seen.
+    ///
+    /// Your own messages are never unread, and neither is anything at or before the read
+    /// mark — realtime can redeliver.
+    private static func countsAsUnread(
+        _ message: ChatMessage,
+        in space: CachedSpace,
+        selfChatName: String?
+    ) -> Bool {
+        guard message.sender?.name != selfChatName else { return false }
+        guard let created = message.createTime else { return false }
+        if let mark = space.lastReadTime, created <= mark { return false }
+        return true
     }
 
     func unreadSpaceNames() throws -> [String] {
@@ -1243,6 +1263,11 @@ actor ChatStore {
             } else {
                 let created = CachedMessage(name: message.name)
                 created.apply(message)
+                // Cheap only because `CachedSpace` has no `messages` collection for this
+                // to be the inverse of. With one, SwiftData materialized every message in
+                // the space to append this one — 25,610 model objects per arriving event
+                // in the busiest room here, and the heaviest stack in every CPU diagnostic
+                // macOS wrote for the app. See the note in ``CachedSpace``.
                 created.space = space
                 modelContext.insert(created)
                 byName[message.name] = created

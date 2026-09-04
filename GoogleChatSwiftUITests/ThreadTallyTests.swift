@@ -57,13 +57,14 @@ struct ThreadTallyTests {
         let spaceMark = space.lastReadTime ?? .distantPast
         var tallies = Tallies()
 
-        for thread in space.threads {
+        for thread in try threads(in: spaceName, context) {
             let mark = thread.lastReadTime ?? .distantPast
             var replies = 0
             var unread = 0
             var hidden = 0
+            let messages = try messages(in: thread.name, context)
 
-            for message in thread.messages {
+            for message in messages {
                 guard !message.isDeleted, message.isThreadReply else { continue }
                 replies += 1
                 let created = message.createTime ?? .distantPast
@@ -80,7 +81,7 @@ struct ThreadTallyTests {
             // The opening message: the earliest non-reply, or failing that the earliest
             // message of any kind. Deleted messages count — a thread whose root was
             // tombstoned still has that root, and shows "Message deleted" as its snippet.
-            let byAge = thread.messages.sorted {
+            let byAge = messages.sorted {
                 ($0.createTime ?? .distantPast) < ($1.createTime ?? .distantPast)
             }
             if let root = byAge.first(where: { !$0.isThreadReply }) ?? byAge.first {
@@ -106,13 +107,28 @@ struct ThreadTallyTests {
             unreadThreadCount: space.unreadThreadCount,
             unreadThreadReplyCount: space.unreadThreadReplyCount
         )
-        for thread in space.threads {
+        for thread in try threads(in: spaceName, context) {
             tallies.replies[thread.name] = thread.replyCount
             tallies.unreadReplies[thread.name] = thread.unreadReplyCount
             tallies.roots[thread.name] = thread.rootMessageName
             tallies.lastReplies[thread.name] = thread.lastReplyMessageName
         }
         return tallies
+    }
+
+    /// The oracle reads the rows by fetch, as the store does, because the models carry no
+    /// collection to walk: `CachedSpace.threads` and `CachedThread.messages` are gone —
+    /// see the note in ``CachedSpace`` for what keeping them cost.
+    private func threads(in spaceName: String, _ context: ModelContext) throws -> [CachedThread] {
+        try context.fetch(
+            FetchDescriptor<CachedThread>(predicate: #Predicate { $0.space?.name == spaceName })
+        )
+    }
+
+    private func messages(in threadName: String, _ context: ModelContext) throws -> [CachedMessage] {
+        try context.fetch(
+            FetchDescriptor<CachedMessage>(predicate: #Predicate { $0.threadName == threadName })
+        )
     }
 
     /// Fails naming the step, since the point of a sequence is knowing which operation
@@ -319,7 +335,7 @@ struct ThreadTallyTests {
         space.threadTallyVersion = 0
         space.unreadThreadReplyCount = 99
         space.unreadThreadCount = 99
-        for thread in space.threads { thread.hiddenUnreadReplyCount = 0 }
+        for thread in try threads(in: "spaces/A", context) { thread.hiddenUnreadReplyCount = 0 }
         try context.save()
 
         // Any operation that would normally adjust by difference.

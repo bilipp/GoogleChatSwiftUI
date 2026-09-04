@@ -166,13 +166,23 @@ final class CachedSpace {
     /// question, and it is answered here so they cannot drift apart.
     var isUnread: Bool { unreadCount > 0 || hasUnread || unreadThreadCount > 0 }
 
-    /// Cascade: deleting a cached space should not orphan its messages.
-    @Relationship(deleteRule: .cascade, inverse: \CachedMessage.space)
-    var messages: [CachedMessage] = []
-
-    /// Likewise for its threads, which are index rows over those messages.
-    @Relationship(deleteRule: .cascade, inverse: \CachedThread.space)
-    var threads: [CachedThread] = []
+    // No `messages` or `threads` collection here, and the absence is load-bearing.
+    //
+    // Both used to exist, as the inverses of `CachedMessage.space` and
+    // `CachedThread.space`, and nothing read them any more — every reader had been moved
+    // to a fetch, because reading either faulted the whole room in. What that left in
+    // place was the write: SwiftData keeps an inverse in step by materializing it, so
+    // `message.space = space` built a model object for every message already cached in
+    // the space before it could append one, and creating a thread row did the same over
+    // every thread. In the busiest space here that was 25,610 messages and 25,610 threads
+    // per arriving event, several events a minute — the heaviest stack in every CPU
+    // diagnostic macOS wrote for builds 21 through 25, and the reason the app got slower
+    // the longer it ran. See ``ChatStore/upsert(_:into:)``.
+    //
+    // So the relationships are one-way. `CachedMessage.space` and `CachedThread.space`
+    // are still real relationships — the transcript's predicates and the compound indexes
+    // on them are unchanged — there is simply nothing on this end to keep in step. The
+    // cascade they carried is not missed: nothing deletes a space.
 
     init(name: String) {
         self.name = name
@@ -387,11 +397,16 @@ final class CachedMessage {
     /// blob and decoded on demand.
     var cardsJSON: Data?
 
+    /// One-way, deliberately: there is no `CachedSpace.messages` for this to be the
+    /// inverse of. See the note in ``CachedSpace`` for what maintaining one cost.
     var space: CachedSpace?
 
     /// Set only in fully threaded spaces, where a thread is a place you can navigate
     /// to. Elsewhere Chat still assigns every message a thread name, but replies are
     /// rendered inline, so an index row over them would describe nothing.
+    ///
+    /// One-way like `space`, and for the same reason: a reply arriving in a long thread
+    /// must not cost a model object per reply already in it.
     var thread: CachedThread?
 
     @Relationship(deleteRule: .cascade, inverse: \CachedReaction.message)
@@ -672,10 +687,10 @@ final class CachedThread {
     /// the message itself where the directory has not answered for the sender yet.
     var lastReplyMessageName: String?
 
-    /// Nullify, not cascade: this is an index over messages the space owns, and
-    /// dropping a thread row must never take the conversation with it.
-    @Relationship(deleteRule: .nullify, inverse: \CachedMessage.thread)
-    var messages: [CachedMessage] = []
+    // No `messages` collection: `CachedMessage.thread` is one-way. The store reads a
+    // thread's messages through `ChatStore.messagesByThread(named:)`, by name, which the
+    // second index on `CachedMessage` makes a seek — and writing the inverse would have
+    // cost a model object per existing reply every time one arrived. See ``CachedSpace``.
 
     init(name: String) {
         self.name = name
@@ -684,9 +699,30 @@ final class CachedThread {
     var hasUnread: Bool { unreadReplyCount > 0 }
 
     /// The message the thread hangs off — the one shown in the main transcript.
+    ///
+    /// The fallback for a row whose ``rootMessageName`` has never been computed, and a
+    /// fetch rather than a walk of a relationship, since there is no relationship to walk.
+    /// The rule is ``ChatStore``'s: the earliest non-reply, or failing that the earliest
+    /// message of any kind. Nil for a model that belongs to no context, which one fetched
+    /// by a query never is.
     var root: CachedMessage? {
-        messages.first { !$0.isThreadReply }
-            ?? messages.min { ($0.createTime ?? .distantPast) < ($1.createTime ?? .distantPast) }
+        guard let modelContext else { return nil }
+        let threadName = name
+        let byAge = [SortDescriptor(\CachedMessage.createTime, order: .forward)]
+
+        var earliestNonReply = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate { $0.threadName == threadName && !$0.isThreadReply },
+            sortBy: byAge
+        )
+        earliestNonReply.fetchLimit = 1
+        if let root = try? modelContext.fetch(earliestNonReply).first { return root }
+
+        var earliest = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate { $0.threadName == threadName },
+            sortBy: byAge
+        )
+        earliest.fetchLimit = 1
+        return try? modelContext.fetch(earliest).first
     }
 }
 

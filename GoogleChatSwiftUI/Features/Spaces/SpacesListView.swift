@@ -373,6 +373,8 @@ private struct SidebarSpaceList: View {
     /// Deliberately not the list's selection: moving through results must not open
     /// each conversation it passes over, only the one you press Return on.
     @State private var highlightedSpaceName: String?
+    /// The filter menu's counts, remembered for a moment — see ``menuCounts()``.
+    @State private var countCache = SidebarCountCache()
 
     private let scope: SpaceScope
     private let kind: SpaceKind
@@ -524,8 +526,20 @@ private struct SidebarSpaceList: View {
 
     /// What each option in the filter menu would list. Measured against the *other*
     /// axis's current setting, so each number is what picking that one option produces.
+    ///
+    /// Handed to the filter bar as a closure so that it would only run when the menu was
+    /// opened — and on macOS that is not when it runs. `Menu` builds its content when the
+    /// button is drawn, so the seven counts were taken on every pass of a sidebar that
+    /// redraws on every write to the store: a quarter of the main thread's samples in the
+    /// CPU diagnostics, while events were arriving. So the answer is kept for a second,
+    /// which is shorter than anyone takes to open the menu and longer than any burst of
+    /// redraws.
     private func menuCounts() -> SidebarOptionCounts {
         let now = Date()
+        if let remembered = countCache.counts(for: scope, kind: kind, at: now) {
+            return remembered
+        }
+
         var byScope: [SpaceScope: Int] = [:]
         for option in SpaceScope.allCases {
             byScope[option] = (try? SidebarCounts.count(
@@ -538,7 +552,9 @@ private struct SidebarSpaceList: View {
                 scope: scope, kind: option, now: now, in: modelContext
             )) ?? 0
         }
-        return SidebarOptionCounts(scope: byScope, kind: byKind)
+        let counted = SidebarOptionCounts(scope: byScope, kind: byKind)
+        countCache.remember(counted, for: scope, kind: kind, at: now)
+        return counted
     }
 
     /// Whether anything is cached at all, which is what separates "still loading" from
@@ -717,6 +733,42 @@ struct SpaceGroup {
     let spaces: [CachedSpace]
     /// Drives `.onMove`: only this group can be rearranged.
     var isPinned = false
+}
+
+/// The filter menu's counts, held across body evaluations — see
+/// ``SidebarSpaceList/menuCounts()`` for why they are not simply recomputed.
+///
+/// A class in `@State` rather than a value: remembering an answer *during* a body
+/// evaluation must not itself invalidate the view, and mutating a stored value there
+/// would. Keyed by the two filter settings the counts are measured against, so changing
+/// either asks again at once; the time limit covers everything else that can move them.
+@MainActor
+final class SidebarCountCache {
+    private struct Key: Equatable {
+        let scope: SpaceScope
+        let kind: SpaceKind
+    }
+
+    /// Long enough to absorb a burst of redraws, short enough that a count is never
+    /// visibly stale by the time a menu has opened.
+    private static let lifetime: TimeInterval = 1
+
+    private var key: Key?
+    private var counted = SidebarOptionCounts()
+    private var takenAt = Date.distantPast
+
+    func counts(for scope: SpaceScope, kind: SpaceKind, at now: Date) -> SidebarOptionCounts? {
+        guard key == Key(scope: scope, kind: kind),
+              now.timeIntervalSince(takenAt) < Self.lifetime
+        else { return nil }
+        return counted
+    }
+
+    func remember(_ counts: SidebarOptionCounts, for scope: SpaceScope, kind: SpaceKind, at now: Date) {
+        key = Key(scope: scope, kind: kind)
+        counted = counts
+        takenAt = now
+    }
 }
 
 /// Everything the sidebar derives from the rows it fetched, worked out once per body

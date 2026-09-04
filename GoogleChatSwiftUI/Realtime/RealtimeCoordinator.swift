@@ -235,16 +235,17 @@ actor RealtimeCoordinator {
         case .messageCreated(let message):
             guard let space = event.spaceName else { return }
             do {
-                try await store.mergeMessages([message], into: space)
+                // Merge and unread tally in one save rather than two: each save redraws
+                // every `@Query` in the window. See ``ChatStore/mergeIncomingMessage``.
+                let spaceTitle = try await store.mergeIncomingMessage(
+                    message,
+                    into: space,
+                    selfChatName: selfChatName
+                )
                 // Chat sends an ID with no display name, so an incoming message would
                 // otherwise appear as "Unknown" until the next full reload.
                 await sync.resolveSenders(from: [message])
 
-                let spaceTitle = try await store.noteIncomingMessage(
-                    message,
-                    in: space,
-                    selfChatName: selfChatName
-                )
                 if let spaceTitle {
                     incomingHandler?(
                         IncomingMessage(
