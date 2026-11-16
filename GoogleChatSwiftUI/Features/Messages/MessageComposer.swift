@@ -55,6 +55,10 @@ struct MessageComposer: View {
     /// field is then the only place the typed text still exists. Nil where there is no
     /// meeting to offer, and the button is left out entirely.
     var onStartMeeting: ((ComposedMessage) async -> Bool)?
+    /// Text handed in from outside to start the draft with — see ``IncomingLink``. Added
+    /// below anything already typed rather than replacing it, then reported taken.
+    var seed: String?
+    var onSeedTaken: () -> Void = {}
     let onSend: (ComposedMessage) -> Void
 
     @State private var text: String = ""
@@ -153,6 +157,12 @@ struct MessageComposer: View {
         // Choosing "Reply" happens in the transcript, several rows away from here, so
         // the caret has to come to the composer rather than the user hunting for it.
         .onChange(of: replyTarget) { if replyTarget != nil { isFocused = true } }
+        .onChange(of: seed, initial: true) {
+            guard let seed else { return }
+            text = text.isEmpty ? seed : text + "\n\n" + seed
+            isFocused = true
+            onSeedTaken()
+        }
     }
 
     /// Whichever list the trailing fragment opened, or nothing.

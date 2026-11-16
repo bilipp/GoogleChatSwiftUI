@@ -82,6 +82,7 @@ struct SpacesListView: View {
             // passes that take seconds. The cache is already on disk, so the
             // conversation opens without waiting for any of them.
             await openFromNotification()
+            await openIncomingLink()
             if case .idle = session.spacesState { await session.refreshSpaces() }
             await session.startRealtime()
             await session.prepareSearchIndex()
@@ -97,6 +98,10 @@ struct SpacesListView: View {
         .onChange(of: NotificationRouter.shared.pendingSpaceName) { _, pending in
             guard pending != nil else { return }
             Task { await openFromNotification() }
+        }
+        .onChange(of: IncomingLinkRouter.shared.pending) { _, pending in
+            guard pending != nil else { return }
+            Task { await openIncomingLink() }
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -181,6 +186,24 @@ struct SpacesListView: View {
         guard let name = NotificationRouter.shared.claimPendingSpace() else { return }
         unhide(name)
         await session.revealSpace(name)
+    }
+
+    /// Opens a `gchat://` link handed to the app from outside — see ``IncomingLink``.
+    ///
+    /// A conversation this account does not have goes to the browser, as a clicked link
+    /// would; its draft goes to the pasteboard, since there is no composer here to put it in.
+    private func openIncomingLink() async {
+        guard let incoming = IncomingLinkRouter.shared.claim() else { return }
+        guard isCached(incoming.link.spaceName) else {
+            if let draft = incoming.draft {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(draft, forType: .string)
+            }
+            NSWorkspace.shared.open(incoming.webURL)
+            return
+        }
+        unhide(incoming.link.spaceName)
+        await session.reveal(incoming.link, draft: incoming.draft)
     }
 
     /// Follows a `chat.google.com` link inside the app instead of in a browser.

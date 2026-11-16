@@ -8,5 +8,16 @@
 	<string>$(GOOGLE_OAUTH_REDIRECT_SCHEME)</string>
 	<key>GCPProjectID</key>
 	<string>$(GCP_PROJECT_ID)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Chat link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>gchat</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

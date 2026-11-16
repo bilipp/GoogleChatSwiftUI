@@ -218,6 +218,14 @@ final class ChatSessionModel {
     /// the time, which is nearly always.
     private(set) var linkNotice: String?
 
+    /// Text an incoming link asked to start a message with, keyed by the thread or space
+    /// whose composer should show it. Taken by that composer once, then gone.
+    private(set) var pendingDrafts: [String: String] = [:]
+
+    func takeDraft(for key: String) {
+        pendingDrafts[key] = nil
+    }
+
     func dismissLinkNotice() {
         linkNotice = nil
     }
@@ -278,7 +286,7 @@ final class ChatSessionModel {
     ///
     /// The caller has already established that this account knows the conversation —
     /// see `SpacesListView.openChatLink`, which hands anything else to the browser.
-    func reveal(_ link: ChatDeepLink) async {
+    func reveal(_ link: ChatDeepLink, draft: String? = nil) async {
         await revealSpace(link.spaceName)
 
         var destination = await resolvedDestination(of: link)
@@ -299,6 +307,16 @@ final class ChatSessionModel {
         // Discarded if the reader has moved on in the meantime — a slow backfill must
         // not yank a transcript nobody is looking at any more.
         guard selectedSpaceName == link.spaceName else { return }
+
+        if let draft {
+            // Into the composer the reader is about to be looking at: the thread's where
+            // a thread was opened, the conversation's otherwise.
+            if case .thread(let threadName, _) = destination {
+                pendingDrafts[threadName] = draft
+            } else {
+                pendingDrafts[link.spaceName] = draft
+            }
+        }
 
         switch destination {
         case .message(let messageName):

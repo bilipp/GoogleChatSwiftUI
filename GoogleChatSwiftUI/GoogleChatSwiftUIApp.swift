@@ -39,6 +39,9 @@ struct GoogleChatSwiftUIApp: App {
             RootView()
                 .environment(auth)
                 .task { await auth.restore() }
+                .onOpenURL { IncomingLinkRouter.shared.receive($0) }
+                // Without this, every opened link would get a window of its own.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         // Wide enough for sidebar + transcript + thread inspector simultaneously;
         // at 1100 the transcript was squeezed to a few words per line once a thread

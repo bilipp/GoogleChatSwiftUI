@@ -70,7 +70,9 @@ struct ThreadPane: View {
                     )
                     if sent { sendCount += 1 }
                     return sent
-                }
+                },
+                seed: session.pendingDrafts[threadName],
+                onSeedTaken: { session.takeDraft(for: threadName) }
             ) { composed in
                 let target = replyTarget
                 replyTarget = nil

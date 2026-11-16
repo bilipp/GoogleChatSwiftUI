@@ -324,7 +324,9 @@ private struct ConversationTranscript: View {
                     )
                     if sent { sendCount += 1 }
                     return sent
-                }
+                },
+                seed: session.pendingDrafts[spaceName],
+                onSeedTaken: { session.takeDraft(for: spaceName) }
             ) { composed in
                 let target = replyTarget
                 replyTarget = nil
