@@ -27,6 +27,8 @@ struct FormattedMessageText: View {
             paragraph(text)
         case .bulletList(let items):
             bulletList(items)
+        case .numberedList(let start, let items):
+            numberedList(start: start, items: items)
         case .quote(let lines):
             quote(lines)
         case .codeBlock(let language, let body):
@@ -61,6 +63,25 @@ struct FormattedMessageText: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("List, \(items.count) items")
+    }
+
+    /// Numbers are right-aligned in a column as wide as the longest of them, so the
+    /// items line up past item 9.
+    private func numberedList(start: Int, items: [AttributedString]) -> some View {
+        let widest = "\(start + items.count - 1).".count
+        return VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(items.enumerated()), id: \.offset) { offset, item in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(verbatim: "\(start + offset).")
+                        .font(.body.monospacedDigit())
+                        .frame(minWidth: CGFloat(widest) * 8, alignment: .trailing)
+                    Text(item)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Numbered list, \(items.count) items")
     }
 
     private func quote(_ lines: [AttributedString]) -> some View {

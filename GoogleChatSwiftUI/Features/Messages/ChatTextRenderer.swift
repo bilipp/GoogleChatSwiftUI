@@ -26,6 +26,16 @@ nonisolated enum ChatCodeAttribute: AttributedStringKey {
 nonisolated enum ChatTextSource: Sendable, Hashable {
     case plain
     case formatted
+    /// `formattedText` of a message that was posted as Markdown.
+    ///
+    /// Chat hands those back in Markdown rather than its own dialect, and normalised:
+    /// `**bold**`, `*italic*`, `[label](url)`, numbered lists, and paragraphs hard-wrapped
+    /// at about 80 columns. Read as Chat's dialect, every `**` leaves a stray asterisk
+    /// either side of a bold run and the wrapping breaks sentences mid-line.
+    case markdown
+
+    /// Whether `formattedText`'s own forms — escapes and `<…>` tokens — apply.
+    var isFormatted: Bool { self != .plain }
 }
 
 /// A message body together with the field it came from.
@@ -46,6 +56,8 @@ nonisolated enum ChatBlock: Sendable {
     case paragraph(AttributedString)
     /// Consecutive `- item` / `* item` lines.
     case bulletList([AttributedString])
+    /// A Markdown `1.` list, numbered from `start`.
+    case numberedList(start: Int, items: [AttributedString])
     /// Consecutive `> quoted` lines, one entry per line.
     case quote([AttributedString])
     /// The body of a ```` ``` ```` fence, verbatim — no inline markup applies inside.
@@ -86,6 +98,8 @@ nonisolated enum ChatTextRenderer {
             switch segment {
             case .code(let language, let body):
                 result.append(.codeBlock(language: language, body: body))
+            case .text(let body) where source == .markdown:
+                result.append(contentsOf: markdownBlocks(body, mentions: mentions, isOwn: isOwn))
             case .text(let body):
                 result.append(
                     contentsOf: lineBlocks(
@@ -124,6 +138,12 @@ nonisolated enum ChatTextRenderer {
                 for (offset, item) in items.enumerated() {
                     if offset > 0 { result.append(AttributedString("\n")) }
                     result.append(AttributedString("• "))
+                    result.append(item)
+                }
+            case .numberedList(let start, let items):
+                for (offset, item) in items.enumerated() {
+                    if offset > 0 { result.append(AttributedString("\n")) }
+                    result.append(AttributedString("\(start + offset). "))
                     result.append(item)
                 }
             case .quote(let lines):
@@ -169,11 +189,12 @@ nonisolated enum ChatTextRenderer {
         mentions: [String: String]
     ) -> ChatMessageBody {
         let fallback = ChatMessageBody(text: plain ?? "", source: .plain)
-        guard let formatted = formatted.map(ChatMarkdown.normalizingMentions), !formatted.isEmpty
-        else { return fallback }
+        guard let raw = formatted, !raw.isEmpty else { return fallback }
+        let source: ChatTextSource = isMarkdown(raw) ? .markdown : .formatted
+        let formatted = ChatMarkdown.normalizingMentions(raw)
         guard mentionIDs(in: formatted).allSatisfy({ mentionName(of: $0, in: mentions) != nil })
         else { return fallback }
-        return ChatMessageBody(text: formatted, source: .formatted)
+        return ChatMessageBody(text: formatted, source: source)
     }
 
     /// The body as the composer would have written it, for the edit field.
@@ -184,13 +205,14 @@ nonisolated enum ChatTextRenderer {
     /// written as names, since `<users/123>` is not something anyone can edit around;
     /// `MessageBubble.saveEdit` encodes them again on the way out.
     static func editable(_ body: ChatMessageBody, mentions: [String: String]) -> String {
-        guard body.source == .formatted else { return body.text }
+        guard body.source.isFormatted else { return body.text }
         var result = body.text
         for id in Set(mentionIDs(in: body.text)) {
             guard let name = mentionName(of: id, in: mentions) else { continue }
             result = result.replacingOccurrences(of: "<\(id)>", with: "@\(name)")
         }
-        return ChatMarkdown.fromChatSyntax(result)
+        // Already Markdown; converting it again would read its `*italic*` as Chat's bold.
+        return body.source == .markdown ? result : ChatMarkdown.fromChatSyntax(result)
     }
 
     /// The user resource names a `formattedText` body mentions.
@@ -213,6 +235,30 @@ nonisolated enum ChatTextRenderer {
         if let name = mentions[id] { return name }
         return id == MentionCandidate.everyoneName ? MentionCandidate.everyone.displayName : nil
     }
+
+    /// Whether a `formattedText` body is Markdown rather than Chat's dialect.
+    ///
+    /// Nothing on the message says which it is, so this goes by forms only Markdown
+    /// writes: Chat's dialect never doubles a marker (`**`, `~~`) — it escapes a literal
+    /// one as `\*` — writes links as `<url|label>` rather than `[label](url)`, and names
+    /// people as `<users/…>` rather than `<chat-user …>`. Code is taken out first, so a
+    /// `**kwargs` inside backticks does not count.
+    static func isMarkdown(_ formatted: String) -> Bool {
+        if formatted.contains("<chat-user") { return true }
+        let range = NSRange(formatted.startIndex..., in: formatted)
+        let prose = codeSpans.stringByReplacingMatches(
+            in: formatted, range: range, withTemplate: ""
+        )
+        return markdownSignal.firstMatch(in: prose, range: NSRange(prose.startIndex..., in: prose)) != nil
+    }
+
+    private static let codeSpans = try! NSRegularExpression(
+        pattern: #"```[\s\S]*?```|`[^`\n]*`"#
+    )
+
+    private static let markdownSignal = try! NSRegularExpression(
+        pattern: #"(?<![\\*~])(\*\*|~~)(?=[^\s*~])|\[[^\]\n]+\]\((?:https?|mailto):[^)\s]+\)"#
+    )
 
     // MARK: - Fenced code blocks
 
@@ -369,6 +415,170 @@ nonisolated enum ChatTextRenderer {
         return String(rest.drop { $0 == " " || $0 == "\t" })
     }
 
+    // MARK: - Markdown blocks
+
+    private enum ListKind { case bullet, numbered }
+
+    /// Blocks of a body Chat returned as Markdown. See ``ChatTextSource/markdown``.
+    ///
+    /// Unlike Chat's dialect, a newline here is not a line break: Chat wraps long
+    /// paragraphs itself, so lines join with a space until a blank line, and a list
+    /// item runs on through its indented continuation lines. Items may also be
+    /// separated by blank lines without ending the list.
+    private static func markdownBlocks(
+        _ text: String,
+        mentions: [String: String],
+        isOwn: Bool
+    ) -> [ChatBlock] {
+        var blocks: [ChatBlock] = []
+        var paragraph: [String] = []
+        var quote: [String] = []
+        var listKind: ListKind?
+        var listStart = 1
+        var items: [[String]] = []
+        var blankSinceItem = false
+
+        func inline(_ lines: [String]) -> AttributedString {
+            inlineText(joiningSoftBreaks(lines), mentions: mentions, source: .markdown, isOwn: isOwn)
+        }
+
+        func flushParagraph() {
+            guard !paragraph.isEmpty else { return }
+            blocks.append(.paragraph(inline(paragraph)))
+            paragraph = []
+        }
+
+        func flushQuote() {
+            guard !quote.isEmpty else { return }
+            // A blank `>` line separates paragraphs inside the quotation.
+            let paragraphs = quote
+                .split { $0.allSatisfy(\.isWhitespace) }
+                .map { inline(Array($0)) }
+            if !paragraphs.isEmpty { blocks.append(.quote(paragraphs)) }
+            quote = []
+        }
+
+        func flushList() {
+            defer { listKind = nil; items = []; blankSinceItem = false }
+            guard let listKind, !items.isEmpty else { return }
+            let rendered = items.map { inline($0) }
+            switch listKind {
+            case .bullet: blocks.append(.bulletList(rendered))
+            case .numbered: blocks.append(.numberedList(start: listStart, items: rendered))
+            }
+        }
+
+        for rawLine in text.components(separatedBy: "\n") {
+            let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+
+            if line.allSatisfy(\.isWhitespace) {
+                flushParagraph()
+                if !quote.isEmpty { quote.append("") }
+                if listKind != nil { blankSinceItem = true }
+                continue
+            }
+
+            if let quoted = quoteBody(of: line) {
+                flushParagraph()
+                flushList()
+                quote.append(quoted)
+                continue
+            }
+            flushQuote()
+
+            if let item = markdownListItem(line) {
+                flushParagraph()
+                if listKind != item.kind {
+                    flushList()
+                    listKind = item.kind
+                    listStart = item.number
+                }
+                items.append([item.body])
+                blankSinceItem = false
+                continue
+            }
+
+            if listKind != nil, !items.isEmpty {
+                // Indented lines carry on the item above; so does an unindented one
+                // straight after it, which Markdown calls a lazy continuation.
+                let indented = line.first == " " || line.first == "\t"
+                if indented || !blankSinceItem {
+                    items[items.count - 1].append(line)
+                    blankSinceItem = false
+                    continue
+                }
+                flushList()
+            }
+
+            if let heading = headingBody(of: line) {
+                flushParagraph()
+                var title = inline([heading])
+                for run in title.runs {
+                    title[run.range].font = (run.font ?? .body).bold()
+                }
+                blocks.append(.paragraph(title))
+                continue
+            }
+
+            paragraph.append(line)
+        }
+
+        flushParagraph()
+        flushQuote()
+        flushList()
+        return blocks
+    }
+
+    /// A `- item`, `* item`, `+ item` or `1. item` / `1) item` line.
+    private static func markdownListItem(
+        _ line: String
+    ) -> (kind: ListKind, number: Int, body: String)? {
+        if let body = bulletBody(of: line) { return (.bullet, 1, body) }
+        let trimmed = line.drop { $0 == " " || $0 == "\t" }
+        if let marker = trimmed.first, marker == "+" {
+            let rest = trimmed.dropFirst()
+            guard rest.first == " " || rest.first == "\t" else { return nil }
+            return (.bullet, 1, String(rest.drop { $0 == " " || $0 == "\t" }))
+        }
+        let digits = trimmed.prefix { $0.isASCII && $0.isNumber }
+        guard (1...9).contains(digits.count), let number = Int(digits) else { return nil }
+        var rest = trimmed.dropFirst(digits.count)
+        guard rest.first == "." || rest.first == ")" else { return nil }
+        rest = rest.dropFirst()
+        guard rest.first == " " || rest.first == "\t" else { return nil }
+        return (.numbered, number, String(rest.drop { $0 == " " || $0 == "\t" }))
+    }
+
+    /// The title of a `# Heading` line.
+    private static func headingBody(of line: String) -> String? {
+        let hashes = line.prefix { $0 == "#" }
+        guard (1...6).contains(hashes.count) else { return nil }
+        let rest = line.dropFirst(hashes.count)
+        guard rest.first == " " || rest.first == "\t" else { return nil }
+        let title = rest.trimmingCharacters(in: .whitespaces)
+        return title.isEmpty ? nil : title
+    }
+
+    /// Joins the wrapped lines of one paragraph back into a single line.
+    ///
+    /// A line ending in a backslash or two spaces is Markdown's hard break and keeps
+    /// its newline.
+    private static func joiningSoftBreaks(_ lines: [String]) -> String {
+        var result = ""
+        for (offset, raw) in lines.enumerated() {
+            var line = Substring(raw).drop { $0 == " " || $0 == "\t" }
+            var hardBreak = raw.hasSuffix("  ")
+            while let last = line.last, last == " " || last == "\t" { line = line.dropLast() }
+            if line.hasSuffix("\\") {
+                line = line.dropLast()
+                hardBreak = true
+            }
+            result += line
+            if offset < lines.count - 1 { result += hardBreak ? "\n" : " " }
+        }
+        return result
+    }
+
     // MARK: - Inline markup
 
     private struct InlineStyle: OptionSet, Sendable {
@@ -378,37 +588,41 @@ nonisolated enum ChatTextRenderer {
         static let strikethrough = InlineStyle(rawValue: 1 << 2)
     }
 
-    private enum Delimiter: Sendable {
-        case bold, italic, strikethrough, code
-
-        init?(_ character: Character) {
-            switch character {
-            case "*": self = .bold
-            case "_": self = .italic
-            case "~": self = .strikethrough
-            case "`": self = .code
-            default: return nil
-            }
-        }
-
-        var character: Character {
-            switch self {
-            case .bold: "*"
-            case .italic: "_"
-            case .strikethrough: "~"
-            case .code: "`"
-            }
-        }
-
+    /// A run of markup characters that opens and closes a styled span.
+    private struct Delimiter: Sendable, Equatable {
+        let marker: [Character]
         /// Nil for code, whose contents are never parsed further and so carry no
         /// nestable style.
-        var style: InlineStyle? {
-            switch self {
-            case .bold: .bold
-            case .italic: .italic
-            case .strikethrough: .strikethrough
-            case .code: nil
-            }
+        let style: InlineStyle?
+
+        init(_ marker: String, _ style: InlineStyle?) {
+            self.marker = Array(marker)
+            self.style = style
+        }
+
+        var character: Character { marker[0] }
+        var isCode: Bool { style == nil }
+
+        /// Chat's dialect: one character each, and `*` is bold.
+        static let chat: [Delimiter] = [
+            Delimiter("*", .bold), Delimiter("_", .italic),
+            Delimiter("~", .strikethrough), Delimiter("`", nil),
+        ]
+
+        /// Markdown, longest first so `**` is not read as two `*`.
+        static let markdown: [Delimiter] = [
+            Delimiter("**", .bold), Delimiter("__", .bold), Delimiter("~~", .strikethrough),
+            Delimiter("*", .italic), Delimiter("_", .italic), Delimiter("~", .strikethrough),
+            Delimiter("`", nil),
+        ]
+
+        static func all(for source: ChatTextSource) -> [Delimiter] {
+            source == .markdown ? markdown : chat
+        }
+
+        func matches(_ characters: [Character], at index: Int) -> Bool {
+            guard index + marker.count <= characters.count else { return false }
+            return characters[index..<(index + marker.count)].elementsEqual(marker)
         }
     }
 
@@ -460,13 +674,13 @@ nonisolated enum ChatTextRenderer {
         }
 
         while index < characters.count {
-            if source == .formatted, let escaped = escapedCharacter(characters, at: index) {
+            if source.isFormatted, let escaped = escapedCharacter(characters, at: index) {
                 literal.append(escaped)
                 index += 2
                 continue
             }
 
-            if source == .formatted,
+            if source.isFormatted,
                let token = angleToken(characters, at: index, mentions: mentions, isOwn: isOwn) {
                 flushLiteral()
                 result.append(token.run)
@@ -474,11 +688,31 @@ nonisolated enum ChatTextRenderer {
                 continue
             }
 
-            guard let delimiter = Delimiter(characters[index]),
+            if source == .markdown, let link = markdownLink(characters, at: index) {
+                flushLiteral()
+                var label = parseInline(
+                    link.label,
+                    style: style,
+                    mentions: mentions,
+                    source: source,
+                    isOwn: isOwn
+                )
+                label.link = link.url
+                label.underlineStyle = .single
+                // Accent-on-accent would vanish inside an own-message bubble.
+                label.foregroundColor = isOwn ? .white : .accentColor
+                result.append(label)
+                index = link.end + 1
+                continue
+            }
+
+            guard let delimiter = Delimiter.all(for: source).first(where: {
+                      $0.matches(characters, at: index)
+                  }),
                   // Re-opening a style already in effect would leave the closing
                   // delimiter with nothing to pair against.
                   delimiter.style.map({ !style.contains($0) }) ?? true,
-                  isOpening(characters, at: index),
+                  isOpening(characters, at: index, length: delimiter.marker.count),
                   let close = closingIndex(
                       characters,
                       after: index,
@@ -492,7 +726,7 @@ nonisolated enum ChatTextRenderer {
             }
 
             flushLiteral()
-            let inner = Array(characters[(index + 1)..<close])
+            let inner = Array(characters[(index + delimiter.marker.count)..<close])
             if let nested = delimiter.style {
                 result.append(
                     parseInline(
@@ -506,11 +740,36 @@ nonisolated enum ChatTextRenderer {
             } else {
                 result.append(codeRun(String(inner), isOwn: isOwn))
             }
-            index = close + 1
+            index = close + delimiter.marker.count
         }
 
         flushLiteral()
         return result
+    }
+
+    /// A Markdown `[label](url)` starting at `index`.
+    ///
+    /// Only absolute URLs count, so `[sic](see above)` in prose stays as typed.
+    private static func markdownLink(
+        _ characters: [Character],
+        at index: Int
+    ) -> (label: [Character], url: URL, end: Int)? {
+        guard characters[index] == "[" else { return nil }
+        var close = index + 1
+        while close < characters.count, characters[close] != "]", characters[close] != "\n" {
+            close += 1
+        }
+        guard close > index + 1, close + 1 < characters.count, characters[close] == "]",
+              characters[close + 1] == "("
+        else { return nil }
+        var end = close + 2
+        while end < characters.count, characters[end] != ")", !characters[end].isWhitespace {
+            end += 1
+        }
+        guard end < characters.count, characters[end] == ")" else { return nil }
+        let target = String(characters[(close + 2)..<end])
+        guard let url = URL(string: target), url.scheme != nil else { return nil }
+        return (Array(characters[(index + 1)..<close]), url, end)
     }
 
     // MARK: - `formattedText` forms
@@ -587,25 +846,27 @@ nonisolated enum ChatTextRenderer {
     /// A delimiter opens a span only at a word boundary and with something other
     /// than space after it. Without that rule `snake_case` renders as italic and
     /// the `_` in a URL path eats half the link.
-    private static func isOpening(_ characters: [Character], at index: Int) -> Bool {
+    private static func isOpening(_ characters: [Character], at index: Int, length: Int = 1) -> Bool {
+        let marker = characters[index]
         if index > 0 {
             let previous = characters[index - 1]
-            if previous.isLetter || previous.isNumber { return false }
+            if previous.isLetter || previous.isNumber || previous == marker { return false }
         }
-        guard index + 1 < characters.count else { return false }
-        let next = characters[index + 1]
-        return !next.isWhitespace && next != characters[index]
+        guard index + length < characters.count else { return false }
+        let next = characters[index + length]
+        return !next.isWhitespace && next != marker
     }
 
     /// The mirror rule: a closing delimiter hugs the text it ends and is not
     /// followed by more word characters.
-    private static func isClosing(_ characters: [Character], at index: Int) -> Bool {
+    private static func isClosing(_ characters: [Character], at index: Int, length: Int = 1) -> Bool {
         guard index > 0 else { return false }
+        let marker = characters[index]
         let previous = characters[index - 1]
-        if previous.isWhitespace || previous == characters[index] { return false }
-        guard index + 1 < characters.count else { return true }
-        let next = characters[index + 1]
-        return !(next.isLetter || next.isNumber)
+        if previous.isWhitespace || previous == marker { return false }
+        guard index + length < characters.count else { return true }
+        let next = characters[index + length]
+        return !(next.isLetter || next.isNumber) && next != marker
     }
 
     /// Finds the delimiter that closes the span opened at `open`.
@@ -620,20 +881,22 @@ nonisolated enum ChatTextRenderer {
         delimiter: Delimiter,
         source: ChatTextSource
     ) -> Int? {
-        var index = open + 1
+        let length = delimiter.marker.count
+        var index = open + length
         while index < characters.count {
-            if source == .formatted, escapedCharacter(characters, at: index) != nil {
+            if source.isFormatted, escapedCharacter(characters, at: index) != nil {
                 index += 2
                 continue
             }
-            if delimiter != .code,
+            if !delimiter.isCode,
                characters[index] == "`",
                isOpening(characters, at: index),
                let codeClose = literalClosingIndex(characters, after: index, character: "`") {
                 index = codeClose + 1
                 continue
             }
-            if characters[index] == delimiter.character, isClosing(characters, at: index) {
+            if delimiter.matches(characters, at: index),
+               isClosing(characters, at: index, length: length) {
                 return index
             }
             index += 1
