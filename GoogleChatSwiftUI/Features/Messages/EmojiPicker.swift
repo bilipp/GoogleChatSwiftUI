@@ -7,6 +7,8 @@ import SwiftUI
 /// unassigned and non-emoji code points out automatically, so the list stays correct
 /// as Unicode grows instead of going stale.
 struct EmojiPicker: View {
+    @Environment(ChatSessionModel.self) private var session
+
     let onPick: (String) -> Void
 
     @State private var query = ""
@@ -21,18 +23,21 @@ struct EmojiPicker: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12, pinnedViews: .sectionHeaders) {
+                    let custom = customEmoji
+                    if !custom.isEmpty {
+                        Section {
+                            grid(custom.compactMap { $0.uid.map(ChatEmoji.customKey(uid:)) })
+                        } header: {
+                            sectionHeader("Custom")
+                        }
+                    }
                     ForEach(EmojiCatalogue.categories) { category in
                         let entries = filtered(category)
                         if !entries.isEmpty {
                             Section {
                                 grid(entries)
                             } header: {
-                                Text(category.name)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 2)
-                                    .background(.background)
+                                sectionHeader(category.name)
                             }
                         }
                     }
@@ -44,11 +49,29 @@ struct EmojiPicker: View {
         .padding(10)
     }
 
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
+            .background(.background)
+    }
+
+    /// The organisation's own emoji. Typing a word into the field narrows them by
+    /// shortcode, since they have no character to type.
+    private var customEmoji: [ChatEmoji.CustomEmoji] {
+        let all = session.customEmojis
+        let word = custom.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: .init(charactersIn: ":"))
+        guard !word.isEmpty, firstEmoji(in: word) == nil else { return all }
+        return all.filter { ($0.emojiName ?? "").localizedCaseInsensitiveContains(word) }
+    }
+
     /// Ranges cannot express skin-tone modifiers, flags, or other ZWJ sequences, so
     /// arbitrary input stays available — the system palette (⌃⌘Space) types into here.
     private var customField: some View {
         HStack(spacing: 6) {
-            TextField("Any emoji…", text: $custom)
+            TextField(session.customEmojis.isEmpty ? "Any emoji…" : "Any emoji, or search custom…", text: $custom)
                 .textFieldStyle(.roundedBorder)
                 .focused($isCustomFocused)
                 .onSubmit(submitCustom)
@@ -67,12 +90,13 @@ struct EmojiPicker: View {
                 Button {
                     onPick(emoji)
                 } label: {
-                    Text(emoji)
+                    ReactionEmoji(key: emoji)
                         .font(.title3)
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("React with \(emoji)")
+                .help(session.emojiLabel(emoji))
+                .accessibilityLabel("React with \(session.emojiLabel(emoji))")
             }
         }
     }

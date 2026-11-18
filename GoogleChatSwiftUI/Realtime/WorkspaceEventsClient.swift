@@ -105,6 +105,21 @@ nonisolated struct WorkspaceEventsClient: Sendable {
         "google.workspace.chat.space.v1.updated",
     ]
 
+    /// Read-state changes, which Chat only publishes on a *user* target — they are
+    /// about the person, not the space. Batch variants are delivered without being
+    /// asked for.
+    static let readStateEventTypes = [
+        "google.workspace.chat.spaceReadState.v1.updated",
+        "google.workspace.chat.threadReadState.v1.updated",
+    ]
+
+    /// The user target for read-state events. Only the signed-in user's own events are
+    /// delivered on it, whatever the ID says.
+    /// - Parameter chatUserName: e.g. `users/1234567890`.
+    static func userTarget(for chatUserName: String) -> String {
+        "//cloudidentity.googleapis.com/\(chatUserName)"
+    }
+
     /// Prefix of every subscription resource name, and the one thing that
     /// distinguishes one from the operation that acted on it.
     static let namePrefix = "subscriptions/"
@@ -113,14 +128,18 @@ nonisolated struct WorkspaceEventsClient: Sendable {
         self.transport = transport
     }
 
-    func listSubscriptions() async throws -> [EventSubscription] {
+    /// - Parameter eventType: the API refuses an unfiltered list, so one event type the
+    ///   wanted subscription carries narrows it.
+    func listSubscriptions(
+        withEventType eventType: String = eventTypes[0]
+    ) async throws -> [EventSubscription] {
         var components = URLComponents(
             url: Self.baseURL.appending(path: "subscriptions"),
             resolvingAgainstBaseURL: false
         )!
         // The API requires a filter; an unfiltered list is rejected.
         components.queryItems = [
-            URLQueryItem(name: "filter", value: "event_types:\"\(Self.eventTypes[0])\"")
+            URLQueryItem(name: "filter", value: "event_types:\"\(eventType)\"")
         ]
         let response = try await transport.get(components.url!, as: ListSubscriptionsResponse.self)
         return response.subscriptions ?? []
@@ -132,10 +151,13 @@ nonisolated struct WorkspaceEventsClient: Sendable {
         try await transport.get(Self.baseURL.appending(path: name), as: EventSubscription.self)
     }
 
-    func createSubscription() async throws -> EventSubscription {
+    func createSubscription(
+        target: String = targetResource,
+        eventTypes: [String] = eventTypes
+    ) async throws -> EventSubscription {
         let body = CreateSubscriptionBody(
-            targetResource: Self.targetResource,
-            eventTypes: Self.eventTypes,
+            targetResource: target,
+            eventTypes: eventTypes,
             notificationEndpoint: .init(pubsubTopic: OAuthConfiguration.pubSubTopic),
             // Without the resource inline, every event would cost an extra Chat API
             // round-trip just to learn what changed.
@@ -146,7 +168,11 @@ nonisolated struct WorkspaceEventsClient: Sendable {
             body: body,
             as: SubscriptionOperation.self
         )
-        let created = try await subscription(fromOperation: operation)
+        let created = try await subscription(
+            fromOperation: operation,
+            target: target,
+            eventType: eventTypes[0]
+        )
         logger.info("Created subscription \(created.name ?? "?")")
         return created
     }
@@ -170,7 +196,12 @@ nonisolated struct WorkspaceEventsClient: Sendable {
             body: RenewSubscriptionBody(ttl: "0s"),
             as: SubscriptionOperation.self
         )
-        let renewed = try await subscription(fromOperation: operation, fallingBackTo: name)
+        let renewed = try await subscription(
+            fromOperation: operation,
+            target: nil,
+            eventType: nil,
+            fallingBackTo: name
+        )
         logger.info("Renewed \(name) until \(renewed.expireTime?.description ?? "?")")
         return renewed
     }
@@ -186,6 +217,8 @@ nonisolated struct WorkspaceEventsClient: Sendable {
     ///   A create has no such name, and there the list is the only route to it.
     private func subscription(
         fromOperation operation: SubscriptionOperation,
+        target: String?,
+        eventType: String?,
         fallingBackTo fallbackName: String? = nil
     ) async throws -> EventSubscription {
         if let failure = operation.error {
@@ -208,9 +241,11 @@ nonisolated struct WorkspaceEventsClient: Sendable {
             return try await subscription(named: fallbackName)
         }
 
-        guard let created = try await listSubscriptions().first(where: {
-            $0.targetResource == Self.targetResource
-        }) else {
+        guard let target, let eventType,
+              let created = try await listSubscriptions(withEventType: eventType).first(where: {
+                  $0.targetResource == target
+              })
+        else {
             throw WorkspaceEventsError.operationCarriedNoSubscription(operation.name)
         }
         return created
@@ -220,11 +255,17 @@ nonisolated struct WorkspaceEventsClient: Sendable {
     ///
     /// Subscriptions outlive the app process, so recreating blindly on every launch
     /// would leak them until the per-user cap is hit.
-    func ensureSubscription() async throws -> EventSubscription {
-        let existing = try await listSubscriptions()
+    func ensureSubscription(
+        target: String = targetResource,
+        eventTypes: [String] = eventTypes
+    ) async throws -> EventSubscription {
+        // Only this target's subscriptions: the list is filtered by event type, and
+        // another target carrying the same type is not this one to reuse or delete.
+        let existing = try await listSubscriptions(withEventType: eventTypes[0])
+            .filter { $0.targetResource == target }
 
         if let reusable = existing.first(where: {
-            $0.isActive && $0.targetResource == Self.targetResource
+            $0.isActive && Set($0.eventTypes ?? []).isSuperset(of: eventTypes)
         }) {
             logger.info("Reusing subscription \(reusable.name ?? "?")")
             // Renew on adoption: it may be close to expiry after the app was closed.
@@ -236,14 +277,16 @@ nonisolated struct WorkspaceEventsClient: Sendable {
             return reusable
         }
 
-        // A suspended subscription cannot be revived by patching; it has to go.
-        for stale in existing where !stale.isActive {
+        // A suspended subscription cannot be revived by patching; it has to go. So does
+        // an active one missing an event type this build wants — event types are not
+        // patchable either.
+        for stale in existing {
             if let name = stale.name {
                 logger.info("Deleting \(stale.state ?? "inactive") subscription \(name)")
                 try? await delete(name)
             }
         }
 
-        return try await createSubscription()
+        return try await createSubscription(target: target, eventTypes: eventTypes)
     }
 }

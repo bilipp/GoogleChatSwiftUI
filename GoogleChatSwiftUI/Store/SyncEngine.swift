@@ -142,8 +142,20 @@ nonisolated struct SyncEngine: Sendable {
         try await store.reorderPinned(spaceNames)
     }
 
+    /// Mutes or unmutes a space in Chat itself, so the web client and the phone app
+    /// follow.
+    ///
+    /// Local first, so the sidebar moves at once; put back if Chat refuses, so the
+    /// sidebar never claims a mute the other clients do not have.
     func setMuted(_ muted: Bool, for spaceName: String) async throws {
+        let previous = try await store.isMuted(spaceName: spaceName)
         try await store.setMuted(muted, for: spaceName)
+        do {
+            try await client.setMuteSetting(spaceName: spaceName, muted: muted)
+        } catch {
+            try? await store.setMuted(previous, for: spaceName)
+            throw error
+        }
     }
 
     func isMuted(spaceName: String) async throws -> Bool {
@@ -171,12 +183,13 @@ nonisolated struct SyncEngine: Sendable {
         guard !pending.isEmpty else { return }
 
         var peersBySpace: [String: [String]] = [:]
+        var members: [ChatUser] = []
 
-        await withTaskGroup(of: (String, [String]).self) { group in
+        await withTaskGroup(of: (String, [ChatUser]).self) { group in
             for spaceName in pending {
                 group.addTask {
                     do {
-                        let peers = try await self.peerIDs(for: spaceName, excluding: selfChatName)
+                        let peers = try await self.peers(for: spaceName, excluding: selfChatName)
                         return (spaceName, peers)
                     } catch {
                         self.logger.error(
@@ -187,12 +200,13 @@ nonisolated struct SyncEngine: Sendable {
                 }
             }
             for await (spaceName, peers) in group {
-                peersBySpace[spaceName] = peers
+                peersBySpace[spaceName] = peers.compactMap(\.name)
+                members.append(contentsOf: peers)
             }
         }
 
         let everyone = Array(Set(peersBySpace.values.flatMap { $0 }))
-        let directory = (try? await directoryService.people(forChatUserNames: everyone)) ?? [:]
+        let directory = await profiles(for: everyone, from: members)
 
         if !directory.isEmpty {
             try? await store.upsertPeople(Array(directory.values))
@@ -218,8 +232,9 @@ nonisolated struct SyncEngine: Sendable {
 
     /// Caches directory profiles for the senders of a batch of messages.
     ///
-    /// `Message.sender` carries an ID and an empty `displayName`, so without this
-    /// every bubble reads "Unknown". Names are *not* copied onto the messages: the
+    /// Chat names senders from the caller's own organisation itself; everyone else
+    /// arrives as an ID with an empty `displayName`, and without this would read
+    /// "Unknown". Names are *not* copied onto the messages: the
     /// transcript looks senders up in `CachedUser` instead, so one profile fetch
     /// fixes every message that person has ever sent, including already-cached ones.
     ///
@@ -231,12 +246,14 @@ nonisolated struct SyncEngine: Sendable {
     func resolveSenders(from messages: [ChatMessage]) async {
         var people: Set<String> = []
         var apps: Set<String> = []
+        var senders: [ChatUser] = []
         for message in messages {
             guard let sender = message.sender, let id = sender.name else { continue }
             if sender.type == .bot {
                 apps.insert(id)
             } else {
                 people.insert(id)
+                senders.append(sender)
             }
         }
 
@@ -248,11 +265,11 @@ nonisolated struct SyncEngine: Sendable {
         let unknown = (try? await store.unknownUserIDs(Array(people))) ?? []
         guard !unknown.isEmpty else { return }
 
-        let directory = (try? await directoryService.people(forChatUserNames: unknown)) ?? [:]
-        guard !directory.isEmpty else { return }
+        let resolved = await profiles(for: unknown, from: senders)
+        guard !resolved.isEmpty else { return }
 
-        try? await store.upsertPeople(Array(directory.values))
-        logger.info("Resolved \(directory.count) sender profile(s)")
+        try? await store.upsertPeople(Array(resolved.values))
+        logger.info("Resolved \(resolved.count) sender profile(s)")
     }
 
     /// Re-resolves every cached person against the directory.
@@ -293,14 +310,40 @@ nonisolated struct SyncEngine: Sendable {
     ///
     /// Bots are excluded deliberately: naming a DM after the assistant that happens
     /// to be installed in it tells the user nothing about who they were talking to.
-    private func peerIDs(for spaceName: String, excluding selfChatName: String?) async throws -> [String] {
+    private func peers(for spaceName: String, excluding selfChatName: String?) async throws -> [ChatUser] {
         let response = try await client.listMembers(in: spaceName)
         return (response.memberships ?? [])
             .filter(\.isJoined)
             .compactMap(\.member)
-            .filter { $0.type != .bot }
-            .compactMap(\.name)
-            .filter { $0 != selfChatName }
+            .filter { $0.type != .bot && $0.name != nil && $0.name != selfChatName }
+    }
+
+    /// Profiles for these people, keyed by user resource name.
+    ///
+    /// Chat now sends a name and photo with each user for people in the caller's own
+    /// organisation, so those are used as they are. The directory is only asked about
+    /// whoever Chat left unnamed, such as people from outside the organisation.
+    private func profiles(for ids: [String], from users: [ChatUser]) async -> [String: DirectoryPerson] {
+        let wanted = Set(ids)
+        var found: [String: DirectoryPerson] = [:]
+        for user in users {
+            guard let person = user.directoryPerson, wanted.contains(person.chatUserName) else { continue }
+            found[person.chatUserName] = person
+        }
+        let missing = Array(wanted.subtracting(found.keys))
+        if !missing.isEmpty {
+            let directory = (try? await directoryService.people(forChatUserNames: missing)) ?? [:]
+            found.merge(directory) { fromChat, _ in fromChat }
+        }
+        return found
+    }
+
+    /// Names the people not yet in the cache, from Chat's own profiles first.
+    private func cacheUnknownPeople(_ ids: [String], from users: [ChatUser]) async {
+        let unknown = (try? await store.unknownUserIDs(ids)) ?? []
+        guard !unknown.isEmpty else { return }
+        let people = await profiles(for: unknown, from: users)
+        if !people.isEmpty { try? await store.upsertPeople(Array(people.values)) }
     }
 
     // MARK: - Direct messages
@@ -336,6 +379,34 @@ nonisolated struct SyncEngine: Sendable {
         return space.name
     }
 
+    /// Starts a conversation with several people: a named space when given a name,
+    /// otherwise a group chat.
+    ///
+    /// A group chat with exactly these people is reopened rather than duplicated, the
+    /// way the web client does it. A named space is always new; Chat refuses a name
+    /// already in use.
+    ///
+    /// - Parameter members: Chat user resource names, the caller not included.
+    /// - Returns: the conversation to open.
+    func startConversation(named displayName: String?, description: String?, members: [String]) async throws -> String {
+        let space: ChatSpace
+        if let displayName {
+            space = try await client.setUpSpace(
+                displayName: displayName,
+                description: description,
+                members: members
+            )
+        } else if let existing = try? await client.findGroupChats(with: members).first {
+            space = existing
+        } else {
+            space = try await client.setUpGroupChat(members: members)
+        }
+
+        try await store.upsertSpaces([space])
+        logger.info("Started \(space.name) with \(members.count) member(s)")
+        return space.name
+    }
+
     /// Titles a DM that has just entered the cache, so the sidebar row about to be
     /// selected reads as the person's name rather than as the "…" an unresolved space
     /// shows.
@@ -360,9 +431,9 @@ nonisolated struct SyncEngine: Sendable {
 
     /// The people the composer's `@` can reach in a space, with their profiles cached.
     ///
-    /// The whole room rather than the first page `peerIDs` settles for, and resolved
-    /// through People for the usual reason: Chat hands back memberships with an empty
-    /// `displayName`, and a mention is written as a name. Profiles land in `CachedUser`
+    /// The whole room rather than the first page `peers(for:excluding:)` settles for.
+    /// A mention is written as a name, so everyone needs one: Chat's own profile where
+    /// it sends one, People for the rest. Profiles land in `CachedUser`
     /// so the views read them the same way they read message senders — one lookup
     /// names this person everywhere in the app, not just in the completion list.
     ///
@@ -376,17 +447,15 @@ nonisolated struct SyncEngine: Sendable {
         // equivalent filter/compactMap chain over these nested optionals exceeds the
         // type checker's budget.
         var ids: [String] = []
+        var users: [ChatUser] = []
         for membership in members where membership.isJoined {
             guard let member = membership.member, member.type != .bot else { continue }
             guard let name = member.name, name != selfChatName else { continue }
             ids.append(name)
+            users.append(member)
         }
 
-        let unknown = (try? await store.unknownUserIDs(ids)) ?? []
-        if !unknown.isEmpty {
-            let directory = (try? await directoryService.people(forChatUserNames: unknown)) ?? [:]
-            if !directory.isEmpty { try? await store.upsertPeople(Array(directory.values)) }
-        }
+        await cacheUnknownPeople(ids, from: users)
 
         logger.info("Resolved \(ids.count) mentionable member(s) in \(spaceName)")
         return ids
@@ -607,7 +676,7 @@ nonisolated struct SyncEngine: Sendable {
             try await store.setMyReaction(nil, emoji: emoji, on: messageName)
             didAdd = false
         } else {
-            let created = try await client.createReaction(messageName: messageName, unicode: emoji)
+            let created = try await client.createReaction(messageName: messageName, emoji: emoji)
             try await store.setMyReaction(created.name, emoji: emoji, on: messageName)
             didAdd = true
         }
@@ -649,11 +718,7 @@ nonisolated struct SyncEngine: Sendable {
         guard !idsByEmoji.isEmpty else { return [:] }
 
         let everyone = Array(Set(idsByEmoji.values.flatMap { $0 }))
-        let unknown = (try? await store.unknownUserIDs(everyone)) ?? []
-        if !unknown.isEmpty {
-            let directory = (try? await directoryService.people(forChatUserNames: unknown)) ?? [:]
-            if !directory.isEmpty { try? await store.upsertPeople(Array(directory.values)) }
-        }
+        await cacheUnknownPeople(everyone, from: reactions.compactMap(\.user))
 
         let profiles = (try? await store.profiles(for: everyone)) ?? [:]
         return idsByEmoji.mapValues { ids in
@@ -762,25 +827,135 @@ nonisolated struct SyncEngine: Sendable {
         logger.info("Fetched read state for \(pending.count) space(s)")
     }
 
+    // MARK: - Mute
+
+    static let muteSettingBatch = 25
+
+    /// How long a space's mute state is trusted before it is read again. Mute changed
+    /// on another device reaches this app no faster than this, or when the space is
+    /// opened — Chat sends no event for it.
+    static let muteSettingMaxAge: TimeInterval = 60 * 60 * 12
+
+    private func spacesNeedingMuteSetting() async throws -> [String] {
+        try await store.spacesNeedingMuteSetting(
+            limit: Self.muteSettingBatch,
+            activeSince: Date().addingTimeInterval(-Self.readStateWindow),
+            staleBefore: Date().addingTimeInterval(-Self.muteSettingMaxAge)
+        )
+    }
+
+    func pendingMuteSettingCount() async throws -> Int {
+        try await spacesNeedingMuteSetting().count
+    }
+
+    /// Reads mute state for a batch of spaces concurrently.
+    ///
+    /// - Returns: how many were read. A space whose read fails is left unfetched, so a
+    ///   pass that reads nothing — the scope not yet granted, say — tells the caller to
+    ///   stop rather than to keep asking for the same spaces.
+    @discardableResult
+    func refreshMuteSettings() async throws -> Int {
+        let pending = try await spacesNeedingMuteSetting()
+        guard !pending.isEmpty else { return 0 }
+
+        let fetched = await withTaskGroup(of: (String, Bool)?.self) { group in
+            for spaceName in pending {
+                group.addTask {
+                    do {
+                        let setting = try await self.client.spaceNotificationSetting(spaceName: spaceName)
+                        return (spaceName, setting.isMuted)
+                    } catch {
+                        self.logger.error(
+                            "Mute setting failed for \(spaceName): \(error.localizedDescription)"
+                        )
+                        return nil
+                    }
+                }
+            }
+            var collected: [String: Bool] = [:]
+            for await case let (name, muted)? in group { collected[name] = muted }
+            return collected
+        }
+
+        try await store.applyMuteSettings(fetched)
+        logger.info("Fetched mute setting for \(fetched.count) of \(pending.count) space(s)")
+        return fetched.count
+    }
+
+    /// Re-reads one space's mute state, for a space just opened.
+    /// - Returns: whether it changed.
+    @discardableResult
+    func refreshMuteSetting(for spaceName: String) async throws -> Bool {
+        let setting = try await client.spaceNotificationSetting(spaceName: spaceName)
+        return try await !store.applyMuteSettings([spaceName: setting.isMuted]).isEmpty
+    }
+
     // MARK: - Thread read state
 
     /// How many threads to check against the server per pass, for the same reason as
     /// `readStateBatch`: one call each, against a per-user-per-minute quota.
     static let threadReadStateBatch = 25
 
-    /// Marks a thread read.
+    /// Marks a thread read, here and on the server.
     ///
-    /// Local only — deliberately, not for lack of trying. Chat exposes
-    /// `getThreadReadState` but no update counterpart, so there is nothing to send.
-    /// A thread read here stays unread on chat.google.com.
+    /// Local first, so the pane that asked does not wait on a round trip for its read
+    /// line; the server write follows and only logs on failure. A mark that failed to
+    /// travel is no worse than the local-only marks every build before this one kept.
     /// - Returns: the read mark it replaced.
     @discardableResult
     func markThreadRead(threadName: String) async throws -> Date? {
-        try await store.markThreadRead(threadName: threadName)
+        let now = Date()
+        let previous = try await store.markThreadRead(threadName: threadName, at: now)
+        await pushThreadReadTimes([threadName], to: now)
+        return previous
+    }
+
+    /// Marks a thread unread from its newest reply on.
+    /// - Returns: whether there was anything to mark.
+    @discardableResult
+    func markThreadUnread(threadName: String) async throws -> Bool {
+        guard let mark = try await store.markThreadUnread(threadName: threadName) else {
+            return false
+        }
+        await pushThreadReadTimes([threadName], to: mark)
+        return true
     }
 
     func markAllThreadsRead(spaceName: String) async throws {
-        try await store.markAllThreadsRead(spaceName: spaceName)
+        let now = Date()
+        // Named before clearing — afterwards nothing here is unread to name.
+        let unread = try await store.unreadThreadNames(spaceName: spaceName)
+        try await store.markAllThreadsRead(spaceName: spaceName, at: now)
+        await pushThreadReadTimes(unread, to: now)
+    }
+
+    /// How many thread read marks to send at once. Each is its own request against the
+    /// same per-user quota as everything else, and "mark all read" in a busy room can
+    /// name a few hundred.
+    static let threadReadPushConcurrency = 6
+
+    private func pushThreadReadTimes(_ threadNames: [String], to time: Date) async {
+        guard !threadNames.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            var pending = threadNames.makeIterator()
+            for _ in 0..<Self.threadReadPushConcurrency {
+                guard let name = pending.next() else { break }
+                group.addTask { await self.pushThreadReadTime(name, to: time) }
+            }
+            while await group.next() != nil {
+                if let name = pending.next() {
+                    group.addTask { await self.pushThreadReadTime(name, to: time) }
+                }
+            }
+        }
+    }
+
+    private func pushThreadReadTime(_ threadName: String, to time: Date) async {
+        do {
+            try await client.setThreadReadTime(threadName: threadName, to: time)
+        } catch {
+            logger.error("Thread read mark failed for \(threadName): \(error.localizedDescription)")
+        }
     }
 
     /// Reconciles unread threads against the server's own read marks.
@@ -873,6 +1048,91 @@ nonisolated struct SyncEngine: Sendable {
     /// that the history has not been downloaded yet.
     func destination(of link: ChatDeepLink) async throws -> ChatLinkDestination {
         try await store.destination(of: link)
+    }
+
+    // MARK: - Message pins
+
+    /// Message names pinned in a space. Pins are shared by everyone in the space and
+    /// change rarely, so they are fetched when a space is opened and kept in memory
+    /// rather than in the cache.
+    func pinnedMessageNames(in spaceName: String) async throws -> [String] {
+        try await client.pinnedMessageNames(in: spaceName)
+    }
+
+    func setMessagePinned(_ pinned: Bool, messageName: String) async throws {
+        if pinned {
+            try await client.pinMessage(name: messageName)
+        } else {
+            try await client.unpinMessage(name: messageName)
+        }
+    }
+
+    // MARK: - Custom emoji
+
+    /// The workspace's custom emoji, for the reaction picker and for drawing custom
+    /// reactions. Image URLs in it expire after minutes, so this is fetched per session
+    /// and never cached.
+    func customEmojis() async throws -> [ChatEmoji.CustomEmoji] {
+        try await client.customEmojis()
+    }
+
+    // MARK: - Own availability
+
+    /// The signed-in user's presence and custom status. Never cached: it changes from
+    /// other clients and from Chat's own idle detection.
+    func availability() async throws -> ChatAvailability {
+        try await client.availability()
+    }
+
+    func setAvailability(_ change: AvailabilityChange) async throws -> ChatAvailability {
+        switch change {
+        case .active: try await client.markAsActive()
+        case .away: try await client.markAsAway()
+        case .doNotDisturb(let end): try await client.markAsDoNotDisturb(until: end)
+        case .customStatus(let text, let emoji, let end):
+            try await client.setCustomStatus(text: text, emoji: emoji, until: end)
+        }
+    }
+
+    /// The pinned messages themselves, for the pinned list.
+    ///
+    /// Read from Chat rather than the cache, because a pin is often on a message old
+    /// enough that its history was never downloaded. A space has a handful of pins at
+    /// most, so this is a handful of requests. One that fails is left out of the list.
+    func pinnedMessages(_ names: [String]) async -> [ChatMessage] {
+        let fetched = await withTaskGroup(of: (Int, ChatMessage?).self) { group in
+            for (index, name) in names.enumerated() {
+                group.addTask { (index, try? await self.client.getMessage(name: name)) }
+            }
+            var byIndex: [Int: ChatMessage] = [:]
+            for await (index, message) in group {
+                if let message { byIndex[index] = message }
+            }
+            return byIndex
+        }
+        let messages = names.indices.compactMap { fetched[$0] }
+        await resolveSenders(from: messages)
+        return messages
+    }
+
+    /// Asks Chat itself, so a search also finds history the cache has never downloaded.
+    ///
+    /// The hits are returned to the caller and not written to the cache. A single old
+    /// message stored on its own would sit in the transcript above history that was
+    /// never fetched, which looks like the messages in between don't exist. Opening a
+    /// hit goes through the deep-link path, which pages history until it reaches the
+    /// message.
+    ///
+    /// Senders are looked up as the hits come in, so the rows show names rather than
+    /// "Unknown".
+    func searchMessages(query: String, inSpace spaceName: String?) async throws -> [ChatMessage] {
+        guard let filter = ChatClient.messageSearchFilter(query: query, spaceName: spaceName) else {
+            return []
+        }
+        let page = try await client.searchMessages(filter: filter)
+        let messages = (page.results ?? []).map(\.message)
+        await resolveSenders(from: messages)
+        return messages
     }
 
     /// Re-fetches the newest page and merges it.

@@ -430,11 +430,53 @@ actor ChatStore {
         try modelContext.save()
     }
 
-    /// Local mute state, likewise device-only.
+    /// Records a mute state, whether read from Chat or just set here.
     func setMuted(_ muted: Bool, for spaceName: String) throws {
         guard let space = try space(named: spaceName) else { return }
         space.isMuted = muted
+        space.muteSettingFetchedAt = .now
         try modelContext.save()
+    }
+
+    /// Spaces whose mute state has never been read, or not since `staleBefore`, most
+    /// recently active first. Bounded the way ``spacesNeedingReadState(limit:activeSince:)``
+    /// is: one call per space, and dormant spaces rarely matter.
+    func spacesNeedingMuteSetting(limit: Int, activeSince: Date, staleBefore: Date) throws -> [String] {
+        let descriptor = FetchDescriptor<CachedSpace>(
+            predicate: #Predicate<CachedSpace> { $0.lastActiveTime != nil },
+            sortBy: [SortDescriptor(\.lastActiveTime, order: .reverse)]
+        )
+        var names: [String] = []
+        for space in try modelContext.fetch(descriptor) {
+            guard let active = space.lastActiveTime, active >= activeSince else { break }
+            if let fetched = space.muteSettingFetchedAt, fetched >= staleBefore { continue }
+            names.append(space.name)
+            if names.count == limit { break }
+        }
+        return names
+    }
+
+    /// Writes a pass of mute states under one save, for the reason
+    /// ``applyReadStates(_:)`` does. Returns the spaces whose state changed.
+    @discardableResult
+    func applyMuteSettings(_ settings: [String: Bool]) throws -> [String] {
+        guard !settings.isEmpty else { return [] }
+        let wanted = Set(settings.keys)
+        let spaces = try modelContext.fetch(
+            FetchDescriptor<CachedSpace>(predicate: #Predicate { wanted.contains($0.name) })
+        )
+        let now = Date.now
+        var changed: [String] = []
+        for space in spaces {
+            guard let muted = settings[space.name] else { continue }
+            if space.isMuted != muted {
+                space.isMuted = muted
+                changed.append(space.name)
+            }
+            space.muteSettingFetchedAt = now
+        }
+        try modelContext.save()
+        return changed
     }
 
     func isMuted(spaceName: String) throws -> Bool {
@@ -674,6 +716,35 @@ actor ChatStore {
         return previous
     }
 
+    /// Puts a thread's read mark just before its newest reply, so that reply — and only
+    /// that one — reads as new again.
+    /// - Returns: the mark it set, for the caller to send to the server, or nil when
+    ///   the thread has no reply to be unread about.
+    func markThreadUnread(threadName: String) throws -> Date? {
+        guard let thread = try thread(named: threadName),
+              let newest = thread.lastReplyTime
+        else { return nil }
+        let mark = newest.addingTimeInterval(Self.unreadMarkGap)
+        thread.lastReadTime = mark
+        thread.didSeedReadState = true
+        // A mark set here is newer news than whatever the server said before it.
+        thread.didCheckServerReadState = true
+        if let space = thread.space { try refreshThreadState(of: thread, in: space) }
+        try modelContext.save()
+        return mark
+    }
+
+    /// Threads in a space with unread replies — the ones "mark all read" has to report
+    /// to the server. The rest are already read there or were never unread here.
+    func unreadThreadNames(spaceName: String) throws -> [String] {
+        let descriptor = FetchDescriptor<CachedThread>(
+            predicate: #Predicate<CachedThread> { thread in
+                thread.space?.name == spaceName && thread.unreadReplyCount > 0
+            }
+        )
+        return try modelContext.fetch(descriptor).map(\.name)
+    }
+
     /// Clears every thread in a space at once, for "mark all as read".
     ///
     /// The only operation here that genuinely has to write to every thread in the room —
@@ -714,7 +785,12 @@ actor ChatStore {
     /// and the tallies they invalidate are recomputed once afterwards, so a thread named
     /// twice in one batch is not counted twice. The answers arrive twenty-five at a time,
     /// which is what makes the batching worth having.
-    func applyThreadReadStates(_ states: [ThreadReadState]) throws {
+    ///
+    /// - Parameter authoritative: true for a read-state *event*, which reports a change
+    ///   the user made elsewhere — including marking a thread unread, which moves the
+    ///   mark backwards. The polled check stays forward-only, because what it reads for
+    ///   a thread never opened anywhere is the epoch, not a decision.
+    func applyThreadReadStates(_ states: [ThreadReadState], authoritative: Bool = false) throws {
         guard !states.isEmpty else { return }
         // Keyed by thread name so a name repeated in one batch is recomputed once.
         var touched: [String: CachedThread] = [:]
@@ -723,7 +799,8 @@ actor ChatStore {
             guard let thread = try thread(named: state.threadName) else { continue }
             thread.didCheckServerReadState = true
             guard let serverTime = state.lastReadTime,
-                  serverTime > (thread.lastReadTime ?? .distantPast)
+                  serverTime != thread.lastReadTime,
+                  authoritative || serverTime > (thread.lastReadTime ?? .distantPast)
             else { continue }
             thread.lastReadTime = serverTime
             thread.didSeedReadState = true

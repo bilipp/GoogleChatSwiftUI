@@ -12,9 +12,9 @@ import SwiftUI
 /// out of another space entirely — see ``ForwardedMessage`` — and that space may be one this
 /// account has never been in, which is why the handler is allowed to decline.
 nonisolated struct OpenChatMessageAction {
-    private let handler: @MainActor (String, String) -> Void
+    private let handler: @MainActor (String, String, Date?) -> Void
 
-    init(handler: @escaping @MainActor (String, String) -> Void) {
+    init(handler: @escaping @MainActor (String, String, Date?) -> Void) {
         self.handler = handler
     }
 
@@ -23,14 +23,17 @@ nonisolated struct OpenChatMessageAction {
     /// - Parameter spaceName: the conversation it is in. Passed separately rather than parsed
     ///   back out of the message name, because the caller was told it by Chat and a name is
     ///   not a promise about its own shape.
+    /// - Parameter sentAt: when the message was posted, where the caller knows. A message
+    ///   older than the cached history is then fetched back to, however far that is,
+    ///   rather than given up on after the few pages a pasted link is worth.
     @MainActor
-    func callAsFunction(_ messageName: String, in spaceName: String) {
-        handler(messageName, spaceName)
+    func callAsFunction(_ messageName: String, in spaceName: String, sentAt: Date? = nil) {
+        handler(messageName, spaceName, sentAt)
     }
 }
 
 extension EnvironmentValues {
     /// Does nothing by default, so a view hosted outside the sidebar — a preview, a test —
     /// renders rather than crashes.
-    @Entry var openChatMessage = OpenChatMessageAction { _, _ in }
+    @Entry var openChatMessage = OpenChatMessageAction { _, _, _ in }
 }

@@ -145,7 +145,9 @@ https://www.googleapis.com/auth/chat.messages.reactions
 https://www.googleapis.com/auth/chat.memberships
 https://www.googleapis.com/auth/chat.users.readstate
 https://www.googleapis.com/auth/chat.users.sections
+https://www.googleapis.com/auth/chat.users.spacesettings
 https://www.googleapis.com/auth/chat.customemojis.readonly
+https://www.googleapis.com/auth/chat.users.availability
 https://www.googleapis.com/auth/directory.readonly
 https://www.googleapis.com/auth/drive.metadata.readonly
 https://www.googleapis.com/auth/meetings.space.created
@@ -154,8 +156,10 @@ https://www.googleapis.com/auth/userinfo.profile
 https://www.googleapis.com/auth/userinfo.email
 ```
 
-`directory.readonly` is not optional in practice: Chat never returns display names, so
-without it every DM is titled "Direct message" and every sender reads "Unknown".
+`directory.readonly` is not optional in practice: Chat names most people it returns now,
+but not all of them, and without it the rest leave DMs titled "Direct message" and
+senders reading "Unknown". `chat.users.availability` covers your own presence and custom
+status in the account menu; Chat exposes nobody else's.
 `drive.metadata.readonly` is what gives a shared Drive link its actual title: Chat
 annotates the link with a file ID and no title. Metadata only, and that is a deliberate
 ceiling — Drive returns a thumbnail image only to apps that can read file *content*, so

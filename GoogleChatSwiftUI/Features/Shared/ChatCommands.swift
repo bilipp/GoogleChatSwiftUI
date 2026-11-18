@@ -7,6 +7,15 @@ import SwiftUI
 /// owns the session, so it has no way to hold a reference to it.
 struct ChatCommands: Commands {
     var body: some Commands {
+        // Replaces File ▸ New Window: a second window would be a second copy of the
+        // same session, and ⌘N is where a chat client keeps "start a conversation".
+        CommandGroup(replacing: .newItem) {
+            Button("New Conversation…") {
+                NotificationCenter.default.post(name: .chatNewConversation, object: nil)
+            }
+            .keyboardShortcut("n")
+        }
+
         CommandGroup(after: .newItem) {
             Button("Refresh Conversations") {
                 NotificationCenter.default.post(name: .chatRefreshSpaces, object: nil)
@@ -64,6 +73,7 @@ struct ChatCommands: Commands {
 /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` these constants would otherwise be
 /// main-actor isolated and unreachable from there.
 nonisolated extension Notification.Name {
+    static let chatNewConversation = Notification.Name("chatNewConversation")
     static let chatRefreshSpaces = Notification.Name("chatRefreshSpaces")
     static let chatMarkAllRead = Notification.Name("chatMarkAllRead")
     static let chatMarkUnread = Notification.Name("chatMarkUnread")

@@ -105,7 +105,11 @@ nonisolated enum MentionDirectory {
     }
 }
 
-/// Turns the `@Display Name` the user sees into the `<users/123>` Chat's API expects.
+/// Turns the `@Display Name` the user sees into the mention markup Chat's API expects.
+///
+/// Messages are sent as Markdown, where a mention is
+/// `<chat-user data-user="users/123">` — Chat's own `<users/123>` is not mention
+/// syntax there and arrives as literal text.
 ///
 /// Chat has no structured field for mentions on the way out: a message carries them as
 /// this markup inside `text`, and answers with `USER_MENTION` annotations on the way
@@ -151,13 +155,18 @@ nonisolated enum MentionEncoder {
                 continue
             }
 
-            result.append("<\(matched.userName)>")
+            result.append(markup(for: matched.userName))
             index = text.index(afterAt, offsetBy: matched.displayName.count)
             // The next character is judged against the name, not the markup that
             // replaced it, so `@Ada@Ben` keeps behaving like the text it came from.
             previous = matched.displayName.last
         }
         return result
+    }
+
+    /// The Markdown mention for one user resource name, `users/all` included.
+    static func markup(for userName: String) -> String {
+        "<chat-user data-user=\"\(userName)\">"
     }
 
     /// The candidate whose name `rest` opens with, ending on a word boundary.

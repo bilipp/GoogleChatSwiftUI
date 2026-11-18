@@ -91,18 +91,20 @@ final class CachedSpace {
     var sectionTitle: String?
     var sectionSortOrder: Int = 0
 
-    /// Pinned and muted are this app's own, set here and stored here.
+    /// Pinned is this app's own, set here and stored here. Pinning has no API
+    /// representation at all — no field on `Space`, no section type, no method — so
+    /// pinning a space here leaves it unpinned in the web client, and vice versa.
     ///
-    /// Neither comes from Chat. Pinning has no API representation at all — no field
-    /// on `Space`, no section type, no method — and the mute signal the API does
-    /// offer did not match what this account sees on chat.google.com, so trusting it
-    /// produced a sidebar that disagreed with the web client. Local state is at least
-    /// honest about being local: it is exactly what the user set here.
-    ///
-    /// The consequence is that neither travels. Pinning a space here leaves it
-    /// unpinned in the web client, and vice versa.
+    /// Muted mirrors Chat's per-user `muteSetting`, the switch chat.google.com and the
+    /// phone app show. It is read lazily (see `muteSettingFetchedAt`) and written back
+    /// to Chat when changed here. It is deliberately not `notificationSetting == OFF`:
+    /// that is a different switch, and reading it as mute is what once made this
+    /// sidebar disagree with the web client.
     var isPinned: Bool = false
     var isMuted: Bool = false
+    /// When `isMuted` was last read from Chat; nil until it has been. The API has no
+    /// list method, so mute is fetched space by space, most recently active first.
+    var muteSettingFetchedAt: Date?
     /// Position within the pinned group, lowest first.
     ///
     /// An explicit index rather than a pin timestamp, because the group is
@@ -618,10 +620,11 @@ final class CachedMessage {
 /// mark to now, which would silently declare every unread reply read. A thread
 /// therefore carries its own mark, advanced only by actually opening the thread.
 ///
-/// Reads do not travel. Chat's thread read state is readable
-/// (`users.spaces.threads.getThreadReadState`) but has no update method — unlike
-/// space read state, which has both — so the app can learn where the web client
-/// thinks you are but never tell it where you got to here.
+/// The mark is kept here and mirrored to Chat's own thread read state
+/// (`users.spaces.threads.getThreadReadState` / `updateThreadReadState`): opened or
+/// marked here, a thread is read or unread on chat.google.com too, and a thread read
+/// there is picked up here — by the read-state events when they are flowing, and by the
+/// thread list's forward-only check when they are not.
 @Model
 final class CachedThread {
     /// A space's threads, most recently active first — the thread list's order, and the

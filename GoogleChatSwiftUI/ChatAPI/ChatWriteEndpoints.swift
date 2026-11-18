@@ -9,6 +9,10 @@ nonisolated struct CreateMessageBody: Encodable, Sendable {
     var attachment: [AttachmentRef]?
     /// The message this one quotes, for an inline reply.
     var quotedMessageMetadata: QuotedMessageRef?
+    /// Read as Markdown — `**bold**`, `[label](url)`, `<chat-user …>` mentions — rather
+    /// than Chat's own `*bold*` / `<url|label>` dialect. Named explicitly so the request
+    /// does not depend on the app's console setting.
+    var markupSyntax: String = ChatClient.markdownSyntax
 
     nonisolated struct ThreadRef: Encodable, Sendable {
         var name: String
@@ -46,6 +50,9 @@ nonisolated struct MessageTimestamps: Decodable, Sendable {
 
 nonisolated struct UpdateMessageBody: Encodable, Sendable {
     var text: String
+    /// Sent with the text but never named in the update mask: Chat rejects a mask that
+    /// lists it, and reads it as how to parse `text`.
+    var markupSyntax: String = ChatClient.markdownSyntax
 }
 
 /// The `spaces.setup` request for a one-to-one conversation.
@@ -153,6 +160,8 @@ nonisolated extension ChatClient {
     }
 
     /// Edits a message's text. Only the sender may edit their own messages.
+    static let markdownSyntax = "MARKUP_SYNTAX_MARKDOWN"
+
     func updateMessage(name: String, text: String) async throws -> ChatMessage {
         try await patch(
             name,
@@ -198,9 +207,8 @@ nonisolated extension ChatClient {
     /// The same resource as `markSpaceRead`, used the other way round. Chat has no
     /// unread flag — read state is only this timestamp, and a space whose
     /// `lastReadTime` predates its newest message reads as unread. That makes this one
-    /// of the few local-looking gestures that genuinely travels: a conversation marked
-    /// unread here is unread on chat.google.com too, unlike pinning, muting, and
-    /// thread read marks, which have no API to carry them.
+    /// of the local-looking gestures that genuinely travels: a conversation marked
+    /// unread here is unread on chat.google.com too.
     ///
     /// - Parameter time: must be strictly before the newest message's create time, or
     ///   the space stays read. The caller picks it from the newest message it knows of.
@@ -221,17 +229,28 @@ nonisolated extension ChatClient {
     }
 
     /// The signed-in user's read position in one thread.
-    ///
-    /// Read-only, unlike space read state, which has both a get and an update. There
-    /// is no `updateThreadReadState` at any auth level — so this can tell us where the
-    /// web client thinks the user has read to, but a thread opened here can never be
-    /// reported back. Thread read marks are therefore local (`CachedThread`), and this
-    /// call only ever moves one forward.
     /// - Parameter threadName: e.g. `spaces/AAAA/threads/BBBB`.
     func threadReadState(threadName: String) async throws -> ThreadReadStateResponse {
         let path = threadName.replacingOccurrences(of: "spaces/", with: "")
         return try await get(
             "users/me/spaces/\(path)/threadReadState",
+            as: ThreadReadStateResponse.self
+        )
+    }
+
+    /// Moves the read position in one thread, in either direction.
+    ///
+    /// `updateThreadReadState` (GA November 2026) is the thread twin of the space
+    /// read-state update, and it works the same way: there is no unread flag, only a
+    /// timestamp, and a thread whose `lastReadTime` predates its newest reply reads as
+    /// unread. So marking read is setting it to now — Chat clamps a future time to the
+    /// newest message — and marking unread is setting it just before the newest reply.
+    func setThreadReadTime(threadName: String, to time: Date) async throws {
+        let path = threadName.replacingOccurrences(of: "spaces/", with: "")
+        _ = try await patch(
+            "users/me/spaces/\(path)/threadReadState",
+            updateMask: "lastReadTime",
+            body: SpaceReadStateBody(lastReadTime: time.formatted(.iso8601)),
             as: ThreadReadStateResponse.self
         )
     }
@@ -278,10 +297,12 @@ nonisolated extension ChatClient {
 
     // MARK: - Reactions
 
-    func createReaction(messageName: String, unicode: String) async throws -> ChatReaction {
+    /// - Parameter emoji: a reaction key, see ``ChatEmoji/display``. A custom emoji is
+    ///   sent by UID, the only field Chat reads from it.
+    func createReaction(messageName: String, emoji: String) async throws -> ChatReaction {
         try await post(
             "\(messageName)/reactions",
-            body: CreateReactionBody(emoji: .init(unicode: unicode, customEmoji: nil)),
+            body: CreateReactionBody(emoji: ChatEmoji(key: emoji)),
             as: ChatReaction.self
         )
     }

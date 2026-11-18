@@ -117,6 +117,9 @@ final class ChatSessionModel {
     private let sync: SyncEngine
     private let realtime: RealtimeCoordinator
     private let profile: GoogleUserProfile?
+    /// The signed-in user's Chat resource name, for views that must leave them out of a
+    /// list of people.
+    var selfChatName: String? { profile?.chatUserName }
     private let logger = AppLog.logger("session")
 
     init(tokenProvider: TokenProvider, container: ModelContainer, profile: GoogleUserProfile?) {
@@ -137,6 +140,8 @@ final class ChatSessionModel {
     // MARK: - Realtime
 
     func startRealtime() async {
+        Task { await loadAvailability() }
+        Task { await loadCustomEmojis() }
         await realtime.setSelfChatName(profile?.chatUserName)
         await realtime.setSignedInAddress(profile?.emailAddress)
         await realtime.onStatusChange { [weak self] status in
@@ -144,6 +149,9 @@ final class ChatSessionModel {
         }
         await realtime.onIncomingMessage { [weak self] incoming in
             Task { @MainActor in await self?.handleIncoming(incoming) }
+        }
+        await realtime.onReadStateChange { [weak self] in
+            Task { @MainActor in await self?.refreshUnread() }
         }
         await notifications.requestAuthorization()
         await realtime.start()
@@ -190,6 +198,34 @@ final class ChatSessionModel {
     }
 
     // MARK: - Direct messages
+
+    /// Creates a space or group chat, or finds the group chat these people already share.
+    ///
+    /// Stops short of opening it, like ``directMessageSpace(with:)``, so the sidebar can
+    /// make room for the row first.
+    ///
+    /// - Returns: the conversation to open, or the error Chat answered with, so the sheet
+    ///   that asked can keep its input and say why.
+    func startConversation(
+        named displayName: String?,
+        description: String?,
+        members: [String]
+    ) async -> Result<String, Error> {
+        do {
+            if displayName == nil, members.count == 1, let only = members.first {
+                return .success(try await sync.directMessage(with: only))
+            }
+            let name = try await sync.startConversation(
+                named: displayName,
+                description: description,
+                members: members
+            )
+            return .success(name)
+        } catch {
+            logger.error("Starting a conversation failed: \(error.localizedDescription)")
+            return .failure(error)
+        }
+    }
 
     /// Finds the one-to-one conversation with a person, creating it if this account has
     /// never had one with them.
@@ -286,7 +322,11 @@ final class ChatSessionModel {
     ///
     /// The caller has already established that this account knows the conversation —
     /// see `SpacesListView.openChatLink`, which hands anything else to the browser.
-    func reveal(_ link: ChatDeepLink, draft: String? = nil) async {
+    ///
+    /// - Parameter sentAt: when the linked message was posted, where the caller knows it —
+    ///   a search hit does, a pasted URL does not. Knowing it is what makes a long walk
+    ///   back through history worth starting: the message is certainly there to be reached.
+    func reveal(_ link: ChatDeepLink, draft: String? = nil, sentAt: Date? = nil) async {
         await revealSpace(link.spaceName)
 
         var destination = await resolvedDestination(of: link)
@@ -296,13 +336,25 @@ final class ChatSessionModel {
         // someone to scroll back for it themselves when the app could have fetched it
         // while they were still looking at the conversation. Bounded, because
         // walking a years-old space to its beginning is not what one click should cost.
+        //
+        // A search hit is the exception. It was found *because* it is not cached, so it
+        // is usually further back than four pages, and its send time says the walk will
+        // end at it. That walk is still capped, at a few thousand messages, with a notice
+        // up meanwhile so the reader knows the click was taken.
+        let passLimit = sentAt == nil ? 4 : 60
+        let progressNotice = "Fetching older messages to reach this one…"
         var passes = 0
-        while destination == .uncachedMessage, passes < 4 {
+        while destination == .uncachedMessage, passes < passLimit {
             passes += 1
+            if passes == 2, sentAt != nil, selectedSpaceName == link.spaceName {
+                linkNotice = progressNotice
+            }
             let hasMore = await loadOlderMessages(in: link.spaceName)
             destination = await resolvedDestination(of: link)
             if !hasMore { break }
+            if selectedSpaceName != link.spaceName { return }
         }
+        if linkNotice == progressNotice { linkNotice = nil }
 
         // Discarded if the reader has moved on in the meantime — a slow backfill must
         // not yank a transcript nobody is looking at any more.
@@ -334,6 +386,117 @@ final class ChatSessionModel {
         case .space, .unknownSpace:
             break
         }
+    }
+
+    // MARK: - Message pins
+
+    /// Pinned message names per space, newest Chat answer wins. Filled when a space is
+    /// opened; see ``loadPinnedMessages(of:)``.
+    private(set) var pinnedMessageNames: [String: [String]] = [:]
+
+    /// Refetches a space's pins. One request, made each time the space is opened so a
+    /// pin someone else added shows up without a restart.
+    func loadPinnedMessages(of spaceName: String) async {
+        do {
+            pinnedMessageNames[spaceName] = try await sync.pinnedMessageNames(in: spaceName)
+        } catch {
+            logger.error("Pin lookup failed for \(spaceName): \(error.localizedDescription)")
+        }
+    }
+
+    func isMessagePinned(_ messageName: String) -> Bool {
+        guard let space = ChatEvent.space(fromMessageName: messageName) else { return false }
+        return pinnedMessageNames[space]?.contains(messageName) == true
+    }
+
+    /// Pins or unpins a message for everyone in the space.
+    ///
+    /// Shown at once and rolled back if Chat refuses, which it does for a member
+    /// without permission to pin in a space whose managers restrict it.
+    func setMessagePinned(_ pinned: Bool, messageName: String) async {
+        guard let space = ChatEvent.space(fromMessageName: messageName) else { return }
+        let before = pinnedMessageNames[space] ?? []
+        var after = before.filter { $0 != messageName }
+        if pinned { after.insert(messageName, at: 0) }
+        pinnedMessageNames[space] = after
+        do {
+            try await sync.setMessagePinned(pinned, messageName: messageName)
+        } catch {
+            pinnedMessageNames[space] = before
+            logger.error("Pin toggle failed for \(messageName): \(error.localizedDescription)")
+            messageError = pinned
+                ? "Couldn’t pin the message: \(error.localizedDescription)"
+                : "Couldn’t unpin the message: \(error.localizedDescription)"
+        }
+    }
+
+    /// The pinned messages of a space, fetched from Chat for the pinned list.
+    func pinnedMessages(in spaceName: String) async -> [ChatMessage] {
+        await sync.pinnedMessages(pinnedMessageNames[spaceName] ?? [])
+    }
+
+    // MARK: - Custom emoji
+
+    /// The organisation's custom emoji, by UID. Empty until loaded, or when the
+    /// workspace has none or turned them off.
+    private(set) var customEmojisByUID: [String: ChatEmoji.CustomEmoji] = [:]
+
+    /// The same emoji in shortcode order, for the picker.
+    var customEmojis: [ChatEmoji.CustomEmoji] {
+        customEmojisByUID.values.sorted { ($0.emojiName ?? "") < ($1.emojiName ?? "") }
+    }
+
+    func loadCustomEmojis() async {
+        do {
+            let emojis = try await sync.customEmojis()
+            customEmojisByUID = Dictionary(
+                emojis.compactMap { emoji in emoji.uid.map { ($0, emoji) } },
+                uniquingKeysWith: { first, _ in first }
+            )
+        } catch {
+            logger.error("Custom emoji lookup failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// The custom emoji a reaction key names, if it names one this session knows.
+    func customEmoji(forKey key: String) -> ChatEmoji.CustomEmoji? {
+        ChatEmoji.customUID(fromKey: key).flatMap { customEmojisByUID[$0] }
+    }
+
+    /// Text for a reaction key where an image cannot go: menus, help tags, VoiceOver.
+    /// A custom emoji reads as its shortcode.
+    func emojiLabel(_ key: String) -> String {
+        guard ChatEmoji.customUID(fromKey: key) != nil else { return key }
+        return customEmoji(forKey: key)?.emojiName ?? "custom emoji"
+    }
+
+    // MARK: - Own availability
+
+    /// The signed-in user's presence and custom status, nil until first loaded or when
+    /// Chat would not say.
+    private(set) var availability: ChatAvailability?
+
+    func loadAvailability() async {
+        do {
+            availability = try await sync.availability()
+        } catch {
+            logger.error("Availability lookup failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Applies a presence or status change and shows what Chat answered with.
+    func setAvailability(_ change: AvailabilityChange) async {
+        do {
+            availability = try await sync.setAvailability(change)
+        } catch {
+            logger.error("Availability change failed: \(error.localizedDescription)")
+            messageError = "Couldn’t change your status: \(error.localizedDescription)"
+        }
+    }
+
+    /// Server-side message search. See ``SyncEngine/searchMessages(query:inSpace:)``.
+    func searchServerMessages(_ query: String, inSpace spaceName: String?) async throws -> [ChatMessage] {
+        try await sync.searchMessages(query: query, inSpace: spaceName)
     }
 
     private func resolvedDestination(of link: ChatDeepLink) async -> ChatLinkDestination {
@@ -397,6 +560,28 @@ final class ChatSessionModel {
             }
         }
         await refreshUnread()
+    }
+
+    /// Reads Chat's mute setting for recently active spaces, in bounded passes, so the
+    /// sidebar mutes what the web client and phone app mute.
+    ///
+    /// Stops at the first pass that reads nothing: that is the scope missing or the API
+    /// failing, and asking again for the same spaces would not change it.
+    func loadMuteSettings() async {
+        var changedAny = false
+        for _ in 0..<40 {
+            if Task.isCancelled { break }
+            do {
+                guard try await sync.pendingMuteSettingCount() > 0 else { break }
+                guard try await sync.refreshMuteSettings() > 0 else { break }
+                changedAny = true
+                try? await Task.sleep(for: .milliseconds(250))
+            } catch {
+                logger.error("Mute setting pass failed: \(error.localizedDescription)")
+                break
+            }
+        }
+        if changedAny { await refreshUnread() }
     }
 
     func stopRealtime() async {
@@ -475,6 +660,9 @@ final class ChatSessionModel {
             await refreshUnread()
         } catch {
             logger.error("Mute toggle failed: \(error.localizedDescription)")
+            messageError = muted
+                ? "Couldn’t mute this conversation: \(error.localizedDescription)"
+                : "Couldn’t unmute this conversation: \(error.localizedDescription)"
         }
     }
 
@@ -540,6 +728,13 @@ final class ChatSessionModel {
             // badge is not worth an error banner over the messages themselves.
             try? await sync.markRead(spaceName: spaceName)
             await refreshUnread()
+            // Mute changed on another device has no event; opening the space is the
+            // moment it is worth checking, off the path of showing its messages.
+            Task { [sync] in
+                if (try? await sync.refreshMuteSetting(for: spaceName)) == true {
+                    await self.refreshUnread()
+                }
+            }
         } catch {
             logger.error("History load failed for \(spaceName): \(error.localizedDescription)")
             messageError = error.localizedDescription
@@ -679,6 +874,23 @@ final class ChatSessionModel {
         } catch {
             logger.error("Thread read mark failed: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    /// Marks a thread unread from its newest reply, here and on chat.google.com.
+    ///
+    /// Closes the thread if it is the one on screen, for the same reason marking a
+    /// space unread steps out of it: opening is reading, so leaving it open would undo
+    /// the mark on the next render.
+    func markThreadUnread(_ threadName: String) async {
+        do {
+            guard try await sync.markThreadUnread(threadName: threadName) else { return }
+            if selectedThreadName == threadName {
+                threadInspector = canReturnToThreadList ? .list : .closed
+            }
+            await refreshUnread()
+        } catch {
+            logger.error("Thread unread mark failed: \(error.localizedDescription)")
         }
     }
 

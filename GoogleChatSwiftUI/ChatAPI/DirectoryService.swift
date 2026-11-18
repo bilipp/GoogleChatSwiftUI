@@ -10,8 +10,10 @@ nonisolated struct DirectoryPerson: Sendable, Equatable {
 
 /// Resolves Chat user IDs to human names and photos via the People API.
 ///
-/// This exists because the Chat API supplies neither: `spaces.members.list` returns
-/// memberships with an empty `displayName`, and `Message.sender` is the same. The
+/// Chat used to supply neither: `spaces.members.list` returned memberships with an
+/// empty `displayName`, and `Message.sender` was the same. It now names people in the
+/// caller's own organisation (see ``ChatUser/directoryPerson``), so this is the
+/// fallback for the users it still leaves unnamed. The
 /// numeric ID in Chat's `users/{id}` is the same identifier as People's `people/{id}`,
 /// which is what makes the mapping possible at all.
 nonisolated struct DirectoryService: Sendable {

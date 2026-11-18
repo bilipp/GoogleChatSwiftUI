@@ -17,12 +17,30 @@ nonisolated struct ChatUser: Codable, Sendable, Hashable, Identifiable {
     let domainId: String?
     let type: UserType?
     let isAnonymous: Bool?
+    /// Chat fills these in for people in the caller's own organisation, on message
+    /// senders, members and reactors alike. They were always empty before, which is
+    /// why ``DirectoryService`` exists; it is now only asked about the people Chat
+    /// still leaves unnamed.
+    let avatarUrl: String?
+    let email: String?
 
     var id: String { name ?? UUID().uuidString }
 
     /// Chat omits `displayName` for some senders (notably in DMs where the caller
     /// already knows the peer), so callers need a fallback.
     var resolvedName: String { displayName ?? "Unknown" }
+
+    /// The profile Chat sent along with this user, when it sent a whole one.
+    ///
+    /// A name without a photo is not enough: writing it would replace a photo the
+    /// directory found earlier with none, so such a user still goes to the directory.
+    var directoryPerson: DirectoryPerson? {
+        guard type != .bot, let name,
+              let displayName, !displayName.isEmpty,
+              let avatarUrl, !avatarUrl.isEmpty
+        else { return nil }
+        return DirectoryPerson(chatUserName: name, displayName: displayName, photoURL: avatarUrl)
+    }
 }
 
 nonisolated struct ChatSpace: Decodable, Sendable, Hashable, Identifiable {
@@ -121,13 +139,44 @@ nonisolated struct AttachedGif: Decodable, Sendable, Hashable {
 nonisolated struct ChatEmoji: Codable, Sendable, Hashable {
     nonisolated struct CustomEmoji: Codable, Sendable, Hashable {
         let uid: String?
+        /// `customEmojis/{id}`. Output only.
+        var name: String? = nil
+        /// The shortcode, e.g. `:party-parrot:`. Output only.
+        var emojiName: String? = nil
+        /// A signed image URL that lasts a few minutes. Output only.
+        var temporaryImageUri: String? = nil
     }
     let unicode: String?
     let customEmoji: CustomEmoji?
 
-    /// Custom emoji have no unicode representation, so they degrade to a marker
-    /// rather than rendering as nothing.
-    var display: String { unicode ?? "🧩" }
+    /// The key a reaction is stored and compared under: the character itself for a
+    /// Unicode emoji, `custom:{uid}` for a workspace emoji, which has no character.
+    /// The marker is the last resort for a reaction that carries neither.
+    var display: String {
+        if let unicode { return unicode }
+        if let uid = customEmoji?.uid { return Self.customKey(uid: uid) }
+        return "🧩"
+    }
+
+    private static let customPrefix = "custom:"
+
+    static func customKey(uid: String) -> String { customPrefix + uid }
+
+    /// The custom emoji UID inside a reaction key, or nil for a Unicode emoji.
+    static func customUID(fromKey key: String) -> String? {
+        key.hasPrefix(customPrefix) ? String(key.dropFirst(customPrefix.count)) : nil
+    }
+
+    /// The request form of a reaction key.
+    init(key: String) {
+        if let uid = Self.customUID(fromKey: key) {
+            unicode = nil
+            customEmoji = CustomEmoji(uid: uid)
+        } else {
+            unicode = key
+            customEmoji = nil
+        }
+    }
 }
 
 nonisolated struct EmojiReactionSummary: Decodable, Sendable, Hashable {

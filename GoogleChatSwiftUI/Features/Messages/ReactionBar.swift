@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Emoji reaction chips under a message, plus an add-reaction button.
 struct ReactionBar: View {
+    @Environment(ChatSessionModel.self) private var session
     /// Needed to ask who reacted: the answer is a listing call on the message, not
     /// something the cached counts can supply.
     let messageName: String
@@ -58,7 +59,7 @@ struct ReactionBar: View {
             onToggle(reaction.emoji)
         } label: {
             HStack(spacing: 3) {
-                Text(reaction.emoji).font(.caption)
+                ReactionEmoji(key: reaction.emoji).font(.caption)
                 if reaction.count > 1 {
                     Text("\(reaction.count)")
                         .font(.caption2.weight(.medium))
@@ -79,15 +80,15 @@ struct ReactionBar: View {
             }
         }
         .buttonStyle(.plain)
-        .help(reaction.reactedByMe ? "Remove your reaction" : "React with \(reaction.emoji)")
+        .help(reaction.reactedByMe ? "Remove your reaction" : "React with \(session.emojiLabel(reaction.emoji))")
         .accessibilityLabel(
-            "\(reaction.emoji), \(reaction.count) reaction\(reaction.count == 1 ? "" : "s")"
+            "\(session.emojiLabel(reaction.emoji)), \(reaction.count) reaction\(reaction.count == 1 ? "" : "s")"
                 + (reaction.reactedByMe ? ", including yours" : "")
         )
         .contextMenu {
             Button("See Who Reacted") { showReactors(for: reaction) }
             Divider()
-            Button(reaction.reactedByMe ? "Remove Your Reaction" : "React with \(reaction.emoji)") {
+            Button(reaction.reactedByMe ? "Remove Your Reaction" : "React with \(session.emojiLabel(reaction.emoji))") {
                 onToggle(reaction.emoji)
             }
         }
@@ -120,12 +121,12 @@ struct ReactionBar: View {
                         isPickerPresented = false
                         onToggle(emoji)
                     } label: {
-                        Text(emoji)
+                        ReactionEmoji(key: emoji)
                             .font(.title3)
                             .padding(5)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("React with \(emoji)")
+                    .accessibilityLabel("React with \(session.emojiLabel(emoji))")
                 }
             }
             .padding(.horizontal, 6)

@@ -25,13 +25,16 @@ It is written for one person's Workspace account and distributed as source. Poin
 **Reading**
 
 - Sidebar of spaces and DMs, filtered by activity and kind, searchable across every conversation
-- Local pin, mute, and a user-ordered pinned group
-- Transcript as chat bubbles with day separators, sender grouping, and avatars resolved through the People API
+- New group chats and spaces (⌘N): pick people from the directory or by email; a group chat with the same people reopens the existing one
+- Mute that syncs with chat.google.com and the phone app (`muteSetting`), plus local pins in a user-ordered pinned group
+- Messages and edits sent as Markdown (`**bold**`, `[label](url)`, lists, tables); editing an older message converts its Chat markup first
+- Transcript as chat bubbles with day separators, sender grouping, and the names and photos Chat now returns with each sender, with the Workspace directory filling in anyone it leaves unnamed
 - Chat's own text markup rendered properly — bold, italic, strikethrough, inline code, code blocks, quotes, and bullets
-- Threads get their own index, their own unread marks, and an inspector pane
+- Threads get their own index, their own unread marks, and an inspector pane. Thread read positions sync with chat.google.com both ways
 - Forwarded messages shown in full — the original's text, formatting, files, and which conversation it came from, with a way through to it where this account can reach it
 - `cardsV2` messages from Chat apps rendered natively; images open in a zoomable in-app viewer
-- Local full-text search over cached history, scoped to one conversation or all of them
+- Search over cached history, scoped to one conversation or all of them, followed by Chat's own server-side search for older messages the cache has never downloaded
+- Pinned messages: see what's pinned in a space, and pin or unpin for everyone
 - `chat.google.com` links open in the app, not a browser tab — landing on the message, or in its thread
 - Click anyone's avatar or name in a space or a thread to open your chat with them, creating it if you have never spoken
 
@@ -39,7 +42,7 @@ It is written for one person's Workspace account and distributed as source. Poin
 
 - Send, edit, and delete, with optimistic local echo and rollback on failure
 - Reply in a thread, or reply inline to a single message using Chat's native quoted-message metadata
-- Reactions, including a full emoji picker, recent-emoji suggestions, and `:shortcode` completion while typing
+- Reactions, including your organisation's custom emoji, a full emoji picker, recent-emoji suggestions, and `:shortcode` completion while typing
 - `@mention` completion over the space's members — and `@all` — posted as real mentions that notify, not as plain text
 - Attachments by file picker, drag-and-drop, or paste
 - Start a video meeting from the composer: one click creates a Meet space and posts the link, in the room or in the thread you are reading
@@ -49,7 +52,8 @@ It is written for one person's Workspace account and distributed as source. Poin
 - Real-time delivery over Workspace Events → Pub/Sub, with automatic subscription renewal and reconciliation on wake
 - Notifications for incoming messages that open the right conversation when clicked
 - `MenuBarExtra` with a live unread count
-- Mark as read, mark as unread — the unread mark is server-side and shows up on chat.google.com too
+- Mark as read, mark as unread — the unread mark is server-side and shows up on chat.google.com too, and read marks made elsewhere arrive in real time
+- Set your own presence (Active, Away, Do Not Disturb) and custom status from the account menu
 - Copy a link to any message, in the form the web client's own "Copy link" produces
 - Sandboxed and hardened; tokens live in the keychain, never on disk in the clear
 
@@ -162,7 +166,7 @@ rather than each receiving it — see [`docs/SETUP.md §2`](docs/SETUP.md).
 
 Neither step has a `gcloud` equivalent.
 
-**Consent screen** ([Google Auth Platform](https://console.cloud.google.com/auth/overview)) — user type **Internal**, then add the eleven scopes listed in [`docs/SETUP.md §3.1`](docs/SETUP.md).
+**Consent screen** ([Google Auth Platform](https://console.cloud.google.com/auth/overview)) — user type **Internal**, then add the fourteen scopes listed in [`docs/SETUP.md §3.1`](docs/SETUP.md).
 
 **Client** ([Clients](https://console.cloud.google.com/auth/clients)) — application type **iOS**, which is also correct for macOS: it issues no client secret and supports the reverse-DNS redirect that `ASWebAuthenticationSession` handles natively. Use your app's bundle identifier.
 
@@ -304,7 +308,7 @@ Some absences are permanent, and the design works around them rather than faking
 | Message search | No endpoint exists, so search is local over cached history — and the UI says so. |
 | Display names and avatars | Chat never populates `displayName`. Every name and photo comes from the People API. |
 | Pin, star, favourite | Nothing of the sort exists in the v1 discovery document, so pinning is local and invisible to chat.google.com. |
-| Reliable mute state | `spaceNotificationSetting` disagrees with what the web client shows, so mute is local too. |
+| Mute change events | `muteSetting` is read per space (no list method, no event), so a mute set elsewhere shows up on launch, wake, or opening the space — not instantly. |
 | Formatted message bodies | `*bold*`, `` `code` ``, and the rest arrive literally in `text`. `ChatTextRenderer` parses them, with word-edge rules pinned by tests so `snake_case` and URL paths survive intact. |
 | Interactive cards | `onClick.action` calls back into the app that *sent* the card, so link buttons work and action widgets render disabled. |
 

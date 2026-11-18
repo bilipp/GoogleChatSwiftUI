@@ -7,6 +7,9 @@ nonisolated enum ChatEvent: Sendable {
     case messageUpdated(ChatMessage)
     case messageDeleted(name: String)
     case spaceChanged(name: String)
+    /// The user's read position moved somewhere — on the web, on a phone, or here.
+    /// Several at once when Chat batches them.
+    case readStatesChanged([ReadStateChange])
     /// Recognised but not yet acted on — reactions and memberships land in Phase 7.
     case unhandled(type: String)
 
@@ -20,7 +23,7 @@ nonisolated enum ChatEvent: Sendable {
             return Self.space(fromMessageName: name)
         case .spaceChanged(let name):
             return name
-        case .unhandled:
+        case .readStatesChanged, .unhandled:
             return nil
         }
     }
@@ -29,6 +32,38 @@ nonisolated enum ChatEvent: Sendable {
         let parts = name.split(separator: "/")
         guard parts.count >= 2, parts[0] == "spaces" else { return nil }
         return "spaces/\(parts[1])"
+    }
+}
+
+/// One read mark from a read-state event, already reduced to the Chat resource it is
+/// about.
+nonisolated struct ReadStateChange: Sendable, Equatable {
+    enum Target: Sendable, Equatable {
+        case space(String)
+        case thread(String)
+    }
+
+    /// Whose read state this is, e.g. `users/123`. Checked against the signed-in user
+    /// before anything is applied: every colleague's subscription publishes into the
+    /// same topic, so their read marks reach this queue too.
+    let user: String
+    let target: Target
+    let lastReadTime: Date?
+
+    /// Parses `users/U/spaces/S/spaceReadState` or
+    /// `users/U/spaces/S/threads/T/threadReadState`.
+    init?(resourceName: String, lastReadTime: Date?) {
+        let parts = resourceName.split(separator: "/").map(String.init)
+        guard parts.count >= 5, parts[0] == "users", parts[2] == "spaces" else { return nil }
+        user = "users/\(parts[1])"
+        self.lastReadTime = lastReadTime
+        if parts.count == 5, parts[4] == "spaceReadState" {
+            target = .space("spaces/\(parts[3])")
+        } else if parts.count == 7, parts[4] == "threads", parts[6] == "threadReadState" {
+            target = .thread("spaces/\(parts[3])/threads/\(parts[5])")
+        } else {
+            return nil
+        }
     }
 }
 
@@ -45,8 +80,40 @@ nonisolated struct ChatEventDecoder: Sendable {
     private struct Payload: Decodable {
         let message: ChatMessage?
         let space: EventSpace?
+        let spaceReadState: ReadState?
+        let threadReadState: ReadState?
+        /// The batch forms. Google documents the batch event types but shows no
+        /// read-state batch example, so both the wrapped element shape its other
+        /// batches use and a bare list are accepted.
+        let spaceReadStates: [BatchElement]?
+        let threadReadStates: [BatchElement]?
 
         struct EventSpace: Decodable { let name: String? }
+        struct ReadState: Decodable {
+            let name: String?
+            let lastReadTime: Date?
+        }
+        struct BatchElement: Decodable {
+            let state: ReadState?
+
+            init(from decoder: Decoder) throws {
+                let wrapped = try? decoder.container(keyedBy: Key.self)
+                if let inner = (try? wrapped?.decodeIfPresent(ReadState.self, forKey: .spaceReadState))
+                    ?? (try? wrapped?.decodeIfPresent(ReadState.self, forKey: .threadReadState)) {
+                    state = inner
+                } else {
+                    state = try? ReadState(from: decoder)
+                }
+            }
+
+            enum Key: String, CodingKey { case spaceReadState, threadReadState }
+        }
+
+        var readStates: [ReadState] {
+            [spaceReadState, threadReadState].compactMap { $0 }
+                + (spaceReadStates ?? []).compactMap(\.state)
+                + (threadReadStates ?? []).compactMap(\.state)
+        }
     }
 
     func decode(_ pubsub: PubSubMessage) -> ChatEvent? {
@@ -78,6 +145,16 @@ nonisolated struct ChatEventDecoder: Sendable {
         case "google.workspace.chat.space.v1.updated":
             guard let name = payload?.space?.name else { return logMissing(type, data) }
             return .spaceChanged(name: name)
+
+        case "google.workspace.chat.spaceReadState.v1.updated",
+             "google.workspace.chat.spaceReadState.v1.batchUpdated",
+             "google.workspace.chat.threadReadState.v1.updated",
+             "google.workspace.chat.threadReadState.v1.batchUpdated":
+            let changes = (payload?.readStates ?? []).compactMap { state in
+                state.name.flatMap { ReadStateChange(resourceName: $0, lastReadTime: state.lastReadTime) }
+            }
+            guard !changes.isEmpty else { return logMissing(type, data) }
+            return .readStatesChanged(changes)
 
         default:
             return .unhandled(type: type)

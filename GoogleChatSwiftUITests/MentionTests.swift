@@ -142,7 +142,7 @@ struct MentionTests {
 
     @Test func rewritesAMentionAsChatMarkup() {
         let encoded = MentionEncoder.encode("morning @Ada Lovelace", mentions: [Self.ada])
-        #expect(encoded == "morning <users/1>")
+        #expect(encoded == "morning <chat-user data-user=\"users/1\">")
     }
 
     @Test func rewritesEveryMentionInTheText() {
@@ -150,7 +150,7 @@ struct MentionTests {
             "@Ada Lovelace and @Grace Hopper — thoughts?",
             mentions: [Self.ada, Self.grace]
         )
-        #expect(encoded == "<users/1> and <users/2> — thoughts?")
+        #expect(encoded == "<chat-user data-user=\"users/1\"> and <chat-user data-user=\"users/2\"> — thoughts?")
     }
 
     /// The mention has to survive the words around it.
@@ -159,7 +159,7 @@ struct MentionTests {
             "could @Ada Lovelace take a look before standup?",
             mentions: [Self.ada]
         )
-        #expect(encoded == "could <users/1> take a look before standup?")
+        #expect(encoded == "could <chat-user data-user=\"users/1\"> take a look before standup?")
     }
 
     /// The case that makes this an encoder rather than a search-and-replace: a short
@@ -169,14 +169,14 @@ struct MentionTests {
             "@Anastasia Petrova",
             mentions: [Self.ana, Self.anastasia]
         )
-        #expect(encoded == "<users/4>")
+        #expect(encoded == "<chat-user data-user=\"users/4\">")
     }
 
     /// And the mirror: a name that genuinely ends there is still encoded, even though
     /// a longer candidate shares its opening.
     @Test func stillEncodesTheShorterNameWhenItStandsAlone() {
         let encoded = MentionEncoder.encode("@Ana said so", mentions: [Self.ana, Self.anastasia])
-        #expect(encoded == "<users/3> said so")
+        #expect(encoded == "<chat-user data-user=\"users/3\"> said so")
     }
 
     /// Backing out of a mention is deleting the name, so a mention the text no longer
@@ -202,14 +202,14 @@ struct MentionTests {
     /// the type rather than needing a case of its own.
     @Test func encodesTheWholeSpace() {
         let encoded = MentionEncoder.encode("@all code freeze at six", mentions: [.everyone])
-        #expect(encoded == "<users/all> code freeze at six")
+        #expect(encoded == "<chat-user data-user=\"users/all\"> code freeze at six")
     }
 
     /// A name typed out by hand rather than picked is still the person it names —
     /// which is also what makes re-typing a mention the user deleted work.
     @Test func encodesANameThatWasNeverPicked() {
         let encoded = MentionEncoder.encode("@Grace Hopper ping", mentions: [Self.ada, Self.grace])
-        #expect(encoded == "<users/2> ping")
+        #expect(encoded == "<chat-user data-user=\"users/2\"> ping")
     }
 
     /// The draft the user reads and the string the API receives are the same text
@@ -220,7 +220,7 @@ struct MentionTests {
 
     @Test func encodesAMentionAfterALineBreak() {
         let encoded = MentionEncoder.encode("first\n@Ada Lovelace", mentions: [Self.ada])
-        #expect(encoded == "first\n<users/1>")
+        #expect(encoded == "first\n<chat-user data-user=\"users/1\">")
     }
 
     // MARK: - Building the list

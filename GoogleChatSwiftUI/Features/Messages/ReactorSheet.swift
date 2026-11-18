@@ -90,7 +90,7 @@ struct ReactorSheet: View {
             selected = reaction.emoji
         } label: {
             HStack(spacing: 4) {
-                Text(reaction.emoji)
+                ReactionEmoji(key: reaction.emoji)
                 Text("\(count(for: reaction))")
                     .font(.callout.weight(.medium))
                     .monospacedDigit()
@@ -109,7 +109,7 @@ struct ReactorSheet: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(reaction.emoji), \(count(for: reaction)) reactions")
+        .accessibilityLabel("\(session.emojiLabel(reaction.emoji)), \(count(for: reaction)) reactions")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 

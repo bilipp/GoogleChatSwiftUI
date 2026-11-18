@@ -79,6 +79,15 @@ struct MessageBubble: View {
                     senderLine
                 }
 
+                // Pins are shared with the whole space, so the marker sits outside the
+                // bubble where it reads as a fact about the message, not part of it.
+                if isPinned {
+                    Label("Pinned", systemImage: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                }
+
                 if isEditing {
                     editor
                 } else if !message.displayText.isEmpty || replyPreview != nil {
@@ -436,6 +445,10 @@ struct MessageBubble: View {
         .padding(.horizontal, 4)
     }
 
+    private var isPinned: Bool {
+        session.isMessagePinned(message.name)
+    }
+
     private var wasEdited: Bool {
         guard let updated = message.lastUpdateTime, let created = message.createTime else {
             return false
@@ -527,7 +540,7 @@ struct MessageBubble: View {
         if !message.isDeleted && !message.isPending {
             Menu("Add Reaction") {
                 ForEach(session.recentEmoji.suggestions, id: \.self) { emoji in
-                    Button(emoji) {
+                    Button(session.emojiLabel(emoji)) {
                         Task { await session.toggleReaction(emoji, on: message.name) }
                     }
                 }
@@ -555,6 +568,14 @@ struct MessageBubble: View {
                 ) {
                     onOpenThread()
                 }
+            }
+
+            Button(
+                isPinned ? "Unpin" : "Pin for Everyone",
+                systemImage: isPinned ? "pin.slash" : "pin"
+            ) {
+                let pin = !isPinned
+                Task { await session.setMessagePinned(pin, messageName: message.name) }
             }
         }
 

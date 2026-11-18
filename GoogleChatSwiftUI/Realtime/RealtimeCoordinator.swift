@@ -24,6 +24,11 @@ actor RealtimeCoordinator {
     private var runTask: Task<Void, Never>?
     private var renewTask: Task<Void, Never>?
     private var subscriptionName: String?
+    /// The second Workspace Events subscription, on the user rather than their spaces,
+    /// which is the only target Chat publishes read-state changes on. Optional in every
+    /// sense: without it read marks still arrive by polling, just later.
+    private var readStateSubscriptionName: String?
+    private var readStateHandler: (@Sendable () -> Void)?
 
     /// Full name of the Pub/Sub subscription this person pulls from, derived from
     /// their address once they are signed in. Distinct from `subscriptionName` above,
@@ -73,6 +78,12 @@ actor RealtimeCoordinator {
 
     func onIncomingMessage(_ handler: @escaping @Sendable (IncomingMessage) -> Void) {
         incomingHandler = handler
+    }
+
+    /// Called after read marks from elsewhere have been applied, so badges can be
+    /// recounted.
+    func onReadStateChange(_ handler: @escaping @Sendable () -> Void) {
+        readStateHandler = handler
     }
 
     func setSelfChatName(_ name: String?) {
@@ -142,6 +153,8 @@ actor RealtimeCoordinator {
             // usable with manual refresh — so this is degraded, not fatal.
             return
         }
+
+        await ensureReadStateSubscription()
 
         var consecutiveFailures = 0
 
@@ -290,6 +303,9 @@ actor RealtimeCoordinator {
             // Space metadata changes are rare and cheap to pick up on next refresh.
             break
 
+        case .readStatesChanged(let changes):
+            await applyReadStates(changes)
+
         case .unhandled(let type):
             logger.debug("Ignoring unhandled event type \(type)")
         }
@@ -308,12 +324,64 @@ actor RealtimeCoordinator {
         return message.sender?.type == .bot ? SenderIdentity.unnamedApp : nil
     }
 
+    /// Sets up the user-target subscription for read-state events.
+    ///
+    /// Failure is logged and nothing more: the space subscription is what makes the
+    /// app live, and read marks from other devices still turn up through the polled
+    /// read-state passes.
+    private func ensureReadStateSubscription() async {
+        guard let selfChatName else { return }
+        do {
+            let subscription = try await events.ensureSubscription(
+                target: WorkspaceEventsClient.userTarget(for: selfChatName),
+                eventTypes: WorkspaceEventsClient.readStateEventTypes
+            )
+            readStateSubscriptionName = subscription.name
+        } catch {
+            logger.error("Read-state subscription setup failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Applies read marks the user set somewhere else.
+    ///
+    /// Only the signed-in user's: every colleague's subscriptions publish into the same
+    /// topic, so this queue sees their read marks too, and applying one would mark this
+    /// user's conversation read because a colleague read theirs.
+    private func applyReadStates(_ changes: [ReadStateChange]) async {
+        guard let selfChatName else { return }
+        let own = changes.filter { $0.user == selfChatName }
+        guard !own.isEmpty else { return }
+
+        var spaces: [SpaceReadState] = []
+        var threads: [ThreadReadState] = []
+        for change in own {
+            switch change.target {
+            case .space(let name):
+                // A space event with no time says nothing; recorded as such it would
+                // clear the space's mark rather than leave it.
+                guard let time = change.lastReadTime else { continue }
+                spaces.append(SpaceReadState(spaceName: name, lastReadTime: time))
+            case .thread(let name):
+                threads.append(ThreadReadState(threadName: name, lastReadTime: change.lastReadTime))
+            }
+        }
+        do {
+            try await store.applyReadStates(spaces)
+            try await store.applyThreadReadStates(threads, authoritative: true)
+            readStateHandler?()
+        } catch {
+            logger.error("Applying read-state events failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Renewal
 
     private func renewLoop() async {
         while !Task.isCancelled {
             try? await Task.sleep(for: Self.renewInterval)
-            guard !Task.isCancelled, let name = subscriptionName else { continue }
+            guard !Task.isCancelled else { continue }
+            await renewReadStateSubscription()
+            guard let name = subscriptionName else { continue }
             do {
                 _ = try await events.renew(name)
             } catch {
@@ -328,6 +396,22 @@ actor RealtimeCoordinator {
                     subscriptionName = replacement
                 }
             }
+        }
+    }
+
+    private func renewReadStateSubscription() async {
+        guard let name = readStateSubscriptionName else {
+            // Never set up — a sign-in from before the scope existed, or a failure at
+            // launch. Worth another try on each renewal tick.
+            await ensureReadStateSubscription()
+            return
+        }
+        do {
+            _ = try await events.renew(name)
+        } catch {
+            logger.error("Read-state renewal failed: \(error.localizedDescription)")
+            readStateSubscriptionName = nil
+            await ensureReadStateSubscription()
         }
     }
 

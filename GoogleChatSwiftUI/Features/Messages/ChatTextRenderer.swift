@@ -154,6 +154,9 @@ nonisolated enum ChatTextRenderer {
     /// serves `text` with the markup taken out, so a fenced block reaches `text` as
     /// bare lines and renders as prose however good the parser is.
     ///
+    /// Mentions in a message posted as Markdown arrive as `<chat-user …>` elements and
+    /// are folded into `<users/123>` first — see ``ChatMarkdown/normalizingMentions(_:)``.
+    ///
     /// The exception is mentions. `formattedText` writes them as `<users/123>`, and a
     /// user the directory has not answered for yet has no name to put there — a raw
     /// resource name on screen is worse than a message that lost its backticks. So a
@@ -166,7 +169,8 @@ nonisolated enum ChatTextRenderer {
         mentions: [String: String]
     ) -> ChatMessageBody {
         let fallback = ChatMessageBody(text: plain ?? "", source: .plain)
-        guard let formatted, !formatted.isEmpty else { return fallback }
+        guard let formatted = formatted.map(ChatMarkdown.normalizingMentions), !formatted.isEmpty
+        else { return fallback }
         guard mentionIDs(in: formatted).allSatisfy({ mentionName(of: $0, in: mentions) != nil })
         else { return fallback }
         return ChatMessageBody(text: formatted, source: .formatted)
@@ -174,11 +178,11 @@ nonisolated enum ChatTextRenderer {
 
     /// The body as the composer would have written it, for the edit field.
     ///
-    /// Markup, escapes and `<url|label>` are left exactly as Chat sent them: all three
-    /// are valid on the way back in, so fixing a typo posts the same formatting back
-    /// rather than flattening the message. Mentions are the exception — `<users/123>`
-    /// is not something anyone can edit around — and are written as names, which
-    /// `MessageBubble.saveEdit` encodes again on the way out.
+    /// Edits are posted as Markdown, so Chat's markup is rewritten into it here —
+    /// `*bold*` to `**bold**`, `<url|label>` to `[label](url)` — and fixing a typo
+    /// posts the same formatting back rather than flattening the message. Mentions are
+    /// written as names, since `<users/123>` is not something anyone can edit around;
+    /// `MessageBubble.saveEdit` encodes them again on the way out.
     static func editable(_ body: ChatMessageBody, mentions: [String: String]) -> String {
         guard body.source == .formatted else { return body.text }
         var result = body.text
@@ -186,7 +190,7 @@ nonisolated enum ChatTextRenderer {
             guard let name = mentionName(of: id, in: mentions) else { continue }
             result = result.replacingOccurrences(of: "<\(id)>", with: "@\(name)")
         }
-        return result
+        return ChatMarkdown.fromChatSyntax(result)
     }
 
     /// The user resource names a `formattedText` body mentions.
@@ -426,7 +430,7 @@ nonisolated enum ChatTextRenderer {
         // dictionary's unordered values do not decide which of the two wins.
         highlightMentions(
             in: &text,
-            names: mentions.values.sorted { $0.count > $1.count },
+            people: mentions.sorted { $0.value.count > $1.value.count },
             isOwn: isOwn
         )
         return text
@@ -554,7 +558,7 @@ nonisolated enum ChatTextRenderer {
 
         if body.hasPrefix("users/") {
             guard let name = mentionName(of: body, in: mentions) else { return nil }
-            return (mentionRun("@\(name)", isOwn: isOwn), close)
+            return (mentionRun("@\(name)", userID: body, isOwn: isOwn), close)
         }
 
         // `<url|label>`: only the part before the bar is a link, and the label is free
@@ -687,10 +691,13 @@ nonisolated enum ChatTextRenderer {
         return run
     }
 
-    private static func mentionRun(_ name: String, isOwn: Bool) -> AttributedString {
+    private static func mentionRun(_ name: String, userID: String, isOwn: Bool) -> AttributedString {
         var run = AttributedString(name)
         run.font = Font.body.weight(.semibold)
         run.foregroundColor = isOwn ? .white : .accentColor
+        // A link to the person rather than a styled word: the sidebar's `openURL`
+        // handler turns it into their DM, the same place clicking their avatar goes.
+        run.link = PersonLink.url(for: userID)
         return run
     }
 
@@ -746,10 +753,10 @@ nonisolated enum ChatTextRenderer {
     /// the docs do not state whether they count code points or UTF-16 units.
     private static func highlightMentions(
         in text: inout AttributedString,
-        names: [String],
+        people: [(key: String, value: String)],
         isOwn: Bool
     ) {
-        for name in names {
+        for (userID, name) in people {
             for candidate in ["@\(name)", name] {
                 guard !candidate.isEmpty,
                       let range = text.range(of: candidate),
@@ -758,6 +765,7 @@ nonisolated enum ChatTextRenderer {
                 text[range].font = (text[range].font ?? .body).weight(.semibold)
                 // Accent-on-accent would be invisible inside an own-message bubble.
                 text[range].foregroundColor = isOwn ? .white : .accentColor
+                if !isLinked(text[range]) { text[range].link = PersonLink.url(for: userID) }
                 break
             }
         }

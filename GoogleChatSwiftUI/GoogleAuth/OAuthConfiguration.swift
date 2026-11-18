@@ -34,7 +34,13 @@ nonisolated enum OAuthConfiguration {
         "https://www.googleapis.com/auth/chat.memberships",
         "https://www.googleapis.com/auth/chat.users.readstate",
         "https://www.googleapis.com/auth/chat.users.sections",
+        // Per-space mute, the same switch the web client and phone app flip, so muting
+        // here mutes there and the other way round.
+        "https://www.googleapis.com/auth/chat.users.spacesettings",
         "https://www.googleapis.com/auth/chat.customemojis.readonly",
+        // The user's own presence and custom status, set from the account menu. Chat
+        // offers this for the caller only; nobody else's availability is readable.
+        "https://www.googleapis.com/auth/chat.users.availability",
         "https://www.googleapis.com/auth/pubsub",
         "https://www.googleapis.com/auth/userinfo.profile",
         // Names the Pub/Sub subscription this install pulls from. Everyone signed in
@@ -43,10 +49,10 @@ nonisolated enum OAuthConfiguration {
         // hand each event to whichever colleague happened to ask first. The address
         // is what makes the queue per-person; see `pubSubSubscription(for:)`.
         "https://www.googleapis.com/auth/userinfo.email",
-        // Chat returns user IDs but never display names — not in memberships, not on
-        // message senders. Resolving `users/123` to a human name means reading the
-        // Workspace directory, which is what this scope is for. Without it every DM
-        // is titled "Direct message" and every sender reads "Unknown".
+        // Chat now names people on message senders, reactors and members it returns,
+        // but not always: older messages, external users and some memberships still
+        // come back as a bare `users/123`. The Workspace directory fills those gaps.
+        // Without it such DMs are titled "Direct message" and senders read "Unknown".
         "https://www.googleapis.com/auth/directory.readonly",
         // Chat annotates a Drive link with a file ID, a MIME type and a URI, and no
         // title — the web client reads titles from Drive separately, which is what this

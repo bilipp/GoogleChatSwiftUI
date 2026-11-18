@@ -266,7 +266,18 @@ private struct ThreadSummaryRow: View {
     let lastReplierName: String?
     let open: () -> Void
 
+    @Environment(ChatSessionModel.self) private var session
     @State private var isHovering = false
+
+    private func markRead() {
+        let name = thread.name
+        Task { await session.markThreadRead(name) }
+    }
+
+    private func markUnread() {
+        let name = thread.name
+        Task { await session.markThreadUnread(name) }
+    }
 
     var body: some View {
         Button(action: open) {
@@ -322,6 +333,13 @@ private struct ThreadSummaryRow: View {
         .buttonStyle(.plain)
         .background(isHovering ? AnyShapeStyle(.quinary) : AnyShapeStyle(.clear))
         .onHover { isHovering = $0 }
+        .contextMenu {
+            if thread.hasUnread {
+                Button("Mark as Read", systemImage: "envelope.open") { markRead() }
+            } else if thread.replyCount > 0 {
+                Button("Mark as Unread", systemImage: "envelope.badge") { markUnread() }
+            }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityDescription)
     }

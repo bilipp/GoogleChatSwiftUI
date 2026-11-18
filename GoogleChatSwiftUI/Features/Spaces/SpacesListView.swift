@@ -21,6 +21,7 @@ struct SpacesListView: View {
     /// Separate from the sidebar's: the two fields search different things and are
     /// both on screen at once.
     @FocusState private var isMessageSearchFocused: Bool
+    @State private var isComposingConversation = false
 
     var body: some View {
         @Bindable var session = session
@@ -34,6 +35,16 @@ struct SpacesListView: View {
                 isSearchFocused: $isSearchFocused
             )
             .navigationSplitViewColumnWidth(min: 260, ideal: 300)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        isComposingConversation = true
+                    } label: {
+                        Label("New Conversation", systemImage: "square.and.pencil")
+                    }
+                    .help("New group chat or space (⌘N)")
+                }
+            }
         } detail: {
             detail
         }
@@ -72,8 +83,8 @@ struct SpacesListView: View {
         // from, in a space the transcript showing it has no way to select.
         .environment(
             \.openChatMessage,
-            OpenChatMessageAction { messageName, spaceName in
-                openMessage(messageName, in: spaceName)
+            OpenChatMessageAction { messageName, spaceName, sentAt in
+                openMessage(messageName, in: spaceName, sentAt: sentAt)
             }
         )
         .task {
@@ -90,6 +101,7 @@ struct SpacesListView: View {
             // already exist rather than leaving the cache's threads unseeded.
             await session.prepareThreadIndex()
             await session.loadReadStates()
+            await session.loadMuteSettings()
             // Last, because it is housekeeping and everything above it is the app
             // becoming usable.
             await session.pruneHistory()
@@ -110,7 +122,19 @@ struct SpacesListView: View {
         ) { _ in
             // Pub/Sub retains 24h, so nothing is lost across sleep, but the open
             // space should catch up immediately rather than waiting for the next event.
-            Task { await session.reconcileSelectedSpace() }
+            Task {
+                await session.reconcileSelectedSpace()
+                // Mute set on the phone overnight has no event to bring it here.
+                await session.loadMuteSettings()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatNewConversation)) { _ in
+            isComposingConversation = true
+        }
+        .sheet(isPresented: $isComposingConversation) {
+            NewConversationSheet { spaceName in
+                Task { await openNewConversation(spaceName) }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .chatRefreshSpaces)) { _ in
             Task { await session.refreshSpaces() }
@@ -218,6 +242,15 @@ struct SpacesListView: View {
     /// had anyway. The check is against the cached space list because the decision has to
     /// be made now, synchronously, before the click is either handled or passed on.
     private func openChatLink(_ url: URL) -> OpenURLAction.Result {
+        // A name mentioned in a message. Claimed whatever happens next, so the private
+        // scheme never reaches the system. Yourself and apps have no DM to open.
+        if let userID = PersonLink.userID(from: url) {
+            let isApp = session.directory.profiles[userID]?.isApp ?? false
+            if userID != session.selfChatName, !isApp {
+                Task { await openDirectMessage(with: userID) }
+            }
+            return .handled
+        }
         guard let link = ChatDeepLink(url: url), isCached(link.spaceName) else {
             return .systemAction
         }
@@ -241,6 +274,15 @@ struct SpacesListView: View {
         await session.revealSpace(spaceName)
     }
 
+    /// Opens a conversation the new-conversation sheet just created or found. Widens the
+    /// kind filter up front because the row may not have reached this view's context
+    /// yet, in which case ``unhide(_:)`` has nothing to look at.
+    private func openNewConversation(_ spaceName: String) async {
+        session.kind = .all
+        unhide(spaceName)
+        await session.revealSpace(spaceName)
+    }
+
     /// Relaxes any filter that would hide a conversation being opened from outside the
     /// sidebar.
     ///
@@ -255,7 +297,7 @@ struct SpacesListView: View {
     /// was never in, and there is then nothing here to open. The caller only offers the
     /// action when a source space was named at all, so this is the second of two checks —
     /// this one is the one that can only be made here, against the cached space list.
-    private func openMessage(_ messageName: String, in spaceName: String) {
+    private func openMessage(_ messageName: String, in spaceName: String, sentAt: Date? = nil) {
         guard isCached(spaceName) else {
             session.reportUnreachableSpace()
             return
@@ -263,7 +305,8 @@ struct SpacesListView: View {
         unhide(spaceName)
         Task {
             await session.reveal(
-                ChatDeepLink(spaceName: spaceName, messageName: messageName)
+                ChatDeepLink(spaceName: spaceName, messageName: messageName),
+                sentAt: sentAt
             )
         }
     }

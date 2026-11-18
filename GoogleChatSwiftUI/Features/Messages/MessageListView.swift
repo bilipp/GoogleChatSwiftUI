@@ -42,6 +42,7 @@ struct MessageListView: View {
     /// view, because a target older than the window is in no transcript to be scrolled
     /// to: the window has to open past it first, and only then is there a row to aim at.
     @State private var pendingJump: String?
+    @State private var isShowingPins = false
 
     init(
         spaceName: String,
@@ -70,6 +71,11 @@ struct MessageListView: View {
         )
         .navigationTitle(spaceTitle)
         .toolbar {
+            // Only once something is pinned: an empty pin list is a button with
+            // nothing behind it.
+            if !(session.pinnedMessageNames[spaceName] ?? []).isEmpty {
+                ToolbarItem(placement: .primaryAction) { pinsButton }
+            }
             // Only where threads are a place of their own. In grouped and unthreaded
             // spaces replies are already in the transcript, so a thread index would
             // just be a second copy of what is on screen.
@@ -92,6 +98,7 @@ struct MessageListView: View {
         // the first time a conversation is opened rather than anything the sidebar
         // pays for — at 762 spaces, a members lookup each would dwarf the whole app.
         .task(id: spaceName) { await session.loadMentionableMembers(of: spaceName) }
+        .task(id: spaceName) { await session.loadPinnedMessages(of: spaceName) }
         // `initial` because a jump routinely arrives before this view does: following a
         // link or opening a search hit selects the conversation first, and the target is
         // set while the transcript for it is still being built.
@@ -100,6 +107,18 @@ struct MessageListView: View {
             session.scrollTarget = nil
             window.reach(pastNewerMessages: messagesNewer(than: target))
             pendingJump = target
+        }
+    }
+
+    private var pinsButton: some View {
+        Button {
+            isShowingPins.toggle()
+        } label: {
+            Label("Pinned Messages", systemImage: "pin")
+        }
+        .help("Pinned messages")
+        .popover(isPresented: $isShowingPins, arrowEdge: .bottom) {
+            PinnedMessagesPopover(spaceName: spaceName) { isShowingPins = false }
         }
     }
 
