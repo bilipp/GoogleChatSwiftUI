@@ -6,6 +6,7 @@ import SwiftUI
 struct GoogleChatSwiftUIApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var auth = AuthModel()
+    @AppStorage(AppSettingsKey.showMenuBarIcon) private var showMenuBarIcon = true
 
     /// This store is a pure cache — every row can be re-fetched from Chat. So a
     /// migration failure rebuilds it rather than crashing the app, which would be the
@@ -50,7 +51,11 @@ struct GoogleChatSwiftUIApp: App {
         .modelContainer(container)
         .commands { ChatCommands() }
 
-        MenuBarExtra {
+        Settings {
+            SettingsView()
+        }
+
+        MenuBarExtra(isInserted: $showMenuBarIcon) {
             MenuBarContent()
                 .environment(auth)
                 .modelContainer(container)

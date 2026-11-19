@@ -19,6 +19,7 @@ struct MenuBarLabel: View {
 
 struct MenuBarContent: View {
     @Environment(AuthModel.self) private var auth
+    @AppStorage(AppSettingsKey.showMenuBarIcon) private var showMenuBarIcon = true
     /// Muted conversations are left out: the menu-bar peek is a "what needs me?"
     /// list, and a muted space is by definition not that.
     ///
@@ -58,6 +59,8 @@ struct MenuBarContent: View {
         }
 
         Button("Open Google Chat") { activateApp() }
+        // Settings (⌘,) has the switch to bring it back.
+        Button("Hide Menu Bar Icon") { showMenuBarIcon = false }
         Divider()
         Button("Quit") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
